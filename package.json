@@ -11,6 +11,7 @@
     "clean:workspaces": "turbo clean",
     "dev": "turbo dev --parallel",
     "test": "turbo test --parallel",
+    "test:unit": "bun test --exit packages/banking/src packages/bot/src packages/documents/src packages/encryption/src packages/import/src packages/insights/src packages/invoice/src packages/utils/src && bun test --exit apps/api/src/__tests__/db-retry.test.ts",
     "start:dashboard": "turbo start --filter=@midday/dashboard",
     "start:website": "turbo start --filter=@midday/website",
     "dev:api": "turbo dev --filter=@midday/api",

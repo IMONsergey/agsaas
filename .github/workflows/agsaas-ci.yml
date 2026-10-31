@@ -23,7 +23,5 @@ jobs:
         run: bun run lint
       - name: Typecheck workspaces sequentially
         run: bun run typecheck
-      - name: Banking regression tests
-        run: bun test --exit packages/banking/src
-      - name: Primary-database retry tests
-        run: bun test --exit apps/api/src/__tests__/db-retry.test.ts
+      - name: Unit regression tests
+        run: bun run test:unit

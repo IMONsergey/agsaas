@@ -24,6 +24,9 @@ from rebranding or replacing foreign integrations.
   mixed-case header names, HTTP-date `Retry-After`, and provider reset headers.
 - Eliminate duplicate primary-database retry loops when a replica returns no row.
 - Split API test commands into independently runnable suites.
+- Extract pure bot notification formatters from the DB/provider orchestration
+  module, keeping its original exports and adding regression tests for all
+  notification families.
 - Limit root TypeScript checking to one workspace at a time and raise the Node
   heap size to handle the dashboard/API type graphs.
 - Restore Biome compliance for the original billing script and resync `bun.lock`.
@@ -36,13 +39,14 @@ Run from the repository root with Bun 1.3.11:
 bun install --frozen-lockfile
 bun run lint
 bun run typecheck
-bun test --exit packages/banking/src
-bun test --exit apps/api/src/__tests__/db-retry.test.ts
+bun run test:unit
 ```
 
-Full integration tests need the configured database and third-party service
-test credentials. Passing static checks and pure tests does not establish
-production readiness.
+The unit suite covers banking, bot notification formatting, documents,
+encryption, import, insights, invoice calculations, general utilities, and
+database retry logic (536 tests). DB and provider integration tests, along with
+the MCP Apps build-output tests, require their own setup/build steps. Passing
+static checks and pure tests does not establish production readiness.
 
 ## Pending high-risk work
 

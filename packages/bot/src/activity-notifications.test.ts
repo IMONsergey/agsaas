@@ -3,7 +3,7 @@ import {
   buildBatchSummary,
   formatNotificationContextForPrompt,
   isWithinWhatsAppSessionWindow,
-} from "./activity-notifications";
+} from "./activity-notification-formatters";
 import {
   buildBatchTemplateComponents,
   buildMatchTemplateComponents,
@@ -67,6 +67,67 @@ describe("activity notifications", () => {
     expect(prompt).toContain("1 invoice is overdue.");
     expect(prompt).toContain("Show me them");
     expect(prompt).toContain("Draft a reminder");
+  });
+
+  it("does not format missing notification context", () => {
+    expect(formatNotificationContextForPrompt(undefined)).toBe("");
+    expect(formatNotificationContextForPrompt(null)).toBe("");
+  });
+
+  it("summarizes paid invoices and preserves their identifiers", () => {
+    const summary = buildBatchSummary(
+      "invoice_paid",
+      [
+        { invoiceId: "inv_1", invoiceNumber: "INV-001" },
+        { invoiceId: "inv_2", invoiceNumber: "INV-002" },
+      ],
+      { teamId: "team_1", userId: "user_1", provider: "telegram" },
+    );
+
+    expect(summary?.text).toContain("2 invoices were paid (INV-001, INV-002)");
+    expect(summary?.context.entityIds).toEqual(["inv_1", "inv_2"]);
+    expect(summary?.context.sourcePlatform).toBe("telegram");
+  });
+
+  it("summarizes overdue invoices", () => {
+    const summary = buildBatchSummary(
+      "invoice_overdue",
+      [{ invoiceId: "inv_1", invoiceNumber: "INV-003" }],
+      { teamId: "team_1", userId: "user_1", provider: "slack" },
+    );
+
+    expect(summary?.text).toContain("1 invoice is overdue");
+    expect(summary?.context.entityIds).toEqual(["inv_1"]);
+  });
+
+  it("summarizes upcoming recurring invoices", () => {
+    const summary = buildBatchSummary(
+      "recurring_invoice_upcoming",
+      [
+        { invoices: [{ recurringId: "rec_1", scheduledAt: "2026-11-01" }] },
+        { invoices: [{ recurringId: "rec_2", scheduledAt: "2026-11-02" }] },
+      ],
+      { teamId: "team_1", userId: "user_1", provider: "whatsapp" },
+    );
+
+    expect(summary?.text).toContain("2 recurring invoices are coming up");
+    expect(summary?.context.entityIds).toEqual(["rec_1", "rec_2"]);
+    expect(summary?.context.entityType).toBe("recurring_invoice");
+  });
+
+  it("does not notify about empty event batches", () => {
+    const params = {
+      teamId: "team_1",
+      userId: "user_1",
+      provider: "sendblue" as const,
+    };
+
+    expect(buildBatchSummary("transaction", [], params)).toBeNull();
+    expect(buildBatchSummary("invoice_paid", [], params)).toBeNull();
+    expect(buildBatchSummary("invoice_overdue", [], params)).toBeNull();
+    expect(
+      buildBatchSummary("recurring_invoice_upcoming", [], params),
+    ).toBeNull();
   });
 });
 
