@@ -43,6 +43,10 @@ import {
   users,
 } from "../schema";
 import { logActivity } from "../utils/log-activity";
+import {
+  assertTeamOwnership,
+  TenantResourceNotFoundError,
+} from "../utils/tenant-ownership";
 import { getExchangeRatesBatch } from "./exhange-rates";
 
 export type Template = {
@@ -813,47 +817,56 @@ export async function draftInvoice(
 
   const { paymentDetails: _, fromDetails: __, ...restTemplate } = template;
 
-  const [result] = await db
-    .insert(invoices)
-    .values({
-      id,
-      teamId,
-      userId,
-      token: useToken,
-      templateId,
-      ...restInput,
-      currency: template.currency?.toUpperCase(),
-      template: restTemplate,
-      paymentDetails: paymentDetails,
-      fromDetails: fromDetails,
-      customerDetails: customerDetails,
-      noteDetails: noteDetails,
-    })
-    .onConflictDoUpdate({
-      target: invoices.id,
-      set: {
+  return db.transaction(async (tx) => {
+    await assertTeamOwnership(tx, teamId, "customers", [restInput.customerId]);
+    await assertTeamOwnership(tx, teamId, "invoiceTemplates", [templateId]);
+
+    const [result] = await tx
+      .insert(invoices)
+      .values({
+        id,
         teamId,
         userId,
         token: useToken,
         templateId,
         ...restInput,
-        // Revert overdue to unpaid when due date is moved to the future
-        status: sql`CASE
-          WHEN ${invoices.status} = 'overdue' AND ${restInput.dueDate}::timestamp >= now()
-          THEN 'unpaid'
-          ELSE ${invoices.status}
-        END`,
         currency: template.currency?.toUpperCase(),
-        template: camelcaseKeys(restTemplate, { deep: true }),
+        template: restTemplate,
         paymentDetails: paymentDetails,
         fromDetails: fromDetails,
         customerDetails: customerDetails,
         noteDetails: noteDetails,
-      },
-    })
-    .returning();
+      })
+      .onConflictDoUpdate({
+        target: invoices.id,
+        setWhere: eq(invoices.teamId, teamId),
+        set: {
+          userId,
+          token: useToken,
+          templateId,
+          ...restInput,
+          // Revert overdue to unpaid when due date is moved to the future
+          status: sql`CASE
+          WHEN ${invoices.status} = 'overdue' AND ${restInput.dueDate}::timestamp >= now()
+          THEN 'unpaid'
+          ELSE ${invoices.status}
+        END`,
+          currency: template.currency?.toUpperCase(),
+          template: camelcaseKeys(restTemplate, { deep: true }),
+          paymentDetails: paymentDetails,
+          fromDetails: fromDetails,
+          customerDetails: customerDetails,
+          noteDetails: noteDetails,
+        },
+      })
+      .returning();
 
-  return result;
+    if (!result) {
+      throw new TenantResourceNotFoundError();
+    }
+
+    return result;
+  });
 }
 
 export type GetInvoiceSummaryParams = {

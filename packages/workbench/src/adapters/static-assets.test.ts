@@ -85,6 +85,12 @@ describe("static asset responses", () => {
     );
   });
 
+  it("returns not found for an overlong filename instead of a filesystem error", async () => {
+    const response = await app.request(`/assets/${"x".repeat(300)}.js`);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Not found");
+  });
+
   it.each([
     "missing.js",
     "directory",

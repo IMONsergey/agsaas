@@ -1,17 +1,30 @@
 import { verifyAccessToken } from "@api/utils/auth";
 import { expandScopes } from "@api/utils/scopes";
 import { isValidApiKeyFormat } from "@db/utils/api-keys";
-import { apiKeyCache } from "@midday/cache/api-key-cache";
-import { userCache } from "@midday/cache/user-cache";
+import type { Database, DatabaseWithPrimary } from "@midday/db/client";
 import {
   getApiKeyByToken,
   getUserById,
+  hasTeamAccess,
   updateApiKeyLastUsedAt,
   validateAccessToken,
 } from "@midday/db/queries";
 import { hash } from "@midday/encryption";
 import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
+
+async function requireTeamMembership(
+  db: Database,
+  teamId: string | null,
+  userId: string,
+) {
+  // A new user can access their own profile before choosing a team.
+  if (teamId !== null && !(await hasTeamAccess(db, teamId, userId))) {
+    throw new HTTPException(403, {
+      message: "No permission to access this team",
+    });
+  }
+}
 
 export const withAuth: MiddlewareHandler = async (c, next) => {
   const authHeader = c.req.header("Authorization");
@@ -30,17 +43,23 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
     throw new HTTPException(401, { message: "Token required" });
   }
 
-  const db = c.get("db");
+  const db = c.get("db") as DatabaseWithPrimary;
+  // Revocation, scope changes and membership removal must not be hidden by
+  // replica lag or stale cross-request caches. Keep downstream read routing.
+  const primaryOnly = db.usePrimaryOnly;
+  const authDb = primaryOnly ? primaryOnly.call(db) : db;
 
   // Handle Supabase JWT tokens (try to verify as JWT first)
   const supabaseSession = await verifyAccessToken(token);
   if (supabaseSession) {
     // Get user from database to get team info
-    const user = await getUserById(db, supabaseSession.user.id);
+    const user = await getUserById(authDb, supabaseSession.user.id);
 
     if (!user) {
       throw new HTTPException(401, { message: "User not found" });
     }
+
+    await requireTeamMembership(authDb, user.teamId, user.id);
 
     const session = {
       teamId: user.teamId,
@@ -62,7 +81,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
   // Handle OAuth access tokens (start with mid_access_token_)
   if (token.startsWith("mid_access_token_")) {
-    const tokenData = await validateAccessToken(db, token);
+    const tokenData = await validateAccessToken(authDb, token);
 
     if (!tokenData?.user) {
       throw new HTTPException(401, {
@@ -70,18 +89,13 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
       });
     }
 
-    let user = await userCache.get(tokenData.user.id);
-
-    if (!user) {
-      user = await getUserById(db, tokenData.user.id);
-      if (user) {
-        await userCache.set(tokenData.user.id, user);
-      }
-    }
+    const user = await getUserById(authDb, tokenData.user.id);
 
     if (!user) {
       throw new HTTPException(401, { message: "User not found" });
     }
+
+    await requireTeamMembership(authDb, tokenData.teamId, tokenData.user.id);
 
     const session = {
       teamId: tokenData.teamId,
@@ -113,37 +127,19 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
   const keyHash = hash(token);
 
-  // Check cache first for API key
-  let apiKey = await apiKeyCache.get(keyHash);
-
-  if (!apiKey) {
-    // If not in cache, query database
-    apiKey = await getApiKeyByToken(db, keyHash);
-    if (apiKey) {
-      // Store in cache for future requests
-      await apiKeyCache.set(keyHash, apiKey);
-    }
-  }
+  const apiKey = await getApiKeyByToken(authDb, keyHash);
 
   if (!apiKey) {
     throw new HTTPException(401, { message: "Invalid API key" });
   }
 
-  // Check cache first for user
-  let user = await userCache.get(apiKey.userId);
-
-  if (!user) {
-    // If not in cache, query database
-    user = await getUserById(db, apiKey.userId);
-    if (user) {
-      // Store in cache for future requests
-      await userCache.set(apiKey.userId, user);
-    }
-  }
+  const user = await getUserById(authDb, apiKey.userId);
 
   if (!user) {
     throw new HTTPException(401, { message: "User not found" });
   }
+
+  await requireTeamMembership(authDb, apiKey.teamId, user.id);
 
   const session = {
     teamId: apiKey.teamId,

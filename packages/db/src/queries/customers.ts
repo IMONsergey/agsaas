@@ -12,6 +12,10 @@ import {
   teams,
   trackerProjects,
 } from "../schema";
+import {
+  assertTeamOwnership,
+  TenantResourceNotFoundError,
+} from "../utils/tenant-ownership";
 import { createActivity } from "./activities";
 import { getExchangeRatesBatch } from "./exhange-rates";
 
@@ -355,162 +359,177 @@ export const upsertCustomer = async (
 
   const isNewCustomer = !id;
 
-  // Upsert customer
-  const [customer] = await db
-    .insert(customers)
-    .values({
-      id,
+  return db.transaction(async (tx) => {
+    await assertTeamOwnership(
+      tx,
       teamId,
-      ...rest,
-    })
-    .onConflictDoUpdate({
-      target: customers.id,
-      set: {
-        name: rest.name,
-        email: rest.email,
-        billingEmail: rest.billingEmail,
-        token,
-        country: rest.country,
-        addressLine1: rest.addressLine1,
-        addressLine2: rest.addressLine2,
-        city: rest.city,
-        state: rest.state,
-        zip: rest.zip,
-        note: rest.note,
-        website: rest.website,
-        phone: rest.phone,
-        contact: rest.contact,
-        vatNumber: rest.vatNumber,
-        countryCode: rest.countryCode,
-      },
-    })
-    .returning();
-
-  if (!customer) {
-    throw new Error("Failed to create or update customer");
-  }
-
-  const customerId = customer.id;
-
-  // Create activity for new customers only
-  if (isNewCustomer) {
-    createActivity(db, {
-      teamId,
-      userId,
-      type: "customer_created",
-      source: "user",
-      priority: 7,
-      metadata: {
-        customerId: customerId,
-        customerName: customer.name,
-        customerEmail: customer.email,
-        website: customer.website,
-        country: customer.country,
-        city: customer.city,
-      },
-    });
-  }
-
-  // Get current tags for the customer
-  const currentCustomerTags = await db
-    .select({
-      id: customerTags.id,
-      tagId: customerTags.tagId,
-      tag: {
-        id: tags.id,
-        name: tags.name,
-      },
-    })
-    .from(customerTags)
-    .where(eq(customerTags.customerId, customerId))
-    .leftJoin(tags, eq(tags.id, customerTags.tagId));
-
-  const currentTagIds = new Set(currentCustomerTags.map((ct) => ct.tagId));
-  const inputTagIds = new Set(inputTags?.map((t) => t.id) || []);
-
-  // Tags to insert (in input but not current)
-  const tagsToInsert =
-    inputTags?.filter((tag) => !currentTagIds.has(tag.id)) || [];
-
-  // Tags to delete (in current but not input)
-  const tagIdsToDelete = Array.from(currentTagIds).filter(
-    (tagId) => !inputTagIds.has(tagId),
-  );
-
-  // Insert new tag associations
-  if (tagsToInsert.length > 0) {
-    await db.insert(customerTags).values(
-      tagsToInsert.map((tag) => ({
-        customerId,
-        tagId: tag.id,
-        teamId,
-      })),
+      "tags",
+      inputTags?.map((tag) => tag.id) ?? [],
     );
-  }
 
-  // Delete removed tag associations
-  if (tagIdsToDelete.length > 0) {
-    await db
-      .delete(customerTags)
+    // Upsert customer
+    const [customer] = await tx
+      .insert(customers)
+      .values({
+        id,
+        teamId,
+        ...rest,
+      })
+      .onConflictDoUpdate({
+        target: customers.id,
+        setWhere: eq(customers.teamId, teamId),
+        set: {
+          name: rest.name,
+          email: rest.email,
+          billingEmail: rest.billingEmail,
+          token,
+          country: rest.country,
+          addressLine1: rest.addressLine1,
+          addressLine2: rest.addressLine2,
+          city: rest.city,
+          state: rest.state,
+          zip: rest.zip,
+          note: rest.note,
+          website: rest.website,
+          phone: rest.phone,
+          contact: rest.contact,
+          vatNumber: rest.vatNumber,
+          countryCode: rest.countryCode,
+        },
+      })
+      .returning();
+
+    if (!customer) {
+      throw new TenantResourceNotFoundError();
+    }
+
+    const customerId = customer.id;
+
+    // Create activity for new customers only
+    if (isNewCustomer) {
+      await createActivity(tx, {
+        teamId,
+        userId,
+        type: "customer_created",
+        source: "user",
+        priority: 7,
+        metadata: {
+          customerId: customerId,
+          customerName: customer.name,
+          customerEmail: customer.email,
+          website: customer.website,
+          country: customer.country,
+          city: customer.city,
+        },
+      });
+    }
+
+    // Get current tags for the customer
+    const currentCustomerTags = await tx
+      .select({
+        id: customerTags.id,
+        tagId: customerTags.tagId,
+        tag: {
+          id: tags.id,
+          name: tags.name,
+        },
+      })
+      .from(customerTags)
       .where(
         and(
           eq(customerTags.customerId, customerId),
-          inArray(customerTags.tagId, tagIdsToDelete),
+          eq(customerTags.teamId, teamId),
         ),
-      );
-  }
+      )
+      .leftJoin(tags, eq(tags.id, customerTags.tagId));
 
-  // Return the customer with updated tags
-  const [result] = await db
-    .select({
-      id: customers.id,
-      name: customers.name,
-      email: customers.email,
-      billingEmail: customers.billingEmail,
-      phone: customers.phone,
-      website: customers.website,
-      createdAt: customers.createdAt,
-      teamId: customers.teamId,
-      country: customers.country,
-      addressLine1: customers.addressLine1,
-      addressLine2: customers.addressLine2,
-      city: customers.city,
-      state: customers.state,
-      zip: customers.zip,
-      note: customers.note,
-      vatNumber: customers.vatNumber,
-      countryCode: customers.countryCode,
-      token: customers.token,
-      contact: customers.contact,
-      // Enrichment fields
-      logoUrl: customers.logoUrl,
-      description: customers.description,
-      industry: customers.industry,
-      companyType: customers.companyType,
-      employeeCount: customers.employeeCount,
-      foundedYear: customers.foundedYear,
-      estimatedRevenue: customers.estimatedRevenue,
-      fundingStage: customers.fundingStage,
-      totalFunding: customers.totalFunding,
-      headquartersLocation: customers.headquartersLocation,
-      timezone: customers.timezone,
-      linkedinUrl: customers.linkedinUrl,
-      twitterUrl: customers.twitterUrl,
-      instagramUrl: customers.instagramUrl,
-      facebookUrl: customers.facebookUrl,
-      ceoName: customers.ceoName,
-      financeContact: customers.financeContact,
-      financeContactEmail: customers.financeContactEmail,
-      primaryLanguage: customers.primaryLanguage,
-      fiscalYearEnd: customers.fiscalYearEnd,
-      enrichmentStatus: customers.enrichmentStatus,
-      enrichedAt: customers.enrichedAt,
-      // Portal fields
-      portalEnabled: customers.portalEnabled,
-      portalId: customers.portalId,
-      invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
-      projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
-      tags: sql<CustomerTag[]>`
+    const currentTagIds = new Set(currentCustomerTags.map((ct) => ct.tagId));
+    const inputTagIds = new Set(inputTags?.map((t) => t.id) || []);
+
+    // Tags to insert (in input but not current)
+    const tagsToInsert =
+      inputTags?.filter((tag) => !currentTagIds.has(tag.id)) || [];
+
+    // Tags to delete (in current but not input)
+    const tagIdsToDelete = Array.from(currentTagIds).filter(
+      (tagId) => !inputTagIds.has(tagId),
+    );
+
+    // Insert new tag associations
+    if (tagsToInsert.length > 0) {
+      await tx.insert(customerTags).values(
+        tagsToInsert.map((tag) => ({
+          customerId,
+          tagId: tag.id,
+          teamId,
+        })),
+      );
+    }
+
+    // Delete removed tag associations
+    if (tagIdsToDelete.length > 0) {
+      await tx
+        .delete(customerTags)
+        .where(
+          and(
+            eq(customerTags.customerId, customerId),
+            eq(customerTags.teamId, teamId),
+            inArray(customerTags.tagId, tagIdsToDelete),
+          ),
+        );
+    }
+
+    // Return the customer with updated tags
+    const [result] = await tx
+      .select({
+        id: customers.id,
+        name: customers.name,
+        email: customers.email,
+        billingEmail: customers.billingEmail,
+        phone: customers.phone,
+        website: customers.website,
+        createdAt: customers.createdAt,
+        teamId: customers.teamId,
+        country: customers.country,
+        addressLine1: customers.addressLine1,
+        addressLine2: customers.addressLine2,
+        city: customers.city,
+        state: customers.state,
+        zip: customers.zip,
+        note: customers.note,
+        vatNumber: customers.vatNumber,
+        countryCode: customers.countryCode,
+        token: customers.token,
+        contact: customers.contact,
+        // Enrichment fields
+        logoUrl: customers.logoUrl,
+        description: customers.description,
+        industry: customers.industry,
+        companyType: customers.companyType,
+        employeeCount: customers.employeeCount,
+        foundedYear: customers.foundedYear,
+        estimatedRevenue: customers.estimatedRevenue,
+        fundingStage: customers.fundingStage,
+        totalFunding: customers.totalFunding,
+        headquartersLocation: customers.headquartersLocation,
+        timezone: customers.timezone,
+        linkedinUrl: customers.linkedinUrl,
+        twitterUrl: customers.twitterUrl,
+        instagramUrl: customers.instagramUrl,
+        facebookUrl: customers.facebookUrl,
+        ceoName: customers.ceoName,
+        financeContact: customers.financeContact,
+        financeContactEmail: customers.financeContactEmail,
+        primaryLanguage: customers.primaryLanguage,
+        fiscalYearEnd: customers.fiscalYearEnd,
+        enrichmentStatus: customers.enrichmentStatus,
+        enrichedAt: customers.enrichedAt,
+        // Portal fields
+        portalEnabled: customers.portalEnabled,
+        portalId: customers.portalId,
+        invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
+        projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
+        tags: sql<CustomerTag[]>`
           coalesce(
             json_agg(
               distinct jsonb_build_object(
@@ -521,16 +540,17 @@ export const upsertCustomer = async (
             '[]'
           )
         `.as("tags"),
-    })
-    .from(customers)
-    .where(and(eq(customers.id, customerId), eq(customers.teamId, teamId)))
-    .leftJoin(invoices, eq(invoices.customerId, customers.id))
-    .leftJoin(trackerProjects, eq(trackerProjects.customerId, customers.id))
-    .leftJoin(customerTags, eq(customerTags.customerId, customers.id))
-    .leftJoin(tags, eq(tags.id, customerTags.tagId))
-    .groupBy(customers.id);
+      })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), eq(customers.teamId, teamId)))
+      .leftJoin(invoices, eq(invoices.customerId, customers.id))
+      .leftJoin(trackerProjects, eq(trackerProjects.customerId, customers.id))
+      .leftJoin(customerTags, eq(customerTags.customerId, customers.id))
+      .leftJoin(tags, eq(tags.id, customerTags.tagId))
+      .groupBy(customers.id);
 
-  return result;
+    return result;
+  });
 };
 
 export type DeleteCustomerParams = {

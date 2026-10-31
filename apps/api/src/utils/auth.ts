@@ -10,8 +10,8 @@ export type Session = {
 };
 
 type SupabaseJWTPayload = JWTPayload & {
+  email?: string;
   user_metadata?: {
-    email?: string;
     full_name?: string;
     [key: string]: string | undefined;
   };
@@ -34,7 +34,9 @@ function extractSession(payload: JWTPayload): Session {
   return {
     user: {
       id: p.sub!,
-      email: p.user_metadata?.email,
+      // User metadata is editable by the account holder. Only the auth
+      // service's top-level email claim can authorize email-bound invitations.
+      email: typeof p.email === "string" ? p.email : undefined,
       full_name: p.user_metadata?.full_name,
     },
   };

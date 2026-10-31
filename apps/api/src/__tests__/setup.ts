@@ -45,37 +45,40 @@ process.env.STRIPE_SECRET_KEY =
   process.env.STRIPE_SECRET_KEY || "sk_test_mock_secret";
 
 // Create a mock db object for tRPC tests that simulates Drizzle's query interface
-const createMockDb = () => ({
-  query: {
-    users: {
-      findFirst: mock(() =>
-        Promise.resolve({
-          id: "test-user-id",
-          teamId: "test-team-id" as string | null,
-          email: "test@example.com",
-          usersOnTeams: [{ id: "membership-1", teamId: "test-team-id" }],
-        }),
-      ),
-    },
-    invoices: {
-      findMany: mock(() => Promise.resolve([])),
-      findFirst: mock(() => Promise.resolve(null)),
-    },
-  },
-  // Used by invoice-recurring delete/pause (transaction + invoices.findMany)
-  transaction: mock(async (fn: (tx: any) => Promise<unknown>) =>
-    fn({
-      query: {
-        invoices: {
-          findMany: mock(() => Promise.resolve([])),
-        },
+const createMockDb = () => {
+  const database = {
+    query: {
+      users: {
+        findFirst: mock(() =>
+          Promise.resolve({
+            id: "test-user-id",
+            teamId: "test-team-id" as string | null,
+            email: "test@example.com",
+            usersOnTeams: [{ id: "membership-1", teamId: "test-team-id" }],
+          }),
+        ),
       },
-    }),
-  ),
-  // Add usePrimaryOnly for the withReplicas pattern
-  usePrimaryOnly: () => createMockDb(),
-  $primary: undefined,
-});
+      invoices: {
+        findMany: mock(() => Promise.resolve([])),
+        findFirst: mock(() => Promise.resolve(null)),
+      },
+    },
+    // Used by invoice-recurring delete/pause (transaction + invoices.findMany)
+    transaction: mock(async (fn: (tx: any) => Promise<unknown>) =>
+      fn({
+        query: {
+          invoices: {
+            findMany: mock(() => Promise.resolve([])),
+          },
+        },
+      }),
+    ),
+    $primary: undefined,
+  };
+
+  // Routing must preserve seeded query mocks, not create a new default user.
+  return Object.assign(database, { usePrimaryOnly: () => database });
+};
 
 export const mockDb = createMockDb();
 

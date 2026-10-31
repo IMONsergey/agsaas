@@ -71,6 +71,37 @@ No production migration is executed by this work.
   declared schema on fresh PostgreSQL. Bootstrap the required `pg_trgm`
   extension and synthetic `authenticated` role only in the isolated test setup.
 
+## Authorization and tenant-boundary pass
+
+- Derive invitation email identity from the verified JWT's top-level email,
+  never from user-editable profile metadata. Keep display-name metadata and
+  supported asymmetric/legacy HMAC authentication working.
+- Check current team membership on the primary database for REST JWT, OAuth,
+  and API-key access. Read API-key status/scopes and user state from the primary
+  instead of trusting stale authorization caches. Preserve onboarding without
+  an active team and valid tokens for a different team the user still belongs to.
+- Make the primary membership result authoritative for tRPC while retaining
+  request-local batched-call deduplication and downstream replica routing.
+- Scope invoice, customer, tracker-entry and API-key conflict/update branches
+  to the caller's team. Validate linked customers, templates, projects, assignees,
+  transactions and tags before mutations. Keep batch validation and dependent
+  writes in one transaction; use shared row locks to keep ownership stable until
+  commit. Token generation and external work stay outside those locks.
+- Restrict attachment deletion's inbox, matching, tax and accounting side
+  effects to the same team, including a regression for legacy inconsistent links.
+- Disable worker `/admin` and `/info` routes unless both board credentials are
+  configured. Protect both endpoints when enabled without restricting health
+  checks or background processing. Test the actual router inside the final
+  worker image with networking disabled.
+- Serve Workbench assets only by validated flat filenames; preserve normal
+  JavaScript, CSS and binary asset responses and missing-file behavior.
+
+Signed-token regressions use local cryptographic keys and the real verifier;
+authorization database responses are controlled fixtures. Query-boundary tests
+run separately against real disposable PostgreSQL with two synthetic teams.
+These are targeted code changes and regression checks, not a complete security
+audit or validation of a live auth/storage deployment.
+
 ## Local verification
 
 Run from the repository root with Bun 1.3.11:
@@ -85,7 +116,8 @@ bun run test:build
 
 The unit suite includes API contracts, accounting, banking, notification
 formatting, documents, encryption, import, inbox, insights, invoice calculations,
-health probes, queue behavior, and dashboard utilities. Database and Redis tests
+health probes, queue behavior, signed-token authorization, worker administration,
+static asset boundaries, and dashboard utilities. Database and Redis tests
 are skipped without their explicit isolated-service configuration; skipped tests
 are not evidence of integration correctness. Build-output tests run separately.
 
@@ -99,10 +131,17 @@ and pure tests does not establish production readiness.
 1. Review Midday sunset/billing code before enabling payment processing.
 2. Replace Supabase, hosted queues, payment, email, and banking dependencies
    with approved deployment/integration architecture.
-3. Verify real authentication, team isolation, database policies, storage, and
-   provider integrations; isolated calculation tests use synthetic auth stubs.
+3. Verify the intended auth deployment, database policies, storage, and provider
+   integrations. New tests cover selected application/query tenant boundaries,
+   not production RLS or all access paths; the isolated database setup uses
+   synthetic auth functions and test-only tracker metric placeholders.
 4. Capture responsive UI regression snapshots before changing components.
-5. Review team isolation, authorization, storage access and financial data flow.
+5. Complete the remaining storage/file-export review and audit existing data
+   for inconsistent cross-team links. Historical tracker project-to-customer
+   links can still affect relational tracker-entry reads and customer-tag
+   aggregates. Existing inverse inbox/attachment links also retain database FK
+   cascade behavior. Preventing new invalid mutations does not repair existing
+   records. The interrupted storage work is not part of this verified checkpoint.
 6. Complete Russian accounting, invoice and bank requirements separately from
    behavior-preserving refactoring.
 7. Replace upstream desktop endpoints before distributing a branded native app.

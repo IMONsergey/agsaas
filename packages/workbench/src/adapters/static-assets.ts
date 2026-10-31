@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Handler } from "hono";
 
@@ -29,7 +29,11 @@ export function createAssetHandler(assetsDirectory: string): Handler {
     const fileName = c.req.param("file") ?? "";
     const filePath = getAssetPath(assetsDirectory, fileName);
 
-    if (!filePath || !statSync(filePath, { throwIfNoEntry: false })?.isFile()) {
+    if (
+      !filePath ||
+      !existsSync(filePath) ||
+      !statSync(filePath, { throwIfNoEntry: false })?.isFile()
+    ) {
       return c.text("Not found", 404);
     }
 

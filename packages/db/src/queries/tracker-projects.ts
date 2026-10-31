@@ -9,6 +9,10 @@ import {
   trackerProjects,
   trackerProjectTags,
 } from "../schema";
+import {
+  assertTeamOwnership,
+  TenantResourceNotFoundError,
+} from "../utils/tenant-ownership";
 import { createActivity } from "./activities";
 
 export type GetTrackerProjectsParams = {
@@ -284,110 +288,126 @@ export async function upsertTrackerProject(
 ) {
   const { tags: projectTags, teamId, userId, ...projectData } = params;
 
-  // Upsert project using a valid insert type
-  const [result] = await db
-    .insert(trackerProjects)
-    .values({
-      ...projectData,
+  const projectId = await db.transaction(async (tx) => {
+    await assertTeamOwnership(tx, teamId, "customers", [
+      projectData.customerId,
+    ]);
+    await assertTeamOwnership(
+      tx,
       teamId,
-      rate: projectData.rate !== undefined ? projectData.rate : undefined,
-      estimate:
-        projectData.estimate !== undefined ? projectData.estimate : undefined,
-    })
-    .onConflictDoUpdate({
-      target: trackerProjects.id,
-      set: {
+      "tags",
+      projectTags?.map((tag) => tag.id) ?? [],
+    );
+
+    // Upsert project using a valid insert type
+    const [result] = await tx
+      .insert(trackerProjects)
+      .values({
         ...projectData,
         teamId,
         rate: projectData.rate !== undefined ? projectData.rate : undefined,
         estimate:
           projectData.estimate !== undefined ? projectData.estimate : undefined,
-      },
-      where: projectData.id
-        ? and(
-            eq(trackerProjects.id, projectData.id),
-            eq(trackerProjects.teamId, teamId),
-          )
-        : undefined,
-    })
-    .returning({
-      id: trackerProjects.id,
-    });
+      })
+      .onConflictDoUpdate({
+        target: trackerProjects.id,
+        set: {
+          ...projectData,
+          rate: projectData.rate !== undefined ? projectData.rate : undefined,
+          estimate:
+            projectData.estimate !== undefined
+              ? projectData.estimate
+              : undefined,
+        },
+        setWhere: eq(trackerProjects.teamId, teamId),
+      })
+      .returning({
+        id: trackerProjects.id,
+      });
 
-  if (!result) {
-    throw new Error("Failed to upsert tracker project");
-  }
-
-  const projectId = result.id;
-
-  // Create activity for new tracker projects (not updates)
-  // If no id was provided in params, this is a new project
-  if (!params.id) {
-    createActivity(db, {
-      teamId,
-      userId,
-      type: "tracker_project_created",
-      source: "user",
-      priority: 7,
-      metadata: {
-        projectId: projectId,
-        name: params.name,
-        description: params.description || null,
-        billable: params.billable || false,
-        rate: params.rate || null,
-        currency: params.currency || null,
-        customerId: params.customerId || null,
-        estimate: params.estimate || null,
-      },
-    });
-  }
-
-  // If we have tags to process
-  if (projectTags) {
-    // Get current tags for the project
-    const currentTags = await db
-      .select({ tagId: trackerProjectTags.tagId })
-      .from(trackerProjectTags)
-      .where(eq(trackerProjectTags.trackerProjectId, projectId));
-
-    const currentTagIds = new Set(currentTags.map((t) => t.tagId));
-    const inputTagIds = new Set(projectTags.map((t) => t.id));
-
-    // Tags to insert (in input but not current)
-    const tagsToInsert = projectTags.filter(
-      (tag) => !currentTagIds.has(tag.id),
-    );
-
-    // Tag IDs to delete (in current but not input)
-    const tagIdsToDelete = currentTags
-      .filter((tag) => !inputTagIds.has(tag.tagId))
-      .map((t) => t.tagId);
-
-    // Perform inserts
-    if (tagsToInsert.length > 0) {
-      await db.insert(trackerProjectTags).values(
-        tagsToInsert.map((tag) => ({
-          tagId: tag.id,
-          trackerProjectId: projectId,
-          teamId: params.teamId,
-        })),
-      );
+    if (!result) {
+      throw new TenantResourceNotFoundError();
     }
 
-    // Perform deletes
-    if (tagIdsToDelete.length > 0) {
-      await db
-        .delete(trackerProjectTags)
+    const projectId = result.id;
+
+    // Create activity for new tracker projects (not updates)
+    // If no id was provided in params, this is a new project
+    if (!params.id) {
+      await createActivity(tx, {
+        teamId,
+        userId,
+        type: "tracker_project_created",
+        source: "user",
+        priority: 7,
+        metadata: {
+          projectId: projectId,
+          name: params.name,
+          description: params.description || null,
+          billable: params.billable || false,
+          rate: params.rate || null,
+          currency: params.currency || null,
+          customerId: params.customerId || null,
+          estimate: params.estimate || null,
+        },
+      });
+    }
+
+    // If we have tags to process
+    if (projectTags) {
+      // Get current tags for the project
+      const currentTags = await tx
+        .select({ tagId: trackerProjectTags.tagId })
+        .from(trackerProjectTags)
         .where(
           and(
             eq(trackerProjectTags.trackerProjectId, projectId),
-            inArray(trackerProjectTags.tagId, tagIdsToDelete),
+            eq(trackerProjectTags.teamId, teamId),
           ),
         );
-    }
-  }
 
-  return getTrackerProjectById(db, {
+      const currentTagIds = new Set(currentTags.map((t) => t.tagId));
+      const inputTagIds = new Set(projectTags.map((t) => t.id));
+
+      // Tags to insert (in input but not current)
+      const tagsToInsert = projectTags.filter(
+        (tag) => !currentTagIds.has(tag.id),
+      );
+
+      // Tag IDs to delete (in current but not input)
+      const tagIdsToDelete = currentTags
+        .filter((tag) => !inputTagIds.has(tag.tagId))
+        .map((t) => t.tagId);
+
+      // Perform inserts
+      if (tagsToInsert.length > 0) {
+        await tx.insert(trackerProjectTags).values(
+          tagsToInsert.map((tag) => ({
+            tagId: tag.id,
+            trackerProjectId: projectId,
+            teamId: params.teamId,
+          })),
+        );
+      }
+
+      // Perform deletes
+      if (tagIdsToDelete.length > 0) {
+        await tx
+          .delete(trackerProjectTags)
+          .where(
+            and(
+              eq(trackerProjectTags.trackerProjectId, projectId),
+              eq(trackerProjectTags.teamId, teamId),
+              inArray(trackerProjectTags.tagId, tagIdsToDelete),
+            ),
+          );
+      }
+    }
+
+    return projectId;
+  });
+
+  return getTrackerProjectById(db.usePrimaryOnly(), {
     teamId,
     id: projectId,
   });
@@ -435,7 +455,13 @@ export async function getTrackerProjectById(
       },
     })
     .from(trackerProjects)
-    .leftJoin(customers, eq(trackerProjects.customerId, customers.id))
+    .leftJoin(
+      customers,
+      and(
+        eq(trackerProjects.customerId, customers.id),
+        eq(customers.teamId, teamId),
+      ),
+    )
     .leftJoin(teams, eq(trackerProjects.teamId, teams.id))
     .where(and(eq(trackerProjects.id, id), eq(trackerProjects.teamId, teamId)))
     .limit(1);
@@ -454,8 +480,16 @@ export async function getTrackerProjectById(
         tagName: tags.name,
       })
       .from(trackerProjectTags)
-      .leftJoin(tags, eq(trackerProjectTags.tagId, tags.id))
-      .where(eq(trackerProjectTags.trackerProjectId, id)),
+      .leftJoin(
+        tags,
+        and(eq(trackerProjectTags.tagId, tags.id), eq(tags.teamId, teamId)),
+      )
+      .where(
+        and(
+          eq(trackerProjectTags.trackerProjectId, id),
+          eq(trackerProjectTags.teamId, teamId),
+        ),
+      ),
     db.executeOnReplica(
       sql`SELECT get_assigned_users_for_project(tracker_projects) as users
           FROM tracker_projects

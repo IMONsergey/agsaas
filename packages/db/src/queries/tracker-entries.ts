@@ -6,8 +6,13 @@ import {
   startOfWeek,
 } from "date-fns";
 import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import { teams, trackerEntries, trackerProjects } from "../schema";
+import {
+  assertTeamMembers,
+  assertTeamOwnership,
+  TenantResourceNotFoundError,
+} from "../utils/tenant-ownership";
 import { createActivity } from "./activities";
 
 type GetTrackerRecordsByDateParams = {
@@ -201,96 +206,106 @@ export async function upsertTrackerEntries(
 ) {
   const { dates, id, teamId, ...rest } = params;
 
-  // Create entries for each date
-  const entries = dates.map((date) => ({
-    ...(id ? { id } : {}),
-    teamId,
-    date,
-    start: rest.start,
-    stop: rest.stop,
-    assignedId: rest.assignedId,
-    projectId: rest.projectId,
-    description: rest.description,
-    duration: rest.duration,
-  }));
+  return db.transaction(async (tx) => {
+    await assertTeamOwnership(tx, teamId, "trackerProjects", [rest.projectId]);
+    await assertTeamMembers(tx, teamId, [rest.assignedId]);
 
-  // Perform the upsert operation
-  const upsertResult = await db
-    .insert(trackerEntries)
-    .values(entries)
-    .onConflictDoUpdate({
-      target: [trackerEntries.id],
-      set: {
-        start: rest.start,
-        stop: rest.stop,
-        assignedId: rest.assignedId,
-        projectId: rest.projectId,
-        description: rest.description,
-        duration: rest.duration,
-      },
-    })
-    .returning({ id: trackerEntries.id });
+    // Create entries for each date
+    const entries = dates.map((date) => ({
+      ...(id ? { id } : {}),
+      teamId,
+      date,
+      start: rest.start,
+      stop: rest.stop,
+      assignedId: rest.assignedId,
+      projectId: rest.projectId,
+      description: rest.description,
+      duration: rest.duration,
+    }));
 
-  // Create activity for new tracker entries (not updates)
-  // If no id was provided in params, this is a new entry
-  if (!id && upsertResult.length > 0) {
-    // Create activity for each new entry
-    for (const entry of upsertResult) {
-      createActivity(db, {
-        teamId,
-        userId: rest.assignedId || undefined,
-        type: "tracker_entry_created",
-        source: "user",
-        priority: 7,
-        metadata: {
-          entryId: entry.id,
+    // Perform the upsert operation
+    const upsertResult = await tx
+      .insert(trackerEntries)
+      .values(entries)
+      .onConflictDoUpdate({
+        target: [trackerEntries.id],
+        setWhere: eq(trackerEntries.teamId, teamId),
+        set: {
+          start: rest.start,
+          stop: rest.stop,
+          assignedId: rest.assignedId,
           projectId: rest.projectId,
-          duration: rest.duration,
-          dates: dates,
           description: rest.description,
+          duration: rest.duration,
         },
-      });
+      })
+      .returning({ id: trackerEntries.id });
+
+    if (upsertResult.length !== entries.length) {
+      throw new TenantResourceNotFoundError();
     }
-  }
 
-  // Build where conditions
-  const whereConditions = [eq(trackerEntries.teamId, teamId)];
+    // Create activity for new tracker entries (not updates)
+    // If no id was provided in params, this is a new entry
+    if (!id && upsertResult.length > 0) {
+      // Create activity for each new entry
+      for (const entry of upsertResult) {
+        await createActivity(tx, {
+          teamId,
+          userId: rest.assignedId || undefined,
+          type: "tracker_entry_created",
+          source: "user",
+          priority: 7,
+          metadata: {
+            entryId: entry.id,
+            projectId: rest.projectId,
+            duration: rest.duration,
+            dates: dates,
+            description: rest.description,
+          },
+        });
+      }
+    }
 
-  if (id) {
-    whereConditions.push(eq(trackerEntries.id, id));
-  }
+    // Build where conditions
+    const whereConditions = [eq(trackerEntries.teamId, teamId)];
 
-  // Handle date filtering
-  if (dates.length > 0) {
-    whereConditions.push(inArray(trackerEntries.date, dates));
-  }
+    if (id) {
+      whereConditions.push(eq(trackerEntries.id, id));
+    }
 
-  // Fetch the updated entries with related data
-  const result = await db.query.trackerEntries.findMany({
-    where: and(...whereConditions),
-    with: {
-      user: {
-        columns: {
-          id: true,
-          fullName: true,
-          avatarUrl: true,
+    // Handle date filtering
+    if (dates.length > 0) {
+      whereConditions.push(inArray(trackerEntries.date, dates));
+    }
+
+    // Fetch the updated entries with related data
+    const result = await tx.query.trackerEntries.findMany({
+      where: and(...whereConditions),
+      with: {
+        user: {
+          columns: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
         },
-      },
-      trackerProject: {
-        with: {
-          customer: {
-            columns: {
-              id: true,
-              name: true,
-              website: true,
+        trackerProject: {
+          with: {
+            customer: {
+              columns: {
+                id: true,
+                name: true,
+                website: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    });
 
-  return result;
+    return result;
+  });
 }
 
 export type BulkCreateTrackerEntriesParams = {
@@ -330,46 +345,60 @@ export async function bulkCreateTrackerEntries(
     return [];
   }
 
-  // Insert all entries in a single database operation
-  const insertedEntries = await db
-    .insert(trackerEntries)
-    .values(flatEntries)
-    .returning({
-      id: trackerEntries.id,
-    });
+  return db.transaction(async (tx) => {
+    await assertTeamOwnership(
+      tx,
+      teamId,
+      "trackerProjects",
+      flatEntries.map((entry) => entry.projectId),
+    );
+    await assertTeamMembers(
+      tx,
+      teamId,
+      flatEntries.map((entry) => entry.assignedId),
+    );
 
-  // Get all inserted IDs
-  const insertedIds = insertedEntries.map((entry) => entry.id);
+    // Insert all entries in a single database operation
+    const insertedEntries = await tx
+      .insert(trackerEntries)
+      .values(flatEntries)
+      .returning({
+        id: trackerEntries.id,
+      });
 
-  // Fetch the complete entries with related data
-  const result = await db.query.trackerEntries.findMany({
-    where: and(
-      eq(trackerEntries.teamId, teamId),
-      inArray(trackerEntries.id, insertedIds),
-    ),
-    with: {
-      user: {
-        columns: {
-          id: true,
-          fullName: true,
-          avatarUrl: true,
+    // Get all inserted IDs
+    const insertedIds = insertedEntries.map((entry) => entry.id);
+
+    // Fetch the complete entries with related data
+    const result = await tx.query.trackerEntries.findMany({
+      where: and(
+        eq(trackerEntries.teamId, teamId),
+        inArray(trackerEntries.id, insertedIds),
+      ),
+      with: {
+        user: {
+          columns: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
         },
-      },
-      trackerProject: {
-        with: {
-          customer: {
-            columns: {
-              id: true,
-              name: true,
-              website: true,
+        trackerProject: {
+          with: {
+            customer: {
+              columns: {
+                id: true,
+                name: true,
+                website: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    });
 
-  return result;
+    return result;
+  });
 }
 
 export type DeleteTrackerEntryParams = {
@@ -425,68 +454,77 @@ export type GetTimerStatusParams = {
 export async function startTimer(db: Database, params: StartTimerParams) {
   const { teamId, projectId, assignedId, description, start } = params;
 
-  const startTime = start || new Date().toISOString();
-  const currentDate = new Date(startTime).toISOString().split("T")[0];
+  return db.transaction(async (tx) => {
+    // Check all links before stopping the user's current timer.
+    await assertTeamOwnership(tx, teamId, "trackerProjects", [projectId]);
+    await assertTeamMembers(tx, teamId, [assignedId]);
 
-  // First, stop any currently running timer for this user
-  if (assignedId) {
-    await stopCurrentRunningTimer(db, { teamId, assignedId });
-  }
+    const startTime = start || new Date().toISOString();
+    const currentDate = new Date(startTime).toISOString().split("T")[0];
 
-  // Create a new running entry
-  const [newEntry] = await db
-    .insert(trackerEntries)
-    .values({
-      teamId,
-      projectId,
-      assignedId,
-      description,
-      start: startTime,
-      stop: null,
-      duration: null, // null indicates running
-      date: currentDate,
-    })
-    .returning({ id: trackerEntries.id });
+    // First, stop any currently running timer for this user
+    if (assignedId) {
+      await stopCurrentRunningTimer(tx, { teamId, assignedId });
+    }
 
-  if (!newEntry) {
-    throw new Error("Failed to create timer entry");
-  }
+    // Create a new running entry
+    const [newEntry] = await tx
+      .insert(trackerEntries)
+      .values({
+        teamId,
+        projectId,
+        assignedId,
+        description,
+        start: startTime,
+        stop: null,
+        duration: null, // null indicates running
+        date: currentDate,
+      })
+      .returning({ id: trackerEntries.id });
 
-  const entryId = newEntry.id;
+    if (!newEntry) {
+      throw new Error("Failed to create timer entry");
+    }
 
-  // Fetch the complete entry with related data
-  const result = await db.query.trackerEntries.findFirst({
-    where: eq(trackerEntries.id, entryId),
-    with: {
-      user: {
-        columns: {
-          id: true,
-          fullName: true,
-          avatarUrl: true,
+    const entryId = newEntry.id;
+
+    // Fetch the complete entry with related data
+    const result = await tx.query.trackerEntries.findFirst({
+      where: and(
+        eq(trackerEntries.id, entryId),
+        eq(trackerEntries.teamId, teamId),
+      ),
+      with: {
+        user: {
+          columns: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
         },
-      },
-      trackerProject: {
-        with: {
-          customer: {
-            columns: {
-              id: true,
-              name: true,
-              website: true,
+        trackerProject: {
+          with: {
+            customer: {
+              columns: {
+                id: true,
+                name: true,
+                website: true,
+              },
             },
           },
         },
       },
-    },
+    });
+
+    if (!result) {
+      throw new Error("Failed to fetch created timer entry");
+    }
+
+    return {
+      ...result,
+      project: result.trackerProject,
+    };
   });
-
-  if (!result) {
-    throw new Error("Failed to fetch created timer entry");
-  }
-
-  return {
-    ...result,
-    project: result.trackerProject,
-  };
 }
 
 /**
@@ -724,7 +762,7 @@ export async function getTimerStatus(
  * Helper function to get the current running timer (internal use)
  */
 async function getCurrentRunningTimer(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: GetCurrentTimerParams,
 ) {
   const { teamId, assignedId } = params;
@@ -755,7 +793,7 @@ async function getCurrentRunningTimer(
  * Helper function to stop any currently running timer for a user
  */
 async function stopCurrentRunningTimer(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: { teamId: string; assignedId: string },
 ) {
   const runningTimer = await getCurrentRunningTimer(db, params);
@@ -772,7 +810,12 @@ async function stopCurrentRunningTimer(
         stop: stopTime,
         duration,
       })
-      .where(eq(trackerEntries.id, runningTimer.id));
+      .where(
+        and(
+          eq(trackerEntries.id, runningTimer.id),
+          eq(trackerEntries.teamId, params.teamId),
+        ),
+      );
   }
 }
 
