@@ -101,8 +101,8 @@ async function withIsolatedQueue(
   queue.on("error", captureConnectionError);
   events.on("error", captureConnectionError);
 
-  // QueueManager currently owns an internal FlowProducer without a public
-  // disposal API. Close its real connection explicitly in this test fixture.
+  // Observe the real internal connection for test diagnostics; disposal uses
+  // the public manager.close API below and never closes the caller's queue.
   const producer = (manager as unknown as { flowProducer: FlowProducer | null })
     .flowProducer;
   producer?.on("error", captureConnectionError);
@@ -149,9 +149,7 @@ async function withIsolatedQueue(
         cleanup(worker.close(true), "close test worker"),
       ),
       cleanup(events.close(), "close test events"),
-      ...(producer
-        ? [cleanup(producer.close(), "close test flow producer")]
-        : []),
+      cleanup(manager.close(), "close test manager flow producer"),
     ]);
     try {
       await cleanup(

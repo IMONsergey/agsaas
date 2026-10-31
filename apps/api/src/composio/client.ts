@@ -5,16 +5,43 @@ import { CURATED_TOOLKIT_SLUGS } from "@midday/connectors";
 import { logger } from "@midday/logger";
 import { LRUCache } from "lru-cache";
 
-export const composio = new Composio({
-  apiKey: process.env.COMPOSIO_API_KEY,
-  provider: new VercelProvider(),
-});
+function createComposioClient() {
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) {
+    throw new Error("COMPOSIO_API_KEY is required for connector operations");
+  }
+
+  return new Composio({ apiKey, provider: new VercelProvider() });
+}
+
+let client: ReturnType<typeof createComposioClient> | undefined;
+
+export function getComposio() {
+  client ??= createComposioClient();
+  return client;
+}
+
+// Preserve the existing call sites without constructing an optional SDK at
+// import time. Composio binds create() to its session router internally.
+export const composio = {
+  get create() {
+    return getComposio().create;
+  },
+  get connectedAccounts() {
+    return getComposio().connectedAccounts;
+  },
+};
 
 const COMPOSIO_API_BASE = "https://backend.composio.dev/api/v3";
 
 export async function composioFetch<T>(path: string): Promise<T> {
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) {
+    throw new Error("COMPOSIO_API_KEY is required for connector operations");
+  }
+
   const res = await fetch(`${COMPOSIO_API_BASE}${path}`, {
-    headers: { "x-api-key": process.env.COMPOSIO_API_KEY! },
+    headers: { "x-api-key": apiKey },
   });
   if (!res.ok) {
     throw new Error(`Composio API error: ${res.status}`);
@@ -49,6 +76,8 @@ function asToolkitItems(items: unknown[]): ToolkitItem[] {
 const TOOLKIT_CACHE_TTL = 120; // 2 min in seconds
 
 export async function getUserToolkits(userId: string): Promise<ToolkitItem[]> {
+  if (!process.env.COMPOSIO_API_KEY) return [];
+
   return connectorsCache.getOrSet<ToolkitItem[]>(
     `toolkits:${userId}`,
     TOOLKIT_CACHE_TTL,

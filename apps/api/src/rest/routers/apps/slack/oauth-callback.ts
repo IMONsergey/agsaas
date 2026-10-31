@@ -110,6 +110,11 @@ app.openapi(
     },
   }),
   async (c) => {
+    const slackAdapter = bot.getAdapter("slack");
+    if (!slackAdapter) {
+      throw new HTTPException(503, { message: "Slack is not configured" });
+    }
+
     const db = c.get("db");
     const query = c.req.valid("query");
     const { code, state } = query;
@@ -205,7 +210,6 @@ app.openapi(
       }
 
       await bot.initialize();
-      const slackAdapter = bot.getAdapter("slack");
       await slackAdapter.setInstallation(parsedJson.data.team.id, {
         botToken: parsedJson.data.access_token,
         botUserId: parsedJson.data.bot_user_id,

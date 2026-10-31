@@ -42,7 +42,7 @@ mock.module("toolpick", () => ({
   fileCache: () => ({}),
 }));
 
-const { createExecutionClient, ensureToolIndex } = await import(
+const { createExecutionClient, ensureToolIndex, warmToolIndex } = await import(
   "../../chat/tools"
 );
 
@@ -81,6 +81,20 @@ beforeEach(() => {
 });
 
 describe("chat MCP client lifecycle", () => {
+  test("does not pre-warm optional embeddings without an OpenAI key", () => {
+    const previous = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      warmToolIndex();
+      expect(connectMock).not.toHaveBeenCalled();
+      expect(createToolIndexMock).not.toHaveBeenCalled();
+      expect(warnMock).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previous;
+    }
+  });
+
   test("transfers a successfully connected execution client to the caller", async () => {
     expect(Object.is(await createExecutionClient(context), client)).toBe(true);
     expect(connectMock).toHaveBeenCalledTimes(1);

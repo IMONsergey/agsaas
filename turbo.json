@@ -9,6 +9,11 @@
     "build": {
       "inputs": ["$TURBO_DEFAULT$", ".env"],
       "dependsOn": ["^build"],
+      "env": [
+        "GIT_COMMIT_SHA",
+        "SENTRY_RELEASE",
+        "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"
+      ],
       "outputs": [
         ".next/**",
         "!.next/cache/**",
@@ -60,9 +65,7 @@
         "SENTRY_AUTH_TOKEN",
         "SENTRY_ORG",
         "SENTRY_PROJECT",
-        "SENTRY_RELEASE",
         "NEXT_PUBLIC_SENTRY_DSN",
-        "GIT_COMMIT_SHA",
         "NEXT_PUBLIC_WHATSAPP_NUMBER",
         "NEXT_PUBLIC_TELEGRAM_BOT_USERNAME",
         "NEXT_PUBLIC_SENDBLUE_NUMBER"

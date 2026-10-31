@@ -3,14 +3,15 @@ import "./instrument";
 
 import { trpcServer } from "@hono/trpc-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { bot } from "@midday/bot";
 import { closeSharedRedisClient } from "@midday/cache/shared-redis";
 import { closeDb, getPoolStats } from "@midday/db/client";
 import {
   buildDependenciesResponse,
-  buildReadinessResponse,
   checkDependencies,
 } from "@midday/health/checker";
 import { apiDependencies } from "@midday/health/probes";
+import { closeQueues } from "@midday/job-client";
 import { createLoggerWithContext, logger } from "@midday/logger";
 import { Scalar } from "@scalar/hono-api-reference";
 import * as Sentry from "@sentry/bun";
@@ -23,7 +24,9 @@ import { wellKnownRouter } from "./rest/routers/well-known";
 import type { Context } from "./rest/types";
 import { createTRPCContext } from "./trpc/init";
 import { appRouter } from "./trpc/routers/_app";
+import { createApiLifecycle } from "./utils/lifecycle";
 import { httpLogger } from "./utils/logger";
+import { getApiReadiness } from "./utils/readiness";
 import { getRequestTrace } from "./utils/request-trace";
 
 const app = new OpenAPIHono<Context>();
@@ -141,8 +144,10 @@ app.get("/health", (c) => {
 });
 
 app.get("/health/ready", async (c) => {
-  const results = await checkDependencies(apiDependencies(), 1);
-  const response = buildReadinessResponse(results);
+  const response = await getApiReadiness({
+    isShuttingDown: lifecycle.isShuttingDown,
+    check: () => checkDependencies(apiDependencies(), 1),
+  });
   return c.json(response, response.status === "ok" ? 200 : 503);
 });
 
@@ -370,47 +375,38 @@ app.onError((err, c) => {
   return c.json({ error: "Internal Server Error" }, 500);
 });
 
-/**
- * Graceful shutdown handlers
- * Close database connections cleanly on process termination (e.g. Railway deploys)
- */
-const shutdown = async (signal: string) => {
-  logger.info(`Received ${signal}, starting graceful shutdown...`);
+const lifecycle = createApiLifecycle({
+  stopHttp: (force) => server.stop(force),
+  timeoutMs: 12_000, // Fits within the deployment's 15s termination window.
+  logger,
+  cleanup: [
+    {
+      name: "pool stats",
+      close: () => {
+        if (poolStatsInterval) clearInterval(poolStatsInterval);
+      },
+    },
+    { name: "job queues", close: closeQueues },
+    { name: "database", close: closeDb },
+    { name: "Redis cache", close: closeSharedRedisClient },
+    { name: "bot", close: () => bot.shutdown() },
+    {
+      name: "Sentry",
+      close: async () => {
+        if (Sentry.getClient() && !(await Sentry.close(2000))) {
+          throw new Error("Sentry did not finish flushing before its timeout");
+        }
+      },
+    },
+  ],
+});
 
-  const SHUTDOWN_TIMEOUT = 12_000; // 12s — fits within Railway's 15s draining window
-
-  const shutdownPromise = (async () => {
-    try {
-      if (poolStatsInterval) {
-        clearInterval(poolStatsInterval);
-      }
-
-      logger.info("Closing database connections...");
-      await closeDb();
-
-      logger.info("Closing Redis connection...");
-      closeSharedRedisClient();
-
-      logger.info("Flushing Sentry events...");
-      await Sentry.close(2000);
-
-      logger.info("Graceful shutdown complete");
-    } catch (error) {
-      logger.error("Error during shutdown", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  })();
-
-  const timeoutPromise = new Promise<void>((resolve) => {
-    setTimeout(() => {
-      logger.warn("Shutdown timeout reached, forcing exit");
-      resolve();
-    }, SHUTDOWN_TIMEOUT);
-  });
-
-  await Promise.race([shutdownPromise, timeoutPromise]);
-  process.exit(0);
+let exitScheduled = false;
+const shutdown = (signal: string, requestedExitCode: 0 | 1 = 0) => {
+  const result = lifecycle.shutdown(signal, requestedExitCode);
+  if (exitScheduled) return;
+  exitScheduled = true;
+  void result.then(({ exitCode }) => process.exit(exitCode));
 };
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -420,33 +416,48 @@ process.on("SIGINT", () => shutdown("SIGINT"));
  * Unhandled exception and rejection handlers
  */
 process.on("uncaughtException", (err) => {
-  logger.error("Uncaught exception", { error: err.message, stack: err.stack });
-  Sentry.captureException(err, {
-    tags: { errorType: "uncaught_exception" },
-  });
+  try {
+    logger.error("Uncaught exception", {
+      error: err.message,
+      stack: err.stack,
+    });
+    Sentry.captureException(err, {
+      tags: { errorType: "uncaught_exception" },
+    });
+  } catch {
+    // An error reporter must not prevent termination of a failed process.
+  }
+  shutdown("uncaughtException", 1);
 });
 
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled rejection", {
-    reason: reason instanceof Error ? reason.message : String(reason),
-    stack: reason instanceof Error ? reason.stack : undefined,
-  });
-  Sentry.captureException(
-    reason instanceof Error ? reason : new Error(String(reason)),
-    {
-      tags: { errorType: "unhandled_rejection" },
-    },
-  );
+process.on("unhandledRejection", (reason) => {
+  try {
+    logger.error("Unhandled rejection", {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+    Sentry.captureException(
+      reason instanceof Error ? reason : new Error(String(reason)),
+      {
+        tags: { errorType: "unhandled_rejection" },
+      },
+    );
+  } catch {
+    // An error reporter must not prevent termination of a failed process.
+  }
+  shutdown("unhandledRejection", 1);
 });
 
 // Pre-warm the chat tool index in the background so the first request is fast.
 import { warmToolIndex } from "./chat/tools";
 
-warmToolIndex();
-
-export default {
+// Keep the HTTP handle so shutdown stops accepting traffic and drains requests
+// before closing the dependencies used by those requests.
+export const server = Bun.serve({
   port: process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 3000,
   fetch: app.fetch,
-  host: "0.0.0.0", // Listen on all interfaces
+  hostname: "0.0.0.0",
   idleTimeout: 60,
-};
+});
+
+warmToolIndex();

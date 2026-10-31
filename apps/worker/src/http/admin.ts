@@ -4,6 +4,7 @@ import { basicAuth } from "hono/basic-auth";
 import { workbench } from "workbench/hono";
 
 type AdminAuth = { username: string; password: string };
+export type WorkerAdminApp = Hono & { close(): Promise<void> };
 
 export function getWorkerAdminAuth(environment: {
   BOARD_USERNAME?: string;
@@ -26,8 +27,9 @@ export function createWorkerAdminApp({
 }: {
   queues: Queue[];
   auth?: AdminAuth;
-}): Hono {
-  const app = new Hono();
+}): WorkerAdminApp {
+  const closed = Promise.resolve();
+  const app = Object.assign(new Hono(), { close: () => closed });
   if (!auth?.username || !auth.password || queues.length === 0) {
     return app;
   }
@@ -38,15 +40,14 @@ export function createWorkerAdminApp({
       dashboardUrl: "/admin/queues",
     }),
   );
-  app.route(
-    "/admin",
-    workbench({
-      queues,
-      auth,
-      title: "Midday Jobs",
-      tags: ["teamId"],
-    }),
-  );
+  const dashboard = workbench({
+    queues,
+    auth,
+    title: "Midday Jobs",
+    tags: ["teamId"],
+  });
+  app.route("/admin", dashboard);
+  app.close = () => dashboard.close();
 
   return app;
 }

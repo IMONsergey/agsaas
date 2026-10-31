@@ -14,11 +14,12 @@ bun run lint
 bun run typecheck
 bun run test:unit
 bun run test:build
+bun run test:build-contract
 ```
 
-`typecheck` builds the Workbench library first and checks workspaces sequentially
+`typecheck` checks operational scripts, builds the Workbench library, and checks workspaces sequentially
 with a larger Node heap. `test:unit` runs package, database, health, API, dashboard,
-and worker suites in separate processes: Bun module mocks in some suites must not
+worker, and operational suites in separate processes: Bun module mocks in some suites must not
 leak into unrelated suites. Do not combine all tests into one process to save a
 few seconds.
 
@@ -26,7 +27,9 @@ The API's `test:auth` command also runs each auth suite in its own process, with
 no shared tRPC preload. Local signing keys exercise the real JWT verifier and
 invitation routes; primary/replica and stale-cache fixtures exercise revocation
 and membership behavior without a live auth service. `test:worker` builds the
-Workbench library before testing the real admin router with in-memory queues.
+Workbench library before testing the real admin router with in-memory queues,
+startup/readiness, deadline handling, and resource ownership. API startup suites
+also run separately so optional-provider mocks cannot mask actual import errors.
 
 Database and Redis integration tests skip when their explicit test URLs are
 absent. A passing run with skipped integration tests is not an integration pass.
@@ -37,6 +40,16 @@ responses; investigate failed assertions, not log severity alone.
 Workbench UI/library. It is not a full dashboard production build or a native
 desktop installer check. A successful desktop web bundle alone does not establish
 that the native application can be distributed.
+
+The separate dashboard container CI job performs a real Next production build,
+then starts the generated standalone server with external networking disabled.
+Its HTTP health/static-asset smoke is a packaging check, not an authenticated
+browser journey. `test:build-contract` checks Turbo's strict environment, dependency
+and output declarations, and verifies that release SHA, Sentry release, Server
+Actions encryption key, and public endpoint changes invalidate the build cache.
+The unchanged Hedvig Google Font loader still needs outbound font access during
+a clean production build. The packaged runtime smoke is network-isolated; the
+dependency/font download phase is not an offline-build guarantee.
 
 ## Isolated PostgreSQL and Redis tests
 
@@ -104,11 +117,57 @@ In production, build an image once with a real commit identifier and run the sam
 image across replicas. Unstamped builds may use a random build ID and are not a
 substitute for a reproducible release process.
 
+Dashboard builds additionally need the public application/API/Supabase URLs and
+publishable key for the intended deployment. `NEXT_PUBLIC_*` values are included
+in browser assets at build time: changing only runtime environment variables does
+not retarget an already built frontend. Never supply a server-side Supabase key
+as its publishable key. Use the same build-time
+`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` across replicas; it must be canonical base64
+of 32 random bytes. These output-affecting variables are hashed by Turbo, not
+merely passed through. Provider/server secrets are not required for the CI build.
+
 The root Docker ignore file excludes local credentials, environment files, and
 dependency/build output. Existing dashboard Sentry and Server Action build-time
 secret handling still needs deployment-specific review; the API/worker build
 jobs do not certify dashboard secret management. No image is pushed or deployed
 by these checks.
+
+## Isolated runtime checks
+
+Build images with the exact local test tags, then run the process checks:
+
+```sh
+docker build -f apps/api/Dockerfile -t agsaas-api:ci .
+docker build -f apps/worker/Dockerfile -t agsaas-worker:ci .
+bun run test:runtime api
+bun run test:runtime worker
+```
+
+Each invocation creates a uniquely named Compose project on an internal-only
+network, publishes no host ports, uses disposable PostgreSQL/Redis data, and
+removes only its own containers/network/volumes in `finally`. It does not install
+the application schema or read the service `.env` files. Database credentials
+and the server-key-shaped string in this fixture are test values, not credentials
+for any external account. Local test PostgreSQL uses explicit `sslmode=disable`;
+this is not a recommendation for an external production database.
+
+The final application image runs with `NODE_ENV=production`, real PostgreSQL and
+Redis connections, and **no optional provider credentials**. Checks include:
+
+- Actual HTTP liveness and readiness, including the expected core probe names.
+- API rejection of missing authorization and unavailable messaging integrations;
+  disabled worker administration.
+- Dependency-health failure/recovery after the normal 30-second probe cache TTL,
+  with liveness remaining independent of readiness.
+- SIGTERM to the real application process, bounded cleanup, and exit code zero
+  rather than a Docker timeout/SIGKILL.
+
+**The Supabase endpoint in this stack is only a health transport fixture.** It
+cannot authenticate users, issue tokens, enforce RLS, serve storage, or validate
+signup. Its name, source, and output deliberately identify this boundary.
+Worker queues are paused only in the disposable test Redis before startup:
+workers/connectivity/schedulers initialize, but cron processors do not call
+providers or query absent application tables. This is not job-processing E2E.
 
 ## Application configuration
 
@@ -122,10 +181,48 @@ Optional banking credentials are validated when that provider is selected. This
 does not make core database, authentication, storage, or queue configuration
 optional. Never add fake provider credentials merely to make imports succeed.
 
+The API now creates Resend and Composio clients only when used. Bot adapters are
+enabled only when their SDK-required credential group is complete; unavailable
+platform webhooks return 503 before initialization. Existing configured
+integrations retain their SDK behavior. Email/AI/connectors/messaging are still
+real features that require valid provider configuration when selected.
+In particular, existing account deletion still includes Resend contact cleanup,
+and email notification jobs still require Resend. Core startup success does not
+certify these feature flows without their configured providers.
+
+An offline diagnostic checks a service environment without printing its values
+or making network requests:
+
+```sh
+bun --env-file=apps/api/.env scripts/runtime-doctor.ts api
+bun --env-file=apps/worker/.env scripts/runtime-doctor.ts worker
+bun --env-file=apps/dashboard/.env scripts/runtime-doctor.ts dashboard
+```
+
+Exit codes are 0 for no configuration errors (warnings may remain), 1 for errors,
+and 2 for invalid CLI usage. This validates shape/completeness, not credentials,
+schema, TLS certificates, external connectivity, or production readiness.
+
+| Service | Core configuration |
+| --- | --- |
+| API | `DATABASE_PRIMARY_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `REDIS_URL`, `REDIS_QUEUE_URL`; set exact `ALLOWED_API_ORIGINS` for browser access |
+| Worker | `DATABASE_PRIMARY_POOLER_URL` (existing `DATABASE_PRIMARY_URL` fallback), `SUPABASE_URL` (existing `NEXT_PUBLIC_SUPABASE_URL` fallback), `SUPABASE_SECRET_KEY`, `REDIS_URL`, `REDIS_QUEUE_URL` |
+| Dashboard build | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_URL`; stable release/key configuration for replicas |
+
+BullMQ now respects the numeric database in `REDIS_QUEUE_URL` and decodes escaped
+credentials. Both producers and workers use the same parser; ordinary `redis://`
+and TLS `rediss://` are supported. Query strings/fragments and malformed database
+paths are rejected rather than silently selecting another connection. If an
+existing deployment put `/N` in its URL, earlier code incorrectly used database
+0: plan a drain/cutover of the old queues before upgrading. Do not silently leave
+pending jobs behind in database 0 or change only one side of the queue system.
+
 Worker administration requires **both** `BOARD_USERNAME` and `BOARD_PASSWORD`.
 Without either value, `/admin` and `/info` are absent (404); with both, they require
-HTTP Basic authentication. `/`, `/health`, `/health/ready` and job processing are
-unchanged. Use HTTPS and a restricted management network in a deployment; Basic
+HTTP Basic authentication. `/` and `/health` remain liveness routes. Readiness
+now stays false during startup until workers and schedulers initialize, and
+becomes false synchronously when shutdown begins. Use HTTPS and a restricted
+management network in a deployment; Basic
 authentication does not encrypt credentials in transit. Existing unauthenticated
 monitoring of `/info` must switch to the health endpoints or supply board auth.
 
@@ -140,6 +237,28 @@ Use service URLs and accounts owned by your deployment. This refactor does not
 provision a cloud Supabase project or connect live bank, payment, email, or AI
 accounts. The desktop app still contains upstream endpoints and must not be
 distributed as an independent product until they are reviewed and replaced.
+
+## Full self-hosted application bootstrap: unresolved prerequisites
+
+Use the [official self-hosting guide](https://supabase.com/docs/guides/self-hosting/docker)
+and its matched release snapshot when selecting a local Supabase deployment;
+do not mix arbitrary latest service images or replace cloud URLs with guessed
+keys. No cloud project is created by this refactor.
+
+The repository currently contains incremental SQL migrations beginning with
+`0001` (which alters an already existing enum), a Drizzle schema/snapshot, and
+isolated-test prerequisites. It does **not** contain a verified complete initial
+Supabase bootstrap. Authoritative implementations of referenced private auth
+and tracker functions, auth/onboarding triggers and deployment-specific policy
+setup must be restored/reconstructed and tested before a fresh product install
+can be claimed. Do not copy synthetic test auth or tracker functions into a real
+deployment, run `db push` blindly against customer data, or report the runtime
+smoke as a successful signup-to-invoice journey.
+
+The next functional gate is an approved bootstrap against a disposable real
+Supabase deployment, followed by actual registration, workspace membership,
+customer/invoice/tracker and restore tests. This work does not run migrations or
+repair data on a live system.
 
 ## Known functional boundaries
 

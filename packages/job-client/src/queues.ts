@@ -1,8 +1,8 @@
 import { createLoggerWithContext } from "@midday/logger";
 import type { QueueOptions } from "bullmq";
 import { Queue } from "bullmq";
-
-const queues: Map<string, Queue> = new Map();
+import { createQueueRegistry } from "./queue-registry";
+import { parseRedisQueueUrl } from "./redis-url";
 
 // Create logger for queue events
 const logger = createLoggerWithContext("job-client");
@@ -12,22 +12,13 @@ const logger = createLoggerWithContext("job-client");
  * BullMQ will create and manage its own Redis connection
  */
 function getConnectionOptions() {
-  const redisUrl = process.env.REDIS_QUEUE_URL;
-
-  if (!redisUrl) {
-    throw new Error("REDIS_QUEUE_URL environment variable is required");
-  }
-
-  const url = new URL(redisUrl);
+  const connection = parseRedisQueueUrl(process.env.REDIS_QUEUE_URL);
   const isProduction =
     process.env.NODE_ENV === "production" ||
     process.env.RAILWAY_ENVIRONMENT === "production";
 
   return {
-    host: url.hostname,
-    port: Number(url.port) || 6379,
-    password: url.password || undefined,
-    username: url.username || undefined,
+    ...connection,
     // BullMQ required settings
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
@@ -35,10 +26,6 @@ function getConnectionOptions() {
     family: 4,
     keepAlive: 30000,
     lazyConnect: false,
-    // TLS for production (rediss://)
-    ...(url.protocol === "rediss:" && {
-      tls: {},
-    }),
     // Production settings
     ...(isProduction && {
       connectTimeout: 15000,
@@ -51,11 +38,7 @@ function getConnectionOptions() {
 /**
  * Get or create a BullMQ Queue instance
  */
-export function getQueue(queueName: string): Queue {
-  if (queues.has(queueName)) {
-    return queues.get(queueName)!;
-  }
-
+function createQueue(queueName: string): Queue {
   const queueOptions: QueueOptions = {
     connection: getConnectionOptions(),
     defaultJobOptions: {
@@ -82,18 +65,22 @@ export function getQueue(queueName: string): Queue {
     logger.error("Queue error", { queueName, error: err.message });
   });
 
-  queues.set(queueName, queue);
   logger.info("Queue created", { queueName });
 
   return queue;
 }
 
+const registry = createQueueRegistry(createQueue);
+
+export const getQueue = registry.getQueue;
+
 /**
  * Get all registered queue names
  */
-export function getQueueNames(): string[] {
-  return Array.from(queues.keys());
-}
+export const getQueueNames = registry.getQueueNames;
+
+/** Close enqueueing connections once, after in-flight producers have drained. */
+export const closeQueues = registry.closeQueues;
 
 /**
  * Export connection options for use by workers

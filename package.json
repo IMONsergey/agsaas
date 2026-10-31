@@ -11,8 +11,8 @@
     "clean:workspaces": "turbo clean",
     "dev": "turbo dev --parallel",
     "test": "turbo test --parallel",
-    "test:unit": "bun run test:packages && bun run test:database-unit && bun run test:health && bun run test:api && bun run test:dashboard && bun run test:worker",
-    "test:packages": "bun test --exit packages/accounting/src packages/banking/src packages/bot/src packages/documents/src packages/encryption/src packages/import/src packages/inbox/src packages/insights/src packages/invoice/src packages/jobs/src packages/utils/src packages/workbench/src/core packages/workbench/src/adapters",
+    "test:unit": "bun run test:packages && bun run test:database-unit && bun run test:health && bun run test:api && bun run test:dashboard && bun run test:worker && bun run test:operations",
+    "test:packages": "bun test --exit packages/accounting/src packages/banking/src packages/bot/src packages/documents/src packages/encryption/src packages/import/src packages/inbox/src packages/insights/src packages/invoice/src packages/job-client/src packages/jobs/src packages/utils/src packages/workbench/src/core packages/workbench/src/adapters",
     "test:database-unit": "bun run --cwd packages/db test",
     "test:health": "bun test --exit packages/health/src",
     "test:api": "bun run --cwd apps/api test",
@@ -21,6 +21,10 @@
     "test:build": "bun run --cwd packages/mcp-apps build && bun run --cwd packages/mcp-apps test && bun run --cwd packages/workbench build",
     "test:db": "bun run --cwd packages/db test:e2e:setup && bun run --cwd packages/db test:e2e",
     "test:redis": "test -n \"$REDIS_TEST_URL\" && bun test --exit --timeout 30000 packages/workbench/src/core/integration/queue-manager.redis.test.ts",
+    "test:build-contract": "bun scripts/test-dashboard-build-contract.ts",
+    "doctor": "bun scripts/runtime-doctor.ts",
+    "test:operations": "bun test --exit scripts/runtime-doctor.test.ts scripts/runtime-smoke.test.ts scripts/test-dashboard-build-contract.test.ts scripts/smoke-dashboard.test.ts scripts/test-runtime-containers.test.ts",
+    "test:runtime": "bun scripts/test-runtime-containers.ts",
     "start:dashboard": "turbo start --filter=@midday/dashboard",
     "start:website": "turbo start --filter=@midday/website",
     "dev:api": "turbo dev --filter=@midday/api",
@@ -31,9 +35,9 @@
     "cli": "bun run packages/cli/bin/midday.ts",
     "jobs:dashboard": "turbo jobs --filter=@midday/jobs",
     "format": "biome format --write .",
-    "lint": "turbo lint",
+    "lint": "biome check scripts && turbo lint",
     "lint:fix": "turbo lint:fix",
-    "typecheck": "NODE_OPTIONS=--max-old-space-size=6144 tsc --project packages/workbench/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 turbo typecheck --concurrency=1"
+    "typecheck": "tsc --project scripts/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 tsc --project packages/workbench/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 turbo typecheck --concurrency=1"
   },
   "packageManager": "bun@1.3.11",
   "catalog": {

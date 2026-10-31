@@ -14,6 +14,8 @@ import { createAssetHandler } from "./static-assets";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UI_DIST_PATH = join(__dirname, "..", "ui");
 
+export type WorkbenchApp = Hono & { close(): Promise<void> };
+
 /**
  * Create a Workbench Hono app
  *
@@ -30,9 +32,9 @@ const UI_DIST_PATH = join(__dirname, "..", "ui");
  * }));
  * ```
  */
-export function workbench(options: WorkbenchOptions | Queue[]): Hono {
+export function workbench(options: WorkbenchOptions | Queue[]): WorkbenchApp {
   const core = new WorkbenchCore(options);
-  const app = new Hono();
+  const app = Object.assign(new Hono(), { close: () => core.close() });
 
   // Enable CORS for API requests
   app.use("/api/*", cors());

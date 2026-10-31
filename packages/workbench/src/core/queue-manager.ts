@@ -48,6 +48,7 @@ export class QueueManager {
   private queues: Map<string, Queue> = new Map();
   private tagFields: string[] = [];
   private flowProducer: FlowProducer | null = null;
+  private closing: Promise<void> | undefined;
 
   // LRU cache for expensive operations
   private cacheVersion = 0;
@@ -81,8 +82,27 @@ export class QueueManager {
           connection,
           prefix: firstQueue.opts.prefix,
         });
+        this.flowProducer.on("error", (error) => {
+          // Reconnectable Redis failures must not become unhandled process errors.
+          console.error(
+            "Workbench FlowProducer connection error",
+            error.message,
+          );
+        });
       }
     }
+  }
+
+  /** Release only the FlowProducer owned here; callers own the supplied queues. */
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    const producer = this.flowProducer;
+    this.flowProducer = null;
+    this.clearCache();
+    this.closing = Promise.resolve().then(async () => {
+      await producer?.close();
+    });
+    return this.closing;
   }
 
   /**

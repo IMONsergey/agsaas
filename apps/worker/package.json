@@ -6,7 +6,7 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --exit src/http",
+    "test": "bun test --exit src/http src/runtime",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },
@@ -18,6 +18,7 @@
     "@midday/app-store": "workspace:*",
     "@midday/banking": "workspace:*",
     "@midday/bot": "workspace:*",
+    "@midday/cache": "workspace:*",
     "@midday/customers": "workspace:*",
     "@midday/db": "workspace:*",
     "@midday/documents": "workspace:*",

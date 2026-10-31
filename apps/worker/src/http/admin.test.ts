@@ -28,6 +28,25 @@ const adminRequests = [
 ] as const;
 
 describe("worker administration configuration", () => {
+  it("disabled administration has an idempotent no-op close", async () => {
+    const app = createWorkerAdminApp({ queues: [] });
+    const first = app.close();
+    expect(app.close()).toBe(first);
+    await first;
+    expect((await app.request("/admin/config")).status).toBe(404);
+  });
+
+  it("enabled administration closes without owning its supplied queues", async () => {
+    const { queue } = makeQueue();
+    const close = mock(async () => {});
+    queue.close = close;
+    const app = createWorkerAdminApp({ queues: [queue], auth });
+    const first = app.close();
+    expect(app.close()).toBe(first);
+    await first;
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it.each([
     {},
     { BOARD_USERNAME: "local-admin" },

@@ -128,6 +128,9 @@ export function getSearchTool() {
  * times — subsequent calls are no-ops once the index is cached.
  */
 export function warmToolIndex(): void {
+  // Chat is optional; a core-only API should not attempt embedding requests.
+  if (!process.env.OPENAI_API_KEY) return;
+
   const stubCtx: McpContext = {
     db: {} as McpContext["db"],
     teamId: "warmup",

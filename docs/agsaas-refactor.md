@@ -105,6 +105,32 @@ run separately against real disposable PostgreSQL with two synthetic teams.
 These are targeted code changes and regression checks, not a complete security
 audit or validation of a live auth/storage deployment.
 
+## Runtime and standalone build pass
+
+- Defer optional Resend/Composio SDK construction; create only fully configured
+  messaging adapters and return an explicit unavailable response for disabled
+  webhooks. Preserve configured SDK behavior and avoid dummy provider keys.
+- Own the API HTTP server handle, drain requests before dependency cleanup,
+  make shutdown single-flight and bounded, and report cleanup/fatal failures
+  with a nonzero process status.
+- Model worker startup/readiness/draining explicitly; await workers and scheduler
+  registration, close queue/Redis/database resources and the Workbench-owned
+  FlowProducer, and prevent late startup completion from restoring readiness.
+- Share strict Redis URL parsing between queue producers and workers, including
+  selected database, escaped credentials and TLS. Document the database-0 cutover
+  needed if an older deployment relied on the previously ignored `/N` path.
+- Include release identifiers and the Server Actions encryption key in Turbo's
+  hashed strict build environment; keep dependency/output declarations intact.
+- Add a redacted offline configuration doctor, operational script tests, a real
+  dashboard standalone container build/smoke, and isolated backend process
+  startup/failure-recovery/SIGTERM checks on final images.
+
+The runtime stack uses real disposable PostgreSQL/Redis and an explicitly named
+Supabase **health-only** transport fixture. Worker cron queues are paused in that
+disposable database; auth/signup/RLS/storage and provider job processing are not
+claimed as tested. The missing complete initial Supabase bootstrap remains a
+functional gate, separate from the tested runtime lifecycle.
+
 ## Local verification
 
 Run from the repository root with Bun 1.3.11:
@@ -115,6 +141,7 @@ bun run lint
 bun run typecheck
 bun run test:unit
 bun run test:build
+bun run test:build-contract
 ```
 
 The unit suite includes API contracts, accounting, banking, notification
