@@ -156,12 +156,12 @@ export const customerResponseSchema = z.object({
   // Financial metrics (calculated from invoices, only returned in list queries)
   totalRevenue: z.number().optional().openapi({
     description:
-      "Total revenue from paid invoices for this customer (in invoice currency). Only returned in list queries.",
+      "Total revenue from paid invoices, converted to invoiceCurrency (normally the team's base currency). Only returned in list queries; omitted when required amounts, currencies, or exchange rates are unavailable.",
     example: 15000.5,
   }),
   outstandingAmount: z.number().optional().openapi({
     description:
-      "Total outstanding amount from unpaid/overdue invoices (in invoice currency). Only returned in list queries.",
+      "Total unpaid/overdue invoice amount, converted to invoiceCurrency (normally the team's base currency). Only returned in list queries; omitted when required amounts, currencies, or exchange rates are unavailable, independently of totalRevenue.",
     example: 2500.0,
   }),
   lastInvoiceDate: z.string().nullable().optional().openapi({
@@ -171,7 +171,7 @@ export const customerResponseSchema = z.object({
   }),
   invoiceCurrency: z.string().nullable().optional().openapi({
     description:
-      "Primary currency used in invoices for this customer. Only returned in list queries.",
+      "Reporting currency for the list's monetary totals: the team's valid base currency, otherwise the single known financial-invoice currency across the team. Null when unavailable or the customer has no invoices. Only returned in list queries.",
     example: "USD",
   }),
   tags: z

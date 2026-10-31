@@ -21,7 +21,7 @@
     "test:worker": "bun run --cwd packages/workbench build:lib && bun run --cwd apps/worker test",
     "test:build": "bun run --cwd packages/mcp-apps build && bun run --cwd packages/mcp-apps test && bun run --cwd packages/workbench build",
     "test:db": "bun run --cwd packages/db test:e2e:setup && bun run --cwd packages/db test:e2e",
-    "test:redis": "test -n \"$REDIS_TEST_URL\" && bun test --exit --timeout 30000 packages/workbench/src/core/integration/queue-manager.redis.test.ts",
+    "test:redis": "test -n \"$REDIS_TEST_URL\" && bun test --exit --timeout 30000 packages/workbench/src/core/integration/queue-manager.redis.test.ts && bun test --exit --timeout 30000 apps/worker/src/processors/base.redis.test.ts",
     "test:build-contract": "bun scripts/test-dashboard-build-contract.ts",
     "doctor": "bun scripts/runtime-doctor.ts",
     "test:operations": "bun test --exit scripts/runtime-doctor.test.ts scripts/runtime-smoke.test.ts scripts/test-dashboard-build-contract.test.ts scripts/smoke-dashboard.test.ts scripts/test-runtime-containers.test.ts scripts/prepare-self-hosted.test.ts scripts/self-hosted-db.test.ts scripts/self-hosted-smoke.test.ts deploy/self-hosted/config.test.ts",

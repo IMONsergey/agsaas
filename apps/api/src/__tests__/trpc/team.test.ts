@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { TeamMembershipError } from "@midday/db/errors";
 import { getTeamMembersByTeamId, getTeamsByUserId } from "@midday/db/queries";
 import { createCallerFactory } from "../../trpc/init";
 import { teamRouter } from "../../trpc/routers/team";
@@ -371,32 +372,23 @@ describe("tRPC: team.delete", () => {
     mocks.getBankConnections.mockReset();
     mocks.getBankConnections.mockImplementation(() => Promise.resolve([]));
     mocks.deleteTeam.mockReset();
-    mocks.deleteTeam.mockImplementation(() =>
-      Promise.resolve({
+    mocks.deleteTeam.mockImplementation(async (_db, _params, cleanup) => {
+      await cleanup({ teamId: deleteTeamId, connections: [] });
+      return {
         id: deleteTeamId,
         memberUserIds: ["test-user-id"],
-      }),
-    );
+      };
+    });
     mocks.triggerJob.mockReset();
     mocks.triggerJob.mockImplementation(() => ({ id: "job-del" }));
   });
 
-  test("deletes team after access checks and calls deleteTeam", async () => {
+  test("queues cleanup through the authorized database callback", async () => {
     const caller = createCaller(createTestContext());
     await caller.delete({ teamId: deleteTeamId });
 
-    expect(mocks.hasTeamAccess).toHaveBeenCalledWith(
-      expect.anything(),
-      deleteTeamId,
-      "test-user-id",
-    );
-    expect(mocks.getTeamById).toHaveBeenCalledWith(
-      expect.anything(),
-      deleteTeamId,
-    );
-    expect(mocks.getBankConnections).toHaveBeenCalledWith(expect.anything(), {
-      teamId: deleteTeamId,
-    });
+    expect(mocks.hasTeamAccess).not.toHaveBeenCalled();
+    expect(mocks.getBankConnections).not.toHaveBeenCalled();
     expect(mocks.triggerJob).toHaveBeenCalledWith(
       "delete-team",
       expect.objectContaining({
@@ -411,7 +403,27 @@ describe("tRPC: team.delete", () => {
         teamId: deleteTeamId,
         userId: "test-user-id",
       }),
+      expect.any(Function),
     );
+  });
+
+  test("does not queue cleanup if authoritative owner authorization fails", async () => {
+    mocks.deleteTeam.mockImplementation(async () => {
+      throw new TeamMembershipError("TEAM_OWNER_REQUIRED");
+    });
+    await expect(
+      createCaller(createTestContext()).delete({ teamId: deleteTeamId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+
+  test("propagates queue failure instead of reporting a completed deletion", async () => {
+    mocks.triggerJob.mockImplementation(async () => {
+      throw new Error("queue unavailable");
+    });
+    await expect(
+      createCaller(createTestContext()).delete({ teamId: deleteTeamId }),
+    ).rejects.toThrow("queue unavailable");
   });
 });
 
@@ -442,6 +454,7 @@ describe("tRPC: team.deleteMember", () => {
       expect.objectContaining({
         teamId: "test-team-id",
         userId: OTHER_USER_ID,
+        actorId: "test-user-id",
       }),
     );
   });
@@ -476,6 +489,7 @@ describe("tRPC: team.updateMember", () => {
         teamId: "test-team-id",
         userId: OTHER_USER_ID,
         role: "member",
+        actorId: "test-user-id",
       }),
     );
   });

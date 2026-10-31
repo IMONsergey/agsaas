@@ -26,6 +26,13 @@ import {
   users,
   usersOnTeam,
 } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireAnotherOwner,
+  requireTeamMember,
+  requireTeamOwner,
+} from "../utils/team-membership";
 
 export const hasTeamAccess = async (
   db: Database,
@@ -243,6 +250,7 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
 
   // Use transaction to ensure atomicity and prevent race conditions
   const teamId = await db.transaction(async (tx) => {
+    await lockUserMembership(tx, params.userId);
     try {
       // Create the team
       logger.info("Creating team record");
@@ -354,30 +362,27 @@ type LeaveTeamParams = {
 };
 
 export async function leaveTeam(db: Database, params: LeaveTeamParams) {
-  // First verify the user is actually a member of this team
-  const hasAccess = await hasTeamAccess(db, params.teamId, params.userId);
-  if (!hasAccess) {
-    throw new Error("User is not a member of this team");
-  }
+  return db.transaction(async (tx) => {
+    const members = await lockTeamMembership(tx, params.teamId);
+    requireTeamMember(members, params.userId);
+    requireAnotherOwner(members, params.userId);
 
-  // Set team_id to null for the user
-  await db
-    .update(users)
-    .set({ teamId: null })
-    .where(and(eq(users.id, params.userId), eq(users.teamId, params.teamId)));
+    await tx
+      .update(users)
+      .set({ teamId: null })
+      .where(and(eq(users.id, params.userId), eq(users.teamId, params.teamId)));
 
-  // Delete the user from users_on_team and return the deleted row
-  const [deleted] = await db
-    .delete(usersOnTeam)
-    .where(
-      and(
-        eq(usersOnTeam.teamId, params.teamId),
-        eq(usersOnTeam.userId, params.userId),
-      ),
-    )
-    .returning();
-
-  return deleted;
+    const [deleted] = await tx
+      .delete(usersOnTeam)
+      .where(
+        and(
+          eq(usersOnTeam.teamId, params.teamId),
+          eq(usersOnTeam.userId, params.userId),
+        ),
+      )
+      .returning();
+    return deleted;
+  });
 }
 
 type DeleteTeamParams = {
@@ -385,64 +390,83 @@ type DeleteTeamParams = {
   userId: string;
 };
 
-export async function deleteTeam(db: Database, params: DeleteTeamParams) {
-  // First verify the user is actually a member of this team
-  const hasAccess = await hasTeamAccess(db, params.teamId, params.userId);
-  if (!hasAccess) {
-    throw new Error("User is not a member of this team");
-  }
+type TeamCleanup = {
+  teamId: string;
+  connections: {
+    referenceId: string | null;
+    provider: "teller" | "plaid" | "gocardless" | "enablebanking" | null;
+    accessToken: string | null;
+  }[];
+};
 
-  // Get all team members BEFORE deleting (needed for cache invalidation)
-  const teamMembers = await db
-    .select({ userId: usersOnTeam.userId })
-    .from(usersOnTeam)
-    .where(eq(usersOnTeam.teamId, params.teamId));
+export async function deleteTeam(
+  db: Database,
+  params: DeleteTeamParams,
+  beforeDelete?: (cleanup: TeamCleanup) => Promise<void>,
+) {
+  return db.transaction(async (tx) => {
+    const members = await lockTeamMembership(tx, params.teamId);
+    requireTeamOwner(members, params.userId);
 
-  const [result] = await db
-    .delete(teams)
-    .where(eq(teams.id, params.teamId))
-    .returning({
-      id: teams.id,
-    });
+    if (beforeDelete) {
+      const connections = await tx
+        .select({
+          referenceId: bankConnections.referenceId,
+          provider: bankConnections.provider,
+          accessToken: bankConnections.accessToken,
+        })
+        .from(bankConnections)
+        .where(eq(bankConnections.teamId, params.teamId));
+      // Preserve enqueue-before-delete behavior, but keep role changes locked
+      // until authorization, enqueue and deletion have finished. This is NOT
+      // a transactional outbox: cross-system delivery remains a separate gate.
+      await beforeDelete({ teamId: params.teamId, connections });
+    }
 
-  if (!result) {
-    return null;
-  }
+    const [result] = await tx
+      .delete(teams)
+      .where(eq(teams.id, params.teamId))
+      .returning({ id: teams.id });
 
-  return {
-    ...result,
-    memberUserIds: teamMembers
-      .map((m) => m.userId)
-      .filter((id): id is string => id !== null),
-  };
+    if (!result) return null;
+    return {
+      ...result,
+      memberUserIds: [...new Set(members.map((member) => member.userId))],
+    };
+  });
 }
 
 type DeleteTeamMemberParams = {
   userId: string;
   teamId: string;
+  actorId: string;
 };
 
 export async function deleteTeamMember(
   db: Database,
   params: DeleteTeamMemberParams,
 ) {
-  // First verify the user is actually a member of this team
-  const hasAccess = await hasTeamAccess(db, params.teamId, params.userId);
-  if (!hasAccess) {
-    throw new Error("User is not a member of this team");
-  }
+  return db.transaction(async (tx) => {
+    const members = await lockTeamMembership(tx, params.teamId);
+    requireTeamOwner(members, params.actorId);
+    requireTeamMember(members, params.userId);
+    requireAnotherOwner(members, params.userId);
 
-  const [deleted] = await db
-    .delete(usersOnTeam)
-    .where(
-      and(
-        eq(usersOnTeam.userId, params.userId),
-        eq(usersOnTeam.teamId, params.teamId),
-      ),
-    )
-    .returning();
-
-  return deleted;
+    await tx
+      .update(users)
+      .set({ teamId: null })
+      .where(and(eq(users.id, params.userId), eq(users.teamId, params.teamId)));
+    const [deleted] = await tx
+      .delete(usersOnTeam)
+      .where(
+        and(
+          eq(usersOnTeam.userId, params.userId),
+          eq(usersOnTeam.teamId, params.teamId),
+        ),
+      )
+      .returning();
+    return deleted;
+  });
 }
 
 export async function getTeamMemberRole(
@@ -463,27 +487,29 @@ type UpdateTeamMemberParams = {
   userId: string;
   teamId: string;
   role: "owner" | "member";
+  actorId: string;
 };
 
 export async function updateTeamMember(
   db: Database,
   params: UpdateTeamMemberParams,
 ) {
-  const { userId, teamId, role } = params;
+  const { userId, teamId, role, actorId } = params;
+  return db.transaction(async (tx) => {
+    const members = await lockTeamMembership(tx, teamId);
+    requireTeamOwner(members, actorId);
+    requireTeamMember(members, userId);
+    if (role === "member") requireAnotherOwner(members, userId);
 
-  // First verify the user is actually a member of this team
-  const hasAccess = await hasTeamAccess(db, teamId, userId);
-  if (!hasAccess) {
-    throw new Error("User is not a member of this team");
-  }
-
-  const [updated] = await db
-    .update(usersOnTeam)
-    .set({ role })
-    .where(and(eq(usersOnTeam.userId, userId), eq(usersOnTeam.teamId, teamId)))
-    .returning();
-
-  return updated;
+    const [updated] = await tx
+      .update(usersOnTeam)
+      .set({ role })
+      .where(
+        and(eq(usersOnTeam.userId, userId), eq(usersOnTeam.teamId, teamId)),
+      )
+      .returning();
+    return updated;
+  });
 }
 
 type GetAvailablePlansResult = {

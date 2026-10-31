@@ -1,6 +1,13 @@
 import { and, eq, or, sql } from "drizzle-orm";
-import type { Database } from "../client";
+import { nanoid } from "nanoid";
+import type { Database, DatabaseOrTransaction } from "../client";
 import { teams, userInvites, users, usersOnTeam } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireTeamMember,
+  requireTeamOwner,
+} from "../utils/team-membership";
 
 export async function getUserInvites(db: Database, email: string) {
   return db.query.userInvites.findMany({
@@ -40,37 +47,50 @@ export async function acceptTeamInvite(
   db: Database,
   params: AcceptTeamInviteParams,
 ) {
-  const inviteData = await db.query.userInvites.findFirst({
-    where: and(eq(userInvites.id, params.id)),
-    columns: {
-      id: true,
-      role: true,
-      teamId: true,
-      email: true,
-    },
+  return db.transaction(async (tx) => {
+    await lockUserMembership(tx, params.userId);
+    const candidate = await tx.query.userInvites.findFirst({
+      where: eq(userInvites.id, params.id),
+      columns: { teamId: true },
+    });
+    if (!candidate?.teamId) throw new Error("Invite not found");
+
+    // Same lock order as create/remove/demote/delete: user guard, then team.
+    const members = await lockTeamMembership(tx, candidate.teamId);
+    const [inviteData] = await tx
+      .select({
+        id: userInvites.id,
+        role: userInvites.role,
+        teamId: userInvites.teamId,
+        email: userInvites.email,
+      })
+      .from(userInvites)
+      .where(
+        and(
+          eq(userInvites.id, params.id),
+          eq(userInvites.teamId, candidate.teamId),
+        ),
+      )
+      .for("update");
+    if (!inviteData) throw new Error("Invite not found");
+
+    const inviteEmail = inviteData.email?.trim().toLowerCase();
+    if (!inviteEmail || inviteEmail !== params.userEmail.trim().toLowerCase()) {
+      throw new Error("Invite was sent to a different email address");
+    }
+
+    // Concurrent acceptance cannot create a second membership. Existing
+    // memberships are not silently upgraded by an old pending invitation.
+    if (!members.some((member) => member.userId === params.userId)) {
+      await tx.insert(usersOnTeam).values({
+        userId: params.userId,
+        role: inviteData.role,
+        teamId: candidate.teamId,
+      });
+    }
+    await tx.delete(userInvites).where(eq(userInvites.id, inviteData.id));
+    return inviteData;
   });
-
-  if (!inviteData) {
-    throw new Error("Invite not found");
-  }
-
-  const inviteEmail = inviteData.email?.trim().toLowerCase();
-  const userEmail = params.userEmail.trim().toLowerCase();
-
-  if (!inviteEmail || inviteEmail !== userEmail) {
-    throw new Error("Invite was sent to a different email address");
-  }
-
-  await db.insert(usersOnTeam).values({
-    userId: params.userId,
-    role: inviteData.role,
-    teamId: inviteData.teamId!,
-  });
-
-  // Delete the invite
-  await db.delete(userInvites).where(eq(userInvites.id, inviteData.id));
-
-  return inviteData;
 }
 
 type DeclineTeamInviteParams = {
@@ -166,6 +186,7 @@ export async function deleteTeamInvite(
 
 type CreateTeamInvitesParams = {
   teamId: string;
+  actorId: string;
   invites: {
     email: string;
     role: "owner" | "member";
@@ -189,7 +210,7 @@ type InviteValidationResult = {
  * Validates invites by checking for existing team members, pending invites, and duplicates
  */
 async function validateInvites(
-  db: Database,
+  db: DatabaseOrTransaction,
   teamId: string,
   invites: {
     email: string;
@@ -279,68 +300,83 @@ export async function createTeamInvites(
   db: Database,
   params: CreateTeamInvitesParams,
 ) {
-  const { teamId, invites } = params;
+  const { teamId, actorId } = params;
+  const invites = params.invites.map((invite) => ({
+    ...invite,
+    email: invite.email.trim().toLowerCase(),
+    invitedBy: actorId,
+  }));
 
-  // Validate invites and filter out invalid ones
-  const { validInvites, skippedInvites } = await validateInvites(
-    db,
-    teamId,
-    invites,
-  );
+  return db.transaction(async (db) => {
+    const members = await lockTeamMembership(db, teamId);
+    requireTeamMember(members, actorId);
+    // Validate the entire batch before inserting even the first member invite.
+    if (invites.some((invite) => invite.role === "owner")) {
+      requireTeamOwner(members, actorId);
+    }
 
-  // If no valid invites, return empty results with skipped info
-  if (validInvites.length === 0) {
-    return {
-      results: [],
-      skippedInvites,
-    };
-  }
+    // Validate invites and filter out invalid ones
+    const { validInvites, skippedInvites } = await validateInvites(
+      db,
+      teamId,
+      invites,
+    );
 
-  const results = await Promise.all(
-    validInvites.map(async (invite) => {
-      // Insert new invite with conflict handling to prevent race conditions
-      const [row] = await db
-        .insert(userInvites)
-        .values({
-          email: invite.email,
-          role: invite.role,
-          invitedBy: invite.invitedBy,
-          teamId: teamId,
-        })
-        .onConflictDoNothing({
-          target: [userInvites.teamId, userInvites.email],
-        })
-        .returning({
-          id: userInvites.id,
-          email: userInvites.email,
-          code: userInvites.code,
-          role: userInvites.role,
-          invitedBy: userInvites.invitedBy,
-          teamId: userInvites.teamId,
+    // If no valid invites, return empty results with skipped info
+    if (validInvites.length === 0) {
+      return {
+        results: [],
+        skippedInvites,
+      };
+    }
+
+    const results = await Promise.all(
+      validInvites.map(async (invite) => {
+        // Insert new invite with conflict handling to prevent race conditions
+        const [row] = await db
+          .insert(userInvites)
+          .values({
+            email: invite.email,
+            code: nanoid(24),
+            role: invite.role,
+            invitedBy: invite.invitedBy,
+            teamId: teamId,
+          })
+          .onConflictDoNothing({
+            target: [userInvites.teamId, userInvites.email],
+          })
+          .returning({
+            id: userInvites.id,
+            email: userInvites.email,
+            code: userInvites.code,
+            role: userInvites.role,
+            invitedBy: userInvites.invitedBy,
+            teamId: userInvites.teamId,
+          });
+
+        if (!row) return null;
+
+        // Fetch team
+        const team = await db.query.teams.findFirst({
+          where: eq(teams.id, teamId),
+          columns: {
+            id: true,
+            name: true,
+          },
         });
 
-      if (!row) return null;
+        return {
+          email: row.email,
+          code: row.code,
+          role: row.role,
+          team,
+        };
+      }),
+    );
 
-      // Fetch team
-      const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
-        columns: {
-          id: true,
-          name: true,
-        },
-      });
-
-      return {
-        email: row.email,
-        code: row.code,
-        role: row.role,
-        team,
-      };
-    }),
-  );
-
-  return {
-    results: results.filter(Boolean),
-    skippedInvites,
-  };
+    return {
+      results: results.filter(Boolean),
+      skippedInvites,
+    };
+  });
 }

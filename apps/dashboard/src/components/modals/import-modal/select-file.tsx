@@ -1,11 +1,10 @@
 import { cn } from "@midday/ui/cn";
 import { Spinner } from "@midday/ui/spinner";
-import Papa from "papaparse";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Dropzone, { type FileRejection } from "react-dropzone";
 import { Controller } from "react-hook-form";
 import { useCsvContext } from "./context";
-import { readLines } from "./utils";
+import { parseCsvPreview, readLines } from "./utils";
 
 export function SelectFile() {
   const { watch, control, setFileColumns, setFirstRows } = useCsvContext();
@@ -37,31 +36,17 @@ export function SelectFile() {
 
       readLines(fileToProcess, 4)
         .then((lines) => {
-          const { data, meta } = Papa.parse(lines, {
-            worker: false,
-            skipEmptyLines: true,
-            header: true,
-          });
-
-          if (!data || data.length < 2) {
-            setError("CSV file must have at least 2 rows.");
+          const preview = parseCsvPreview(lines);
+          if (!preview.success) {
+            setError(preview.message);
             setFileColumns(null);
             setFirstRows(null);
             setIsLoading(false);
             return;
           }
 
-          if (!meta?.fields || meta.fields.length <= 1) {
-            setError("Failed to retrieve CSV column data.");
-            setFileColumns(null);
-            setFirstRows(null);
-            setIsLoading(false);
-            return;
-          }
-
-          setFileColumns(meta.fields);
-          // @ts-expect-error
-          setFirstRows(data);
+          setFileColumns(preview.fields);
+          setFirstRows(preview.data);
           setIsLoading(false);
           processingRef.current = null;
         })

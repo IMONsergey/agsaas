@@ -1,6 +1,13 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { teams, users, usersOnTeam } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireAnotherOwner,
+  requireTeamMember,
+  requireTeamOwner,
+} from "../utils/team-membership";
 
 export const getUserById = async (db: Database, id: string) => {
   const [result] = await db
@@ -16,6 +23,7 @@ export const getUserById = async (db: Database, id: string) => {
       timezone: users.timezone,
       timezoneAutoSync: users.timezoneAutoSync,
       teamId: users.teamId,
+      deletionStartedAt: users.deletionStartedAt,
       team: {
         id: teams.id,
         name: teams.name,
@@ -84,33 +92,28 @@ export const switchUserTeam = async (
 ) => {
   const { userId, teamId } = params;
 
-  // Get the user's current teamId so we can invalidate its cache entry
-  const currentUser = await db.query.users.findFirst({
-    columns: { teamId: true },
-    where: eq(users.id, userId),
-  });
+  return db.transaction(async (db) => {
+    await lockUserMembership(db, userId);
+    const members = await lockTeamMembership(db, teamId);
+    requireTeamMember(members, userId);
 
-  // Verify the user is a member of the target team
-  const [membership] = await db
-    .select({ id: usersOnTeam.id })
-    .from(usersOnTeam)
-    .where(and(eq(usersOnTeam.userId, userId), eq(usersOnTeam.teamId, teamId)))
-    .limit(1);
-
-  if (!membership) {
-    throw new Error("User is not a member of the target team");
-  }
-
-  const [result] = await db
-    .update(users)
-    .set({ teamId })
-    .where(eq(users.id, userId))
-    .returning({
-      id: users.id,
-      teamId: users.teamId,
+    // Get the user's current teamId so we can invalidate its cache entry
+    const currentUser = await db.query.users.findFirst({
+      columns: { teamId: true },
+      where: eq(users.id, userId),
     });
 
-  return { ...result, previousTeamId: currentUser?.teamId ?? null };
+    const [result] = await db
+      .update(users)
+      .set({ teamId })
+      .where(eq(users.id, userId))
+      .returning({
+        id: users.id,
+        teamId: users.teamId,
+      });
+
+    return { ...result, previousTeamId: currentUser?.teamId ?? null };
+  });
 };
 
 export const getUserTeamId = async (db: Database, userId: string) => {
@@ -122,30 +125,63 @@ export const getUserTeamId = async (db: Database, userId: string) => {
   return result?.teamId || null;
 };
 
-export const deleteUser = async (db: Database, id: string) => {
-  // Find teams where this user is a member
-  const teamsWithUser = await db
-    .select({
-      teamId: usersOnTeam.teamId,
-      memberCount: sql<number>`count(${usersOnTeam.userId})`.as("member_count"),
-    })
-    .from(usersOnTeam)
-    .where(eq(usersOnTeam.userId, id))
-    .groupBy(usersOnTeam.teamId);
+/**
+ * Retryable account deletion, not a distributed transaction with Auth.
+ * Local preparation and a durable deletion marker commit first. A definite
+ * Auth rejection leaves a profile for retry; an ambiguous transport failure
+ * must never reopen membership acquisition. Auth is bounded by the API caller.
+ */
+export const deleteUser = async (
+  db: Database,
+  id: string,
+  deleteAuthUser: () => Promise<void>,
+) => {
+  await db.transaction(async (tx) => {
+    await lockUserMembership(tx, id, { allowPendingDeletion: true });
+    const memberships = await tx
+      .select({ teamId: usersOnTeam.teamId })
+      .from(usersOnTeam)
+      .where(eq(usersOnTeam.userId, id));
+    const teamIds = [...new Set(memberships.map((row) => row.teamId))].sort();
+    const soloTeams: string[] = [];
 
-  // Extract team IDs with only one member (this user)
-  const teamIdsToDelete = teamsWithUser
-    .filter((team) => team.memberCount === 1)
-    .map((team) => team.teamId);
+    // Lock in a stable order and validate ALL teams before changing anything.
+    for (const teamId of teamIds) {
+      const [team] = await tx
+        .select({ id: teams.id })
+        .from(teams)
+        .where(eq(teams.id, teamId))
+        .for("update");
+      // Another authorized deletion may have completed before our lock.
+      if (!team) continue;
+      const members = await lockTeamMembership(tx, teamId);
+      if (!members.some((member) => member.userId === id)) continue;
+      if (new Set(members.map((member) => member.userId)).size === 1) {
+        requireTeamOwner(members, id);
+        soloTeams.push(teamId);
+      } else {
+        requireAnotherOwner(members, id);
+      }
+    }
 
-  // Delete the user and teams with only this user as a member
-  // Foreign key constraints with cascade delete will handle related records
-  await Promise.all([
-    db.delete(users).where(eq(users.id, id)),
-    teamIdsToDelete.length > 0
-      ? db.delete(teams).where(inArray(teams.id, teamIdsToDelete))
-      : Promise.resolve(),
-  ]);
+    for (const teamId of soloTeams) {
+      await tx.delete(teams).where(eq(teams.id, teamId));
+    }
+    await tx.delete(usersOnTeam).where(eq(usersOnTeam.userId, id));
+    await tx
+      .update(users)
+      .set({
+        teamId: null,
+        deletionStartedAt: sql`COALESCE(${users.deletionStartedAt}, CURRENT_TIMESTAMP)`,
+      })
+      .where(eq(users.id, id));
+  });
 
+  // No DB connection or row/advisory lock is held across Auth. Preparation
+  // stays committed on failure; retry cannot restore membership accidentally.
+  await deleteAuthUser();
+  // Auth cascades the profile on the matched Supabase stack. This idempotent
+  // cleanup also supports older deployments without that foreign key.
+  await db.delete(users).where(eq(users.id, id));
   return { id };
 };

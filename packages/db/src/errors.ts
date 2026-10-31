@@ -60,3 +60,23 @@ export class PlatformIdentityAlreadyLinkedToAnotherTeamError extends Error {
     this.name = "PlatformIdentityAlreadyLinkedToAnotherTeamError";
   }
 }
+export class TeamMembershipError extends Error {
+  constructor(
+    public readonly code:
+      | "TEAM_ACCESS_DENIED"
+      | "TEAM_OWNER_REQUIRED"
+      | "LAST_TEAM_OWNER"
+      | "ACCOUNT_DELETION_PENDING",
+  ) {
+    super(
+      code === "ACCOUNT_DELETION_PENDING"
+        ? "Account deletion is pending. Retry deletion before joining or creating a team"
+        : code === "LAST_TEAM_OWNER"
+          ? "Transfer ownership before leaving or removing the last team owner"
+          : code === "TEAM_OWNER_REQUIRED"
+            ? "Only team owners can perform this action"
+            : "You do not have access to this team",
+    );
+    this.name = "TeamMembershipError";
+  }
+}

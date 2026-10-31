@@ -193,7 +193,7 @@ export abstract class BaseProcessor<TData = unknown> {
             jobName: job.name,
             errorCategory: classified.category,
             retryable: String(shouldRetry),
-            finalAttempt: String(remainingAttempts <= 0),
+            finalAttempt: String(!shouldRetry || remainingAttempts <= 0),
           },
           extra: {
             jobId: job.id,
@@ -206,40 +206,18 @@ export abstract class BaseProcessor<TData = unknown> {
         });
       }
 
-      // For non-retryable errors, remove the job from retry queue
-      // This prevents unnecessary retries and reduces Redis storage
-      if (isNonRetryable && remainingAttempts > 0) {
-        try {
-          // Move the job to failed state immediately
-          // BullMQ will handle this, but we log it for visibility
-          this.logger.info(
-            "Marking job as non-retryable, skipping remaining attempts",
-            {
-              jobId: job.id,
-              jobName: job.name,
-              category: classified.category,
-            },
-          );
-        } catch (removeError) {
-          this.logger.warn("Failed to remove non-retryable job from queue", {
-            jobId: job.id,
-            error:
-              removeError instanceof Error
-                ? removeError.message
-                : "Unknown error",
-          });
-        }
-      }
-
-      // Wrap non-retryable errors in NonRetryableError if not already wrapped
-      // This helps BullMQ and monitoring systems identify non-retryable failures
-      if (!shouldRetry && !isNonRetryable) {
-        const wrappedError = new NonRetryableError(
-          errorMessage,
-          error,
-          classified.category,
-        );
-        throw wrappedError;
+      if (!shouldRetry) {
+        this.logger.info("Failing job without further automatic retries", {
+          jobId: job.id,
+          jobName: job.name,
+          category: classified.category,
+        });
+        // Preserve existing permanent errors (including their subclass metadata).
+        // Wrap classified permanent errors in an actual BullMQ UnrecoverableError
+        // subclass instead of merely logging that retries have been disabled.
+        throw isNonRetryable
+          ? error
+          : new NonRetryableError(errorMessage, error, classified.category);
       }
 
       // Re-throw original error for retryable cases

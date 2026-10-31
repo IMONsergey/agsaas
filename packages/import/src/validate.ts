@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Transaction } from "./types";
+import { isValidTransactionAmount } from "./amount-precision";
 
 export const createTransactionSchema = z.object({
   name: z.string(),
@@ -11,14 +11,18 @@ export const createTransactionSchema = z.object({
   status: z.enum(["posted", "pending"]),
   method: z.enum(["card", "bank", "other"]),
   date: z.string().date(),
-  amount: z.number().refine((n) => !Number.isNaN(n), {
-    message: "Amount is required and must be a valid number",
-  }),
+  amount: z
+    .number()
+    .finite()
+    .refine((value) => isValidTransactionAmount(value), {
+      message:
+        "Amount must fit numeric(10,2) without rounding (up to 99999999.99 and two decimal places)",
+    }),
   manual: z.boolean(),
   category_slug: z.string().nullable(),
 });
 
-export const validateTransactions = (transactions: Transaction[]) => {
+export const validateTransactions = (transactions: unknown[]) => {
   const processedTransactions = transactions.map((transaction) =>
     createTransactionSchema.safeParse(transaction),
   );

@@ -15,10 +15,34 @@ export async function createClient(accessToken?: string) {
   );
 }
 
-export async function createAdminClient() {
+export async function createAdminClient(
+  options: { signal?: AbortSignal } = {},
+) {
+  const transport = createSupabaseFetch(process.env.SUPABASE_URL!);
+  const signal = options.signal;
+  const fetcher = signal
+    ? Object.assign(
+        async (
+          input: Parameters<typeof fetch>[0],
+          init?: Parameters<typeof fetch>[1],
+        ) => {
+          const signals = [signal];
+          if (init?.signal) signals.push(init.signal);
+          if (input instanceof Request) signals.push(input.signal);
+          return transport(input, {
+            ...init,
+            signal: AbortSignal.any(signals),
+          });
+        },
+        { preconnect: transport.preconnect },
+      )
+    : transport;
   return createSupabaseClient<Database>(
     process.env.SUPABASE_URL!,
     process.env.SUPABASE_SECRET_KEY!,
-    { global: { fetch: createSupabaseFetch(process.env.SUPABASE_URL!) } },
+    {
+      global: { fetch: fetcher },
+      auth: { persistSession: false, autoRefreshToken: false },
+    },
   );
 }

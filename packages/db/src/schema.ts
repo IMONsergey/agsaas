@@ -2331,6 +2331,10 @@ export const users = pgTable(
     avatarUrl: text("avatar_url"),
     email: text(),
     teamId: uuid("team_id"),
+    deletionStartedAt: timestamp("deletion_started_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "string",

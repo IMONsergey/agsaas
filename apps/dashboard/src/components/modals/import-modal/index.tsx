@@ -27,7 +27,7 @@ import { useZodForm } from "@/hooks/use-zod-form";
 import { useTRPC } from "@/trpc/client";
 import { ImportCsvContext, importSchema } from "./context";
 import { FieldMapping } from "./field-mapping";
-import { getBalanceFromLatestDate } from "./field-mapping.utils";
+import { buildImportRequest } from "./import-request";
 import { SelectFile } from "./select-file";
 
 const pages = ["select-file", "confirm-import"] as const;
@@ -115,6 +115,7 @@ export function ImportModal() {
       currency: defaultCurrency,
       bank_account_id: params.accountId ?? undefined,
       inverted: params.type === "credit",
+      parseProfile: { dateOrder: "auto", amountFormat: "auto" },
     },
   });
 
@@ -253,7 +254,7 @@ export function ImportModal() {
         toast({
           duration: 5000,
           variant: "info",
-          title: `${invalidCount} transaction${invalidCount === 1 ? "" : "s"} skipped due to invalid data (e.g. missing amount or date).`,
+          title: `${invalidCount} transaction${invalidCount === 1 ? "" : "s"} skipped due to invalid or ambiguous data. Check dates, amount format and two-decimal precision.`,
         });
       }
       // Only show "already imported" when there are no invalid transactions,
@@ -395,29 +396,7 @@ export function ImportModal() {
                         file,
                       });
 
-                      const currentBalance =
-                        firstRows && data.date && data.balance
-                          ? getBalanceFromLatestDate(
-                              firstRows,
-                              data.date,
-                              data.balance,
-                            )
-                          : undefined;
-
-                      importTransactions.mutate({
-                        filePath: path,
-                        currency: data.currency,
-                        bankAccountId: data.bank_account_id,
-                        currentBalance,
-                        inverted: data.inverted,
-                        mappings: {
-                          amount: data.amount,
-                          date: data.date,
-                          description: data.description,
-                          counterparty: data.counterparty,
-                          balance: data.balance,
-                        },
-                      });
+                      importTransactions.mutate(buildImportRequest(data, path));
                     })}
                   >
                     {page === "select-file" && <SelectFile />}

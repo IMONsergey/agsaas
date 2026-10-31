@@ -1000,6 +1000,13 @@ export const importTransactionsSchema = z.object({
   currency: z.string(),
   currentBalance: z.string().optional(),
   inverted: z.boolean(),
+  parseProfile: z
+    .object({
+      dateOrder: z.enum(["auto", "day-first", "month-first"]).optional(),
+      amountFormat: z.enum(["auto", "decimal-comma", "decimal-dot"]).optional(),
+    })
+    .strict()
+    .optional(),
   mappings: z
     .object({
       amount: z.string(),

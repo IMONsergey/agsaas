@@ -3,10 +3,11 @@ import { generateToken } from "@midday/invoice/token";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
 import { nanoid } from "nanoid";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   customers,
   customerTags,
+  exchangeRates,
   invoices,
   tags,
   teams,
@@ -19,15 +20,142 @@ import {
 import { createActivity } from "./activities";
 import { getExchangeRatesBatch } from "./exhange-rates";
 
+// Aggregate independent one-to-many relations before joining them to customers.
+// Joining invoices, projects and tags first multiplies both counts and money.
+function customerRelationTotals(db: DatabaseOrTransaction, teamId: string) {
+  const projectTotals = db
+    .select({
+      customerId: trackerProjects.customerId,
+      count: sql<number>`count(*)::int`.as("project_count"),
+    })
+    .from(trackerProjects)
+    .where(eq(trackerProjects.teamId, teamId))
+    .groupBy(trackerProjects.customerId)
+    .as("customer_project_totals");
+
+  const tagTotals = db
+    .select({
+      customerId: customerTags.customerId,
+      tags: sql<CustomerTag[]>`json_agg(distinct jsonb_build_object(
+        'id', ${tags.id}, 'name', ${tags.name}
+      ))`.as("customer_tags"),
+      firstName: sql<string>`min(${tags.name})`.as("first_tag_name"),
+    })
+    .from(customerTags)
+    .innerJoin(
+      tags,
+      and(eq(tags.id, customerTags.tagId), eq(tags.teamId, teamId)),
+    )
+    .where(eq(customerTags.teamId, teamId))
+    .groupBy(customerTags.customerId)
+    .as("customer_tag_totals");
+
+  return { projectTotals, tagTotals };
+}
+
+function customerInvoiceTotals(db: DatabaseOrTransaction, teamId: string) {
+  // Existing teams may not have a base currency. Only a single team-wide source
+  // currency is a defensible fallback: both displayed totals and sorting must
+  // use the same unit across customers, never mixed raw amounts labeled as USD.
+  const sourceCurrencies = db
+    .select({
+      currency: sql<
+        string | null
+      >`CASE WHEN count(distinct ${invoices.currency}) = 1
+        THEN min(${invoices.currency}) END`.as("source_currency"),
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.teamId, teamId),
+        inArray(invoices.status, ["paid", "unpaid", "overdue"]),
+        sql`${invoices.currency} ~ '^[A-Z]{3}$'`,
+      ),
+    )
+    .as("customer_invoice_currencies");
+
+  const reportingCurrency = sql<string | null>`CASE
+    WHEN ${teams.baseCurrency} ~ '^[A-Z]{3}$' THEN ${teams.baseCurrency}
+    ELSE ${sourceCurrencies.currency} END`;
+
+  const invoiceAmounts = db
+    .select({
+      customerId: invoices.customerId,
+      status: invoices.status,
+      issueDate: invoices.issueDate,
+      currency: reportingCurrency.as("reporting_currency"),
+      amount: sql<number | null>`CASE
+        WHEN ${invoices.currency} ~ '^[A-Z]{3}$' THEN CASE
+          WHEN ${invoices.currency} = ${reportingCurrency} THEN ${invoices.amount}
+          ELSE ${invoices.amount} * ${exchangeRates.rate}
+        END
+      END`.as("converted_amount"),
+    })
+    .from(invoices)
+    .innerJoin(teams, eq(teams.id, invoices.teamId))
+    .leftJoin(sourceCurrencies, sql`true`)
+    .leftJoin(
+      exchangeRates,
+      and(
+        eq(exchangeRates.base, invoices.currency),
+        eq(exchangeRates.target, reportingCurrency),
+        sql`${exchangeRates.rate} > 0`,
+      ),
+    )
+    .where(eq(invoices.teamId, teamId))
+    .as("customer_invoice_amounts");
+
+  return db
+    .select({
+      customerId: invoiceAmounts.customerId,
+      count: sql<number>`count(*)::int`.as("invoice_count"),
+      // Completeness is independent for paid and outstanding totals. A missing
+      // FX rate must not be disguised as a zero or a plausible partial total.
+      totalRevenue: sql<number | null>`CASE WHEN count(*) FILTER (
+        WHERE ${invoiceAmounts.status} = 'paid' AND ${invoiceAmounts.amount} IS NULL
+      ) > 0 THEN NULL ELSE round(coalesce(sum(${invoiceAmounts.amount}) FILTER (
+        WHERE ${invoiceAmounts.status} = 'paid'
+      ), 0), 2)::float END`.as("total_revenue"),
+      outstandingAmount: sql<number | null>`CASE WHEN count(*) FILTER (
+        WHERE ${invoiceAmounts.status} IN ('unpaid', 'overdue') AND ${invoiceAmounts.amount} IS NULL
+      ) > 0 THEN NULL ELSE round(coalesce(sum(${invoiceAmounts.amount}) FILTER (
+        WHERE ${invoiceAmounts.status} IN ('unpaid', 'overdue')
+      ), 0), 2)::float END`.as("outstanding_amount"),
+      lastInvoiceDate: sql<string | null>`max(${invoiceAmounts.issueDate})`.as(
+        "last_invoice_date",
+      ),
+      currency: sql<string | null>`max(${invoiceAmounts.currency})`.as(
+        "invoice_currency",
+      ),
+    })
+    .from(invoiceAmounts)
+    .groupBy(invoiceAmounts.customerId)
+    .as("customer_invoice_totals");
+}
+
 type GetCustomerByIdParams = {
   id: string;
   teamId: string;
 };
 
 export const getCustomerById = async (
-  db: Database,
+  db: DatabaseOrTransaction,
   params: GetCustomerByIdParams,
 ) => {
+  const { projectTotals, tagTotals } = customerRelationTotals(
+    db,
+    params.teamId,
+  );
+  const invoiceTotals = db
+    .select({
+      customerId: invoices.customerId,
+      count: sql<number>`count(*)::int`.as("invoice_count"),
+    })
+    .from(invoices)
+    .where(eq(invoices.teamId, params.teamId))
+    .groupBy(invoices.customerId)
+    .as("customer_invoice_counts");
+
   const [result] = await db
     .select({
       id: customers.id,
@@ -82,29 +210,19 @@ export const getCustomerById = async (
       // Portal fields
       portalEnabled: customers.portalEnabled,
       portalId: customers.portalId,
-      invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
-      projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
-      tags: sql<CustomerTag[]>`
-        coalesce(
-          json_agg(
-            distinct jsonb_build_object(
-              'id', ${tags.id},
-              'name', ${tags.name}
-            )
-          ) filter (where ${tags.id} is not null),
-          '[]'
-        )
-      `.as("tags"),
+      invoiceCount: sql<number>`coalesce(${invoiceTotals.count}, 0)`,
+      projectCount: sql<number>`coalesce(${projectTotals.count}, 0)`,
+      tags: sql<CustomerTag[]>`coalesce(${tagTotals.tags}, '[]'::json)`.as(
+        "tags",
+      ),
     })
     .from(customers)
     .where(
       and(eq(customers.id, params.id), eq(customers.teamId, params.teamId)),
     )
-    .leftJoin(invoices, eq(invoices.customerId, customers.id))
-    .leftJoin(trackerProjects, eq(trackerProjects.customerId, customers.id))
-    .leftJoin(customerTags, eq(customerTags.customerId, customers.id))
-    .leftJoin(tags, eq(tags.id, customerTags.tagId))
-    .groupBy(customers.id);
+    .leftJoin(invoiceTotals, eq(invoiceTotals.customerId, customers.id))
+    .leftJoin(projectTotals, eq(projectTotals.customerId, customers.id))
+    .leftJoin(tagTotals, eq(tagTotals.customerId, customers.id));
 
   return result;
 };
@@ -124,26 +242,37 @@ export type CustomerTag = {
 };
 
 export const getCustomers = async (
-  db: Database,
+  db: DatabaseOrTransaction,
   params: GetCustomersParams,
 ) => {
   const { teamId, sort, cursor, pageSize = 25, q } = params;
 
   const whereConditions: SQL[] = [eq(customers.teamId, teamId)];
+  const { projectTotals, tagTotals } = customerRelationTotals(db, teamId);
+  const invoiceTotals = customerInvoiceTotals(db, teamId);
+  const invoiceCount = sql<number>`coalesce(${invoiceTotals.count}, 0)`;
+  const projectCount = sql<number>`coalesce(${projectTotals.count}, 0)`;
+  const totalRevenue = sql<
+    number | null
+  >`CASE WHEN ${invoiceTotals.customerId} IS NULL
+    THEN 0 ELSE ${invoiceTotals.totalRevenue} END`;
+  const outstandingAmount = sql<
+    number | null
+  >`CASE WHEN ${invoiceTotals.customerId} IS NULL
+    THEN 0 ELSE ${invoiceTotals.outstandingAmount} END`;
 
   // Apply search query filter
-  if (q) {
-    // If the query is a number, search by numeric fields if any
-    if (!Number.isNaN(Number.parseInt(q, 10))) {
-      // Add numeric search logic if needed
-    } else {
-      const query = buildSearchQuery(q);
-
-      // Search using full-text search or name
-      whereConditions.push(
-        sql`(to_tsquery('english', ${query}) @@ ${customers.fts} OR ${customers.name} ILIKE '%' || ${q} || '%')`,
-      );
-    }
+  const search = q?.trim();
+  if (search) {
+    const query = buildSearchQuery(search);
+    whereConditions.push(sql`(
+      to_tsquery('english', ${query}) @@ ${customers.fts}
+      OR ${customers.name} ILIKE '%' || ${search} || '%'
+      OR ${customers.email} ILIKE '%' || ${search} || '%'
+      OR ${customers.billingEmail} ILIKE '%' || ${search} || '%'
+      OR ${customers.vatNumber} ILIKE '%' || ${search} || '%'
+      OR ${customers.externalId} ILIKE '%' || ${search} || '%'
+    )`);
   }
 
   // Start building the query
@@ -197,119 +326,69 @@ export const getCustomers = async (
       // Portal fields
       portalEnabled: customers.portalEnabled,
       portalId: customers.portalId,
-      invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
-      projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
-      // Financial metrics (cast to float so the PG driver returns a JS number, not a string)
-      totalRevenue: sql<number>`cast(coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0) as float)`,
-      outstandingAmount: sql<number>`cast(coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0) as float)`,
-      lastInvoiceDate: sql<string | null>`max(${invoices.issueDate})`,
-      invoiceCurrency: sql<
-        string | null
-      >`(array_agg(${invoices.currency}) filter (where ${invoices.currency} is not null))[1]`,
-      tags: sql<CustomerTag[]>`
-        coalesce(
-          json_agg(
-            distinct jsonb_build_object(
-              'id', ${tags.id},
-              'name', ${tags.name}
-            )
-          ) filter (where ${tags.id} is not null),
-          '[]'
-        )
-      `.as("tags"),
+      invoiceCount,
+      projectCount,
+      totalRevenue,
+      outstandingAmount,
+      lastInvoiceDate: invoiceTotals.lastInvoiceDate,
+      invoiceCurrency: invoiceTotals.currency,
+      tags: sql<CustomerTag[]>`coalesce(${tagTotals.tags}, '[]'::json)`.as(
+        "tags",
+      ),
     })
     .from(customers)
-    .leftJoin(invoices, eq(invoices.customerId, customers.id))
-    .leftJoin(trackerProjects, eq(trackerProjects.customerId, customers.id))
-    .leftJoin(customerTags, eq(customerTags.customerId, customers.id))
-    .leftJoin(tags, eq(tags.id, customerTags.tagId))
-    .where(and(...whereConditions))
-    .groupBy(customers.id);
+    .leftJoin(invoiceTotals, eq(invoiceTotals.customerId, customers.id))
+    .leftJoin(projectTotals, eq(projectTotals.customerId, customers.id))
+    .leftJoin(tagTotals, eq(tagTotals.customerId, customers.id))
+    .where(and(...whereConditions));
 
-  // Apply sorting
+  // The ID tie-breaker makes equal totals/counts stable across offset pages.
+  let order = desc(customers.createdAt);
   if (sort && sort.length === 2) {
     const [column, direction] = sort;
-    const isAscending = direction === "asc";
+    const sortBy = direction === "asc" ? asc : desc;
 
     if (column === "name") {
-      isAscending
-        ? query.orderBy(asc(customers.name))
-        : query.orderBy(desc(customers.name));
+      order = sortBy(customers.name);
     } else if (column === "created_at") {
-      isAscending
-        ? query.orderBy(asc(customers.createdAt))
-        : query.orderBy(desc(customers.createdAt));
+      order = sortBy(customers.createdAt);
     } else if (column === "contact") {
-      isAscending
-        ? query.orderBy(asc(customers.contact))
-        : query.orderBy(desc(customers.contact));
+      order = sortBy(customers.contact);
     } else if (column === "email") {
-      isAscending
-        ? query.orderBy(asc(customers.email))
-        : query.orderBy(desc(customers.email));
+      order = sortBy(customers.email);
     } else if (column === "invoices") {
-      // Sort by invoice count
-      isAscending
-        ? query.orderBy(asc(sql`count(${invoices.id})`))
-        : query.orderBy(desc(sql`count(${invoices.id})`));
+      order = sortBy(invoiceCount);
     } else if (column === "projects") {
-      // Sort by project count
-      isAscending
-        ? query.orderBy(asc(sql`count(${trackerProjects.id})`))
-        : query.orderBy(desc(sql`count(${trackerProjects.id})`));
+      order = sortBy(projectCount);
     } else if (column === "tags") {
-      // Sort by first tag name (alphabetically)
-      isAscending
-        ? query.orderBy(asc(sql`min(${tags.name})`))
-        : query.orderBy(desc(sql`min(${tags.name})`));
+      order = sortBy(tagTotals.firstName);
     } else if (column === "industry") {
-      isAscending
-        ? query.orderBy(asc(customers.industry))
-        : query.orderBy(desc(customers.industry));
+      order = sortBy(customers.industry);
     } else if (column === "country") {
-      isAscending
-        ? query.orderBy(asc(customers.country))
-        : query.orderBy(desc(customers.country));
+      order = sortBy(customers.country);
     } else if (column === "total_revenue") {
-      isAscending
-        ? query.orderBy(
-            asc(
-              sql`coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0)`,
-            ),
-          )
-        : query.orderBy(
-            desc(
-              sql`coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0)`,
-            ),
-          );
+      order = sql`${sortBy(totalRevenue)} nulls last`;
     } else if (column === "outstanding") {
-      isAscending
-        ? query.orderBy(
-            asc(
-              sql`coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0)`,
-            ),
-          )
-        : query.orderBy(
-            desc(
-              sql`coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0)`,
-            ),
-          );
+      order = sql`${sortBy(outstandingAmount)} nulls last`;
     } else if (column === "last_invoice") {
-      isAscending
-        ? query.orderBy(asc(sql`max(${invoices.issueDate})`))
-        : query.orderBy(desc(sql`max(${invoices.issueDate})`));
+      order = sortBy(invoiceTotals.lastInvoiceDate);
     }
-  } else {
-    // Default sort by created_at descending
-    query.orderBy(desc(customers.createdAt));
   }
+  query.orderBy(order, asc(customers.id));
 
   // Apply pagination
   const offset = cursor ? Number.parseInt(cursor, 10) : 0;
   query.limit(pageSize).offset(offset);
 
   // Execute query
-  const data = await query;
+  const rows = await query;
+  const data = rows.map((row) => ({
+    ...row,
+    // These REST fields are already optional. The existing table renders an
+    // absent amount as "-"; returning a partial number would look complete.
+    totalRevenue: row.totalRevenue ?? undefined,
+    outstandingAmount: row.outstandingAmount ?? undefined,
+  }));
 
   // Calculate next cursor
   const nextCursor =

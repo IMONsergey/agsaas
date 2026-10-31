@@ -64,12 +64,38 @@ const schema = z.object({
     .describe("End date for invoice due dates (ISO-8601)."),
 });
 
+export const SEARCH_FILTER_TIMEOUT_MS = 2_000;
+
+/** Search is local-first; optional AI configuration is checked on use, not import. */
+export function isSearchAIConfigured(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return Boolean(environment.OPENAI_API_KEY?.trim());
+}
+
 export async function generateLLMFilters(
   query: string,
-): Promise<z.infer<typeof schema>> {
-  const { object } = await generateObject({
-    model: openai("gpt-4o-mini"),
-    system: `You are an AI assistant that converts natural language search queries into structured search filters.
+  options: { timeoutMs?: number } = {},
+): Promise<z.infer<typeof schema> | null> {
+  if (!isSearchAIConfigured()) return null;
+
+  // Callers can reduce the budget, never extend the interactive-search deadline.
+  const timeoutMs = Math.min(
+    SEARCH_FILTER_TIMEOUT_MS,
+    Math.max(1, options.timeoutMs ?? SEARCH_FILTER_TIMEOUT_MS),
+  );
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    // Race as well as abort: even a provider that fails to observe cancellation
+    // must not hold the local search response open indefinitely.
+    return await Promise.race([
+      generateObject({
+        model: openai("gpt-4o-mini"),
+        maxRetries: 0,
+        abortSignal: controller.signal,
+        system: `You are an AI assistant that converts natural language search queries into structured search filters.
 
 Current date: ${new Date().toISOString().split("T")[0]}
 
@@ -93,9 +119,21 @@ EXAMPLES:
 
 For language, detect the appropriate language of the query for PostgreSQL text search.
 `,
-    schema,
-    prompt: query,
-  });
-
-  return object;
+        schema,
+        prompt: query,
+      }).then(({ object }) => object),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(null);
+        }, timeoutMs);
+      }),
+    ]);
+  } catch {
+    // Missing/invalid credentials, provider errors and invalid generated output
+    // are optional-enhancement failures. Do not log queries or provider bodies.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

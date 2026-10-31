@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { Session } from "@api/utils/auth";
 import type { Database } from "@midday/db/client";
-import type { SQL } from "drizzle-orm";
-import { PgDialect } from "drizzle-orm/pg-core";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect, type PgTable } from "drizzle-orm/pg-core";
 import { SignJWT } from "jose";
 import {
   actorEmail,
@@ -38,6 +38,36 @@ const findInvite = mock(async ({ where }: { where: SQL }) =>
 const insertMembership = mock(async (_values: unknown) => {});
 const deleteInvite = mock(async (_where: SQL) => {});
 const db = {
+  transaction: async (run: (tx: unknown) => Promise<unknown>) => run(db),
+  execute: async (_statement: SQL) => ({ rows: [] }),
+  select: () => ({
+    from: (table: PgTable) => ({
+      where: (where: SQL) => {
+        const params = dialect.sqlToQuery(where).params;
+        const name = getTableName(table);
+        let rows: unknown[];
+        if (name === "users" && params[0] === actorId) {
+          rows = [{ deletionStartedAt: null }];
+        } else if (name === "teams" && params[0] === invitedTeamId) {
+          rows = [{ id: invitedTeamId }];
+        } else if (name === "users_on_team" && params[0] === invitedTeamId) {
+          rows = [];
+        } else if (
+          name === "user_invites" &&
+          params[0] === inviteId &&
+          params[1] === invitedTeamId
+        ) {
+          rows = [invite];
+        } else {
+          throw new Error(
+            "Unexpected membership lookup in signed-identity fixture",
+          );
+        }
+        const result = Promise.resolve(rows);
+        return Object.assign(result, { for: () => result });
+      },
+    }),
+  }),
   query: {
     users: {
       findFirst: async () => ({
@@ -84,6 +114,7 @@ mock.module("@midday/db/queries", () => ({
 }));
 mock.module("@midday/logger", () => ({
   createLoggerWithContext: () => ({ warn() {}, info() {} }),
+  logger: { warn() {} },
 }));
 mock.module("@midday/cache/team-cache", () => ({
   teamCache: {

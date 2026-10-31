@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { OnboardingPage } from "@/components/onboarding/onboarding-page";
 import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
+import { getAccountEntryRedirect } from "@/utils/account-deletion";
 
 export const metadata: Metadata = {
   title: "Onboarding | Midday",
@@ -17,6 +18,10 @@ export default async function Page() {
 
   if (!user) {
     redirect("/login");
+  }
+
+  if (getAccountEntryRedirect(user) === "/account-deletion") {
+    redirect("/account-deletion");
   }
 
   const teams = await queryClient.fetchQuery(trpc.team.list.queryOptions());

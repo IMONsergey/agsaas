@@ -202,8 +202,19 @@ export const transactionsRouter = createTRPCRouter({
 
       if (account.manual) {
         const parsedBalance = input.currentBalance
-          ? formatAmountValue({ amount: input.currentBalance })
+          ? formatAmountValue({
+              amount: input.currentBalance,
+              amountFormat: input.parseProfile?.amountFormat,
+            })
           : null;
+
+        if (parsedBalance !== null && !Number.isFinite(parsedBalance)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Invalid or ambiguous balance. Choose the amount format in import settings.",
+          });
+        }
 
         const balance =
           parsedBalance !== null && Number.isFinite(parsedBalance)
@@ -227,6 +238,7 @@ export const transactionsRouter = createTRPCRouter({
           mappings: input.mappings,
           teamId,
           inverted: input.inverted,
+          parseProfile: input.parseProfile,
         },
         "transactions",
       );

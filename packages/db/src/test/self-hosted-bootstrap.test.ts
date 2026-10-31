@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -19,10 +20,51 @@ describe("self-hosted application baseline (offline)", () => {
     sql = await generateBootstrapSql();
   });
 
-  test("matches the CLI-created migration deterministically", async () => {
+  test("preserves the installed baseline and accounts for the reviewed additive upgrade", async () => {
     expect(getBaselinePath()).toMatch(/\/\d{14}_application_baseline\.sql$/);
-    expect(readFileSync(getBaselinePath(), "utf8")).toBe(sql);
+    const baseline = readFileSync(getBaselinePath(), "utf8");
+    expect(createHash("sha256").update(baseline).digest("hex")).toBe(
+      "e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd",
+    );
+    // Current schema = immutable baseline + the explicit nullable marker.
+    // Keep exact comparison for every other table/column/policy/function; do
+    // not regenerate an already applied baseline to make schema parity pass.
+    const addition = '\t"deletion_started_at" timestamp with time zone,\n';
+    expect(sql.split(addition)).toHaveLength(2);
+    expect(sql.replace(addition, "")).toBe(baseline);
+    expect(
+      createApplicationSnapshot().tables["public.users"]?.columns
+        .deletion_started_at,
+    ).toMatchObject({
+      name: "deletion_started_at",
+      type: "timestamp with time zone",
+    });
     expect(await generateBootstrapSql()).toBe(sql);
+  });
+
+  test("the CLI-created deletion upgrade is additive and guards browser writes", () => {
+    const upgrade = readFileSync(
+      join(
+        __dirname,
+        "../../self-hosted/upgrades/supabase/migrations/20261031181308_account_deletion_state.sql",
+      ),
+      "utf8",
+    );
+    expect(upgrade).toContain(
+      "ALTER TABLE public.users ADD COLUMN deletion_started_at timestamptz;",
+    );
+    expect(upgrade).toContain(
+      "has_column_privilege('anon', 'public.users', 'deletion_started_at', 'UPDATE')",
+    );
+    expect(upgrade).toContain(
+      "has_column_privilege('authenticated', 'public.users', 'deletion_started_at', 'UPDATE')",
+    );
+    expect(upgrade).not.toMatch(/\b(?:DROP|DELETE|TRUNCATE|GRANT)\b/);
+    const marker = getTableConfig(users).columns.find(
+      (column) => column.name === "deletion_started_at",
+    );
+    expect(marker?.notNull).toBe(false);
+    expect(marker?.default).toBeUndefined();
   });
 
   test("manages all 49 application tables and 33 enums, never platform tables", () => {
