@@ -14,9 +14,12 @@
 ## Preservation boundary
 
 Until the functional baseline is reproducible, keep the dashboard and website
-components, CSS, assets, localization, public routes, API contracts, and database
-tables/columns unchanged. Refactors must have regression tests and be reviewed
-separately from rebranding or replacing foreign integrations. The only schema
+components, CSS, assets, localization, authorized product flows, API payload
+shapes, and database tables/columns unchanged. Explicit exceptions are stronger
+access checks and administration boundaries: unauthorized or revoked access is
+rejected, and worker `/admin` and `/info` require credentials or remain disabled.
+Refactors must have regression tests and be reviewed separately from rebranding
+or replacing foreign integrations. The only schema
 declaration corrections in this pass are six incompatible operator classes in
 four existing indexes; their names, columns, order, and uniqueness are preserved.
 No production migration is executed by this work.

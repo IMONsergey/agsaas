@@ -35,7 +35,9 @@ function memberOf(activeTeamId: string | null = teamId): UserMemberships {
 }
 
 function createDatabases(result: UserMemberships | undefined = memberOf()) {
-  const primaryFind = mock(async () => result);
+  const primaryFind = mock(
+    async (): Promise<UserMemberships | undefined> => result,
+  );
   const replicaFind = mock(async () => memberOf());
   const primary = {
     query: { users: { findFirst: primaryFind } },

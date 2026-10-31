@@ -13,6 +13,21 @@ const oauthToken = "mid_access_token_local-test-token";
 const primary = {} as Database;
 const replica = { usePrimaryOnly: () => primary } as unknown as Database;
 
+type AuthFixtureResponse = {
+  teamId: string | null;
+  session: {
+    teamId: string | null;
+    user: Session["user"];
+    oauth?: {
+      applicationId: string;
+      clientId?: string;
+      applicationName?: string;
+    };
+  };
+  scopes: string[];
+  usesOriginalDb: boolean;
+};
+
 function makeUser(activeTeamId: string | null = teamId) {
   return {
     id: actorId,
@@ -82,7 +97,7 @@ function createApp(db = replica) {
     Variables: {
       db: Database;
       teamId: string | null;
-      session: Session;
+      session: AuthFixtureResponse["session"];
       scopes: string[];
     };
   }>();
@@ -93,12 +108,13 @@ function createApp(db = replica) {
   app.use("*", withAuth);
   app.get("/", (c) => {
     protectedHandler();
-    return c.json({
+    const body: AuthFixtureResponse = {
       teamId: c.get("teamId"),
       session: c.get("session"),
       scopes: c.get("scopes"),
       usesOriginalDb: c.get("db") === db,
-    });
+    };
+    return c.json(body);
   });
   app.onError((error, c) =>
     error instanceof HTTPException
@@ -112,6 +128,12 @@ function request(token: string, db = replica) {
   return createApp(db).request("/", {
     headers: { Authorization: `Bearer ${token}` },
   });
+}
+
+async function readAuthResponse(
+  response: Response,
+): Promise<AuthFixtureResponse> {
+  return (await response.json()) as AuthFixtureResponse;
 }
 
 beforeEach(() => {
@@ -136,7 +158,7 @@ beforeEach(() => {
 describe("REST JWT authorization", () => {
   it("allows a signed JWT with current primary membership and preserves scopes/routing", async () => {
     const response = await request(await signAccessToken());
-    const result = await response.json();
+    const result = await readAuthResponse(response);
 
     expect(response.status).toBe(200);
     expect(result.teamId).toBe(teamId);
@@ -172,7 +194,7 @@ describe("REST JWT authorization", () => {
     const response = await request(await signAccessToken());
 
     expect(response.status).toBe(200);
-    expect((await response.json()).teamId).toBeNull();
+    expect((await readAuthResponse(response)).teamId).toBeNull();
     expect(hasTeamAccess).not.toHaveBeenCalled();
   });
 
@@ -198,7 +220,7 @@ describe("REST OAuth authorization", () => {
   it("authorizes the token's team after the user selects another team", async () => {
     user = makeUser(otherTeamId);
     const response = await request(oauthToken);
-    const result = await response.json();
+    const result = await readAuthResponse(response);
 
     expect(response.status).toBe(200);
     expect(result.teamId).toBe(teamId);
@@ -245,7 +267,7 @@ describe("REST OAuth authorization", () => {
 describe("REST API key authorization", () => {
   it("requires a current key, user and membership while preserving the key's scopes", async () => {
     const response = await request(apiToken);
-    const result = await response.json();
+    const result = await readAuthResponse(response);
 
     expect(response.status).toBe(200);
     expect(result.teamId).toBe(teamId);
@@ -265,7 +287,7 @@ describe("REST API key authorization", () => {
     const response = await request(apiToken);
 
     expect(response.status).toBe(200);
-    expect((await response.json()).teamId).toBe(teamId);
+    expect((await readAuthResponse(response)).teamId).toBe(teamId);
     expect(hasTeamAccess).toHaveBeenCalledWith(primary, teamId, actorId);
   });
 
@@ -293,7 +315,7 @@ describe("REST API key authorization", () => {
   it("uses reduced primary scopes instead of a stale all-access cache entry", async () => {
     apiKey = makeApiKey(["transactions.read"]);
     const response = await request(apiToken);
-    const result = await response.json();
+    const result = await readAuthResponse(response);
 
     expect(response.status).toBe(200);
     expect(result.scopes).toEqual(["transactions.read"]);
