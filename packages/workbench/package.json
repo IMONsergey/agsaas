@@ -32,7 +32,7 @@
     "build:ui": "vite build",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
-    "test": "bun test --exit src/core",
+    "test": "bun test --exit src/core src/adapters",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },

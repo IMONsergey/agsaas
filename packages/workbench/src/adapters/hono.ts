@@ -8,6 +8,7 @@ import { cors } from "hono/cors";
 import { createApiRoutes } from "../api/router";
 import type { WorkbenchOptions } from "../core/types";
 import { WorkbenchCore } from "../core/workbench";
+import { createAssetHandler } from "./static-assets";
 
 // Get the directory where this module is located
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,23 +58,7 @@ export function workbench(options: WorkbenchOptions | Queue[]): Hono {
   });
 
   // Serve static assets from built UI
-  app.get("/assets/:file", async (c) => {
-    const fileName = c.req.param("file");
-    const filePath = join(UI_DIST_PATH, "assets", fileName);
-
-    if (!existsSync(filePath)) {
-      return c.text("Not found", 404);
-    }
-
-    const content = readFileSync(filePath);
-    const contentType = fileName.endsWith(".js")
-      ? "application/javascript"
-      : fileName.endsWith(".css")
-        ? "text/css"
-        : "application/octet-stream";
-
-    return c.body(content, 200, { "Content-Type": contentType });
-  });
+  app.get("/assets/:file", createAssetHandler(join(UI_DIST_PATH, "assets")));
 
   // Serve index.html for all other routes (SPA)
   app.get("*", async (c) => {

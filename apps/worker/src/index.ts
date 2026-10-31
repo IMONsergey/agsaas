@@ -11,7 +11,7 @@ import { createLoggerWithContext } from "@midday/logger";
 import * as Sentry from "@sentry/bun";
 import { Worker } from "bullmq";
 import { Hono } from "hono";
-import { workbench } from "workbench/hono";
+import { createWorkerAdminApp, getWorkerAdminAuth } from "./http/admin";
 import { getProcessor } from "./processors/registry";
 import { getAllQueues, queueConfigs } from "./queues";
 import { registerStaticSchedulers } from "./schedulers/registry";
@@ -128,10 +128,16 @@ registerStaticSchedulers().catch((error) => {
 // Create Hono app
 const app = new Hono();
 
-const basePath = "/admin";
-
 // Initialize Workbench dashboard
 function initializeWorkbench() {
+  const auth = getWorkerAdminAuth(process.env);
+  if (!auth) {
+    logger.warn(
+      "Worker administration disabled: set both BOARD_USERNAME and BOARD_PASSWORD to enable it",
+    );
+    return;
+  }
+
   const queues = getAllQueues();
 
   if (queues.length === 0) {
@@ -139,22 +145,7 @@ function initializeWorkbench() {
     return;
   }
 
-  // Mount workbench with optional auth
-  app.route(
-    basePath,
-    workbench({
-      queues,
-      auth:
-        process.env.BOARD_USERNAME && process.env.BOARD_PASSWORD
-          ? {
-              username: process.env.BOARD_USERNAME,
-              password: process.env.BOARD_PASSWORD,
-            }
-          : undefined,
-      title: "Midday Jobs",
-      tags: ["teamId"],
-    }),
-  );
+  app.route("/", createWorkerAdminApp({ queues, auth }));
 
   logger.info(`Workbench initialized with ${queues.length} queues`, {
     queues: queues.map((q) => q.name),
@@ -179,15 +170,6 @@ app.get("/health/ready", async (c) => {
   const results = await checkDependencies(workerDependencies(), 1);
   const response = buildReadinessResponse(results);
   return c.json(response, response.status === "ok" ? 200 : 503);
-});
-
-// Dashboard info endpoint
-app.get("/info", (c) => {
-  const queues = getAllQueues();
-  return c.json({
-    queues: queues.map((q) => ({ name: q.name })),
-    dashboardUrl: `${basePath}/queues`,
-  });
 });
 
 // Start server

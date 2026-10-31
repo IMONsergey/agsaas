@@ -66,6 +66,12 @@ jobs:
                 throw new Error("Workbench UI build output is unavailable");
               }
             '
+      - name: Verify worker admin authentication in the final image
+        if: matrix.app == 'worker'
+        run: |
+          docker run --rm --network none \
+            --entrypoint bun agsaas-worker:ci \
+            test --exit /app/apps/worker/src/http/admin.test.ts
 
   integration:
     runs-on: ubuntu-latest
