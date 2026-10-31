@@ -64,7 +64,8 @@ export function inspectEnvironment(service: Service, env: Environment) {
         ) ||
         !protocols.includes(url.protocol) ||
         !url.hostname ||
-        url.hash
+        url.hash ||
+        (name === "SUPABASE_INTERNAL_URL" && url.search)
       ) {
         throw new Error("invalid URL");
       }
@@ -88,6 +89,7 @@ export function inspectEnvironment(service: Service, env: Environment) {
   };
 
   for (const name of required[service]) requireVariable(name);
+  checkUrl("SUPABASE_INTERNAL_URL", ["http:", "https:"]);
   const workerDatabaseVariable =
     env.DATABASE_PRIMARY_POOLER_URL !== undefined
       ? "DATABASE_PRIMARY_POOLER_URL"

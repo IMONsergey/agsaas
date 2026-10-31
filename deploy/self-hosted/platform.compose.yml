@@ -1,0 +1,129 @@
+# Layer ONLY over the complete, unmodified Docker snapshot from:
+# supabase/supabase self-hosted/v0.8.3
+# commit bc27d2661edd09a5d0b8d76ce33da6d4071a756e
+# This is the private stage profile, not a public HTTPS deployment.
+# !override / !reset require a compatible Docker Compose v2 (verified target: 2.40.3).
+name: agsaas-stage
+
+x-stage-runtime: &stage-runtime
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  studio:
+    <<: *stage-runtime
+    container_name: agsaas-stage-studio
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+
+  api-gw:
+    <<: *stage-runtime
+    container_name: agsaas-stage-envoy
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+    # A normal Compose list merge would KEEP the upstream public port binding.
+    ports: !override
+      - "127.0.0.1:3800:8000/tcp"
+    environment:
+      SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?Generate the matched publishable key}"
+      SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Generate the matched server key}"
+      ANON_KEY_ASYMMETRIC: "${ANON_KEY_ASYMMETRIC:?Generate matched asymmetric API JWTs}"
+      SERVICE_ROLE_KEY_ASYMMETRIC: "${SERVICE_ROLE_KEY_ASYMMETRIC:?Generate matched asymmetric API JWTs}"
+
+  auth:
+    <<: *stage-runtime
+    container_name: agsaas-stage-auth
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    environment:
+      GOTRUE_JWT_KEYS: "${JWT_KEYS:?Generate the matched signing key set}"
+      # Missing SMTP must remain visible; never disguise it with auto-confirm.
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+
+  rest:
+    <<: *stage-runtime
+    container_name: agsaas-stage-rest
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    environment:
+      PGRST_JWT_SECRET: "${JWT_JWKS:?Generate the matched verification key set}"
+
+  realtime:
+    <<: *stage-runtime
+    # Preserve the tenant prefix before the first dot; it is not arbitrary.
+    container_name: realtime-dev.agsaas-stage-realtime
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 512
+    networks:
+      default:
+        # Required by the pinned Envoy cds.yaml; scoped to this project's network.
+        aliases:
+          - realtime-dev.supabase-realtime
+    environment:
+      API_JWT_JWKS: "${JWT_JWKS:?Generate the matched verification key set}"
+      # v0.8.3 documented workaround for periodic Postgres Changes reconnections.
+      REGION: us-east-1
+
+  storage:
+    <<: *stage-runtime
+    container_name: agsaas-stage-storage
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    environment:
+      JWT_JWKS: "${JWT_JWKS:?Generate the matched verification key set}"
+
+  imgproxy:
+    <<: *stage-runtime
+    container_name: agsaas-stage-imgproxy
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+
+  meta:
+    <<: *stage-runtime
+    container_name: agsaas-stage-meta
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 256
+
+  functions:
+    <<: *stage-runtime
+    container_name: agsaas-stage-edge-functions
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+    environment:
+      SUPABASE_JWKS: "${JWT_JWKS:?Generate the matched verification key set}"
+
+  db:
+    <<: *stage-runtime
+    container_name: agsaas-stage-db
+    mem_limit: 3072m
+    cpus: 2.0
+    pids_limit: 256
+    ports: !reset []
+    stop_grace_period: 60s
+
+  supavisor:
+    <<: *stage-runtime
+    container_name: agsaas-stage-pooler
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 512
+    ports: !reset []
+    environment:
+      POOLER_TENANT_ID: "${POOLER_TENANT_ID:?Set a dedicated stage pooler tenant}"
+      # These are server-side pool limits, not fictitious Node pg env controls.
+      POOLER_DEFAULT_POOL_SIZE: "10"
+      POOLER_MAX_CLIENT_CONN: "80"
+      DB_POOL_SIZE: "5"

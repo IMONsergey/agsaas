@@ -7,5 +7,5 @@
     "allowImportingTsExtensions": true,
     "typeRoots": ["../node_modules/@types"]
   },
-  "include": ["./*.ts"]
+  "include": ["./*.ts", "./*.mts", "../deploy/self-hosted/config.test.ts"]
 }

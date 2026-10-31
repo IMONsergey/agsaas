@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import type { NextRequest, NextResponse } from "next/server";
+import { createSupabaseFetch } from "./server-fetch";
 
 export async function updateSession(
   request: NextRequest,
@@ -9,6 +10,9 @@ export async function updateSession(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
+      global: {
+        fetch: createSupabaseFetch(process.env.NEXT_PUBLIC_SUPABASE_URL!),
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();

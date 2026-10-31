@@ -94,7 +94,9 @@ COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/public ./apps/da
 # set GIT_COMMIT_SHA / SENTRY_RELEASE when Railway doesn't provide them.
 COPY --from=installer /tmp/git-sha.txt /tmp/git-sha.txt
 COPY --from=builder /app/scripts/docker-entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# The non-root runner must be able to read this root-owned shell script.
+# chmod +x alone leaves a private 0700 checkout unreadable as mode 0711.
+RUN chmod 0755 /app/entrypoint.sh
 
 USER nextjs
 

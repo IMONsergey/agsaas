@@ -32,6 +32,57 @@ describe("offline runtime doctor", () => {
     expect(inspectEnvironment("dashboard", dashboard).ok).toBe(true);
   });
   test.each([
+    "api",
+    "worker",
+    "dashboard",
+  ] as const)("%s accepts an optional server-only Supabase transport", (service) => {
+    for (const value of [
+      undefined,
+      "",
+      "http://api-gw:8000",
+      "https://supabase.internal.invalid",
+    ]) {
+      const result = inspectEnvironment(service, {
+        ...(service === "dashboard" ? dashboard : core),
+        SUPABASE_INTERNAL_URL: value,
+      });
+      expect(result.ok).toBe(true);
+      expect(
+        result.findings.some(
+          (item) => item.variable === "SUPABASE_INTERNAL_URL",
+        ),
+      ).toBe(false);
+    }
+  });
+  test.each([
+    "api",
+    "worker",
+    "dashboard",
+  ] as const)("%s rejects invalid internal Supabase URLs without exposing their values", (service) => {
+    const marker = "internal-transport-must-not-leak";
+    for (const value of [
+      `not-a-url-${marker}`,
+      `ftp://${marker}.invalid`,
+      `http://user:${marker}@api-gw:8000`,
+      `http://api-gw:8000?token=${marker}`,
+      `http://api-gw:8000#${marker}`,
+      ` http://${marker}.invalid`,
+    ]) {
+      const result = inspectEnvironment(service, {
+        ...(service === "dashboard" ? dashboard : core),
+        SUPABASE_INTERNAL_URL: value,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({
+          variable: "SUPABASE_INTERNAL_URL",
+          severity: "error",
+        }),
+      );
+      expect(JSON.stringify(result)).not.toContain(marker);
+    }
+  });
+  test.each([
     "DATABASE_PRIMARY_URL",
     "SUPABASE_URL",
     "SUPABASE_SECRET_KEY",

@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import Link from "next/link";
 import { userAgent } from "next/server";
+import { AuthErrorToast } from "@/components/auth-error-toast";
 import { LoginAccordion } from "@/components/login-accordion";
 import { LoginVideoBackground } from "@/components/login-video-background";
 import { OAuthSignIn } from "@/components/oauth-sign-in";
@@ -142,6 +143,7 @@ export default async function Page({ searchParams }: Props) {
 
   return (
     <div className="min-h-screen bg-background flex relative">
+      <AuthErrorToast />
       {/* Sunset banner + logo - Fixed position matching website header exactly */}
       <div className="fixed top-0 left-0 right-0 z-50 w-full">
         <SunsetBanner />

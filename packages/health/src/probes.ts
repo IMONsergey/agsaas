@@ -68,7 +68,9 @@ export function supabaseProbe(): Dependency {
     timeoutMs: 3_000,
     probe: async () => {
       const url =
-        process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+        process.env.SUPABASE_INTERNAL_URL?.trim().replace(/\/+$/, "") ||
+        process.env.SUPABASE_URL ||
+        process.env.NEXT_PUBLIC_SUPABASE_URL;
       if (!url) throw new Error("SUPABASE_URL not set");
       const apikey =
         process.env.SUPABASE_SECRET_KEY ||

@@ -11,6 +11,7 @@ import {
   jsonb,
   pgEnum,
   pgPolicy,
+  pgSchema,
   pgTable,
   primaryKey,
   smallint,
@@ -2876,8 +2877,10 @@ export const transactionCategories = pgTable(
   ],
 );
 
-export const usersInAuth = pgTable(
-  "auth.users",
+// Supabase owns this table. It is a query/relationship declaration only; the
+// self-hosted application generator must never create or migrate auth objects.
+export const usersInAuth = pgSchema("auth").table(
+  "users",
   {
     instanceId: uuid("instance_id"),
     id: uuid("id").notNull(),

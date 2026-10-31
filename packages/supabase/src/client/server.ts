@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "../types";
+import { createSupabaseFetch } from "./server-fetch";
 
 type CreateClientOptions = {
   admin?: boolean;
@@ -28,6 +29,9 @@ export async function createClient(options?: CreateClientOptions) {
     key,
     {
       ...rest,
+      global: {
+        fetch: createSupabaseFetch(process.env.NEXT_PUBLIC_SUPABASE_URL!),
+      },
       cookies: {
         getAll() {
           return cookieStore.getAll();

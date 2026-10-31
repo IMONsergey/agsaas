@@ -14,12 +14,14 @@ import { Input } from "@midday/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@midday/ui/input-otp";
 import { Spinner } from "@midday/ui/spinner";
 import { SubmitButton } from "@midday/ui/submit-button";
+import { useToast } from "@midday/ui/use-toast";
 import { useSearchParams } from "next/navigation";
 import { useAction } from "next-safe-action/hooks";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod/v3";
 import { verifyOtpAction } from "@/actions/verify-otp-action";
+import { runAuthRequest } from "@/utils/auth-flow";
 
 const formSchema = z.object({
   email: z
@@ -40,6 +42,7 @@ export function OTPSignIn({ className }: Props) {
   const [isSent, setSent] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [email, setEmail] = useState<string>();
+  const { toast } = useToast();
   const supabase = createClient();
   const searchParams = useSearchParams();
 
@@ -51,25 +54,45 @@ export function OTPSignIn({ className }: Props) {
   });
 
   async function onSubmit({ email }: z.infer<typeof formSchema>) {
-    setLoading(true);
+    if (isLoading) return;
 
-    setEmail(email);
-
-    await supabase.auth.signInWithOtp({ email });
-
-    setSent(true);
-    setLoading(false);
+    await runAuthRequest({
+      request: () => supabase.auth.signInWithOtp({ email }),
+      setPending: setLoading,
+      onSuccess: () => {
+        setEmail(email);
+        setSent(true);
+      },
+      onError: () => {
+        toast({
+          title: "Unable to send sign-in code",
+          description: "Please wait a moment and try again.",
+          variant: "error",
+        });
+      },
+    });
   }
 
   async function onComplete(token: string) {
-    if (!email) return;
+    if (!email || isVerifying || verifyOtp.isExecuting) return;
 
-    setIsVerifying(true);
-
-    verifyOtp.execute({
-      token,
-      email,
-      redirectTo: `${window.location.origin}/${searchParams.get("return_to") || ""}`,
+    await runAuthRequest({
+      request: async () => {
+        const result = await verifyOtp.executeAsync({
+          token,
+          email,
+          redirectTo: `${window.location.origin}/${searchParams.get("return_to") || ""}`,
+        });
+        return { error: result?.serverError ?? result?.validationErrors };
+      },
+      setPending: setIsVerifying,
+      onError: () => {
+        toast({
+          title: "Unable to verify sign-in code",
+          description: "Please try again or request a new code.",
+          variant: "error",
+        });
+      },
     });
   }
 

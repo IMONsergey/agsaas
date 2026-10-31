@@ -1,6 +1,5 @@
 import { LogEvents } from "@midday/events/events";
 import { setupAnalytics } from "@midday/events/server";
-import { getSession } from "@midday/supabase/cached-queries";
 import { createClient } from "@midday/supabase/server";
 import { sanitizeRedirectPath } from "@midday/utils/sanitize-redirect";
 import { addSeconds, addYears } from "date-fns";
@@ -8,6 +7,7 @@ import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getTRPCClient } from "@/trpc/server";
+import { getAuthOperationSession } from "@/utils/auth-flow";
 import { Cookies } from "@/utils/constants";
 import { getUrl } from "@/utils/environment";
 import { isBlockedNewUser } from "@/utils/new-user-gate";
@@ -21,6 +21,10 @@ export async function GET(req: NextRequest) {
   const returnTo = requestUrl.searchParams.get("return_to");
   const provider = requestUrl.searchParams.get("provider");
 
+  if (!code || requestUrl.searchParams.has("error")) {
+    return NextResponse.redirect(`${origin}/login?error=auth_callback`);
+  }
+
   if (client === "desktop") {
     return NextResponse.redirect(`${origin}/verify?code=${code}`);
   }
@@ -33,11 +37,13 @@ export async function GET(req: NextRequest) {
 
   if (code) {
     const supabase = await createClient();
-    await supabase.auth.exchangeCodeForSession(code);
+    const session = await getAuthOperationSession(() =>
+      supabase.auth.exchangeCodeForSession(code),
+    );
 
-    const {
-      data: { session },
-    } = await getSession();
+    if (!session) {
+      return NextResponse.redirect(`${origin}/login?error=auth_callback`);
+    }
 
     if (session) {
       if (isBlockedNewUser(session.user.created_at)) {

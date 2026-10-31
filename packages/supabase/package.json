@@ -24,6 +24,7 @@
   },
   "exports": {
     "./server": "./src/client/server.ts",
+    "./server-fetch": "./src/client/server-fetch.ts",
     "./client": "./src/client/client.ts",
     "./client-query": "./src/queries/client.ts",
     "./job": "./src/client/job.ts",

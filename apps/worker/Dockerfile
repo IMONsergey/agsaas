@@ -53,7 +53,8 @@ COPY --from=installer /app/package.json ./package.json
 # Carry the git SHA into the runtime container (stamped by CI before `railway up`)
 COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 COPY --from=builder /app/scripts/docker-entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Normalize read/execute permissions even when the checkout used umask 0077.
+RUN chmod 0755 /app/entrypoint.sh
 
 WORKDIR /app/apps/worker
 

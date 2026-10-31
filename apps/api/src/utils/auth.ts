@@ -1,4 +1,10 @@
-import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
+import { createSupabaseFetch } from "@midday/supabase/server-fetch";
+import {
+  createRemoteJWKSet,
+  customFetch,
+  type JWTPayload,
+  jwtVerify,
+} from "jose";
 
 export type Session = {
   user: {
@@ -21,6 +27,7 @@ type SupabaseJWTPayload = JWTPayload & {
 // keyset in memory so only the first call hits the network.
 const JWKS = createRemoteJWKSet(
   new URL(`${process.env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+  { [customFetch]: createSupabaseFetch(process.env.SUPABASE_URL!) },
 );
 
 // Fallback: HS256 shared secret for tokens issued before key rotation.
