@@ -1,14 +1,16 @@
 # Base image with Bun
-FROM oven/bun:1.3.10 AS base
+FROM oven/bun:1.3.11 AS base
 
 # Install turbo CLI globally
 FROM base AS turbo-cli
-RUN bun add -g turbo
+RUN bun add -g turbo@2.9.3
 
 # Builder stage - prune worker workspace
 FROM turbo-cli AS builder
 WORKDIR /app
 COPY . .
+ARG GIT_COMMIT_SHA=""
+RUN if [ -n "$GIT_COMMIT_SHA" ] || [ ! -f .git-commit-sha ]; then printf '%s' "$GIT_COMMIT_SHA" > .git-commit-sha; fi
 RUN turbo prune @midday/worker --docker --out-dir=out/worker
 
 # Installer stage - install deps and build
@@ -23,11 +25,11 @@ RUN apt-get update && apt-get install -y \
 
 # Copy package.json files from worker pruned workspace
 COPY --from=builder /app/out/worker/json/ .
+COPY --from=builder /app/out/worker/bun.lock ./bun.lock
 COPY bunfig.toml .
 
 # Install dependencies (before copying full source to maximize cache hits)
-RUN rm -f bun.lock
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy full source from worker pruned workspace
 COPY --from=builder /app/out/worker/full/ .
@@ -36,7 +38,7 @@ COPY --from=builder /app/out/worker/full/ .
 RUN cd packages/workbench && bun run build
 
 # Runner stage - clean image
-FROM oven/bun:1.3.10 AS runner
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

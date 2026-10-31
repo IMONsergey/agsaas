@@ -1,15 +1,17 @@
 # Base image with Bun
-FROM oven/bun:1.3.10 AS base
+FROM oven/bun:1.3.11 AS base
 
 # Install turbo CLI globally using Bun
 FROM base AS turbo-cli
-RUN bun add -g turbo
+RUN bun add -g turbo@2.9.3
 
 # Builder stage - prune dashboard workspace
 FROM turbo-cli AS builder
 WORKDIR /app
 # Copy all files
 COPY . .
+ARG GIT_COMMIT_SHA=""
+RUN if [ -n "$GIT_COMMIT_SHA" ] || [ ! -f .git-commit-sha ]; then printf '%s' "$GIT_COMMIT_SHA" > .git-commit-sha; fi
 # Prune dashboard workspace
 RUN turbo prune @midday/dashboard --docker
 
@@ -22,10 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Copy package.json files from pruned workspace
 COPY --from=builder /app/out/json/ .
+COPY --from=builder /app/out/bun.lock ./bun.lock
 COPY bunfig.toml .
 
 # Install dependencies
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy full source from pruned workspace
 COPY --from=builder /app/out/full/ .
@@ -58,8 +61,7 @@ ARG SENTRY_PROJECT
 ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 ENV NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 
-# Git SHA stamped by CI (echo "$GITHUB_SHA" > .git-commit-sha) before `railway up`.
-# The file lives at repo root, so the builder stage has it after COPY . .
+# The builder accepts a GIT_COMMIT_SHA build arg, a legacy CI stamp, or no stamp.
 COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 
 ENV CI=true
@@ -73,7 +75,7 @@ RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     bunx turbo run build --filter=@midday/dashboard --only
 
 # Runner stage - clean bun image, no turbo
-FROM oven/bun:1.3.10 AS runner
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

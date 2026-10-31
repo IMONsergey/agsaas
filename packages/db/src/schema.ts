@@ -437,14 +437,14 @@ export const transactions = pgTable(
     ),
     index("idx_transactions_team_id_date_name").using(
       "btree",
-      table.teamId.asc().nullsLast().op("date_ops"),
+      table.teamId.asc().nullsLast().op("uuid_ops"),
       table.date.asc().nullsLast().op("date_ops"),
-      table.name.asc().nullsLast().op("uuid_ops"),
+      table.name.asc().nullsLast().op("text_ops"),
     ),
     index("idx_transactions_team_id_name").using(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
-      table.name.asc().nullsLast().op("uuid_ops"),
+      table.name.asc().nullsLast().op("text_ops"),
     ),
     index("idx_trgm_name").using(
       "gist",
@@ -466,10 +466,10 @@ export const transactions = pgTable(
       "transactions_team_id_date_currency_bank_account_id_category_idx",
     ).using(
       "btree",
-      table.teamId.asc().nullsLast().op("enum_ops"),
+      table.teamId.asc().nullsLast().op("uuid_ops"),
       table.date.asc().nullsLast().op("date_ops"),
       table.currency.asc().nullsLast().op("text_ops"),
-      table.bankAccountId.asc().nullsLast().op("date_ops"),
+      table.bankAccountId.asc().nullsLast().op("uuid_ops"),
     ),
     index("transactions_team_id_idx").using(
       "btree",
@@ -1757,7 +1757,7 @@ export const documents = pgTable(
     ),
     index("documents_team_id_parent_id_idx").using(
       "btree",
-      table.teamId.asc().nullsLast().op("text_ops"),
+      table.teamId.asc().nullsLast().op("uuid_ops"),
       table.parentId.asc().nullsLast().op("text_ops"),
     ),
     // Composite index for common query pattern: teamId + createdAt DESC

@@ -4,19 +4,28 @@ import { Pool } from "pg";
 import type { Database } from "../../client";
 import { withReplicas } from "../../replicas";
 import * as schema from "../../schema";
-
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL ||
-  "postgres://postgres:postgres@localhost:5433/midday_test";
+import {
+  getTestDatabaseUrl,
+  TestDatabaseConfigurationError,
+} from "./test-database-config";
 
 let pool: Pool | null = null;
 let db: Database | null = null;
+let poolUrl: string | null = null;
 
 export function getTestDatabase(): Database {
-  if (db) return db;
+  const connectionString = getTestDatabaseUrl();
+  if (db) {
+    if (connectionString !== poolUrl) {
+      throw new TestDatabaseConfigurationError(
+        "the connection URL cannot change while the test pool is open",
+      );
+    }
+    return db;
+  }
 
   pool = new Pool({
-    connectionString: TEST_DATABASE_URL,
+    connectionString,
     max: 5,
     idleTimeoutMillis: 5000,
     connectionTimeoutMillis: 10000,
@@ -28,6 +37,7 @@ export function getTestDatabase(): Database {
   });
 
   db = withReplicas(primaryDb, [primaryDb], (replicas) => replicas[0]!);
+  poolUrl = connectionString;
   return db;
 }
 
@@ -57,9 +67,12 @@ export async function closeDatabase(): Promise<void> {
     await pool.end();
     pool = null;
     db = null;
+    poolUrl = null;
   }
 }
 
 export function isTestDatabaseAvailable(): boolean {
-  return !!process.env.TEST_DATABASE_URL;
+  if (process.env.TEST_DATABASE_URL === undefined) return false;
+  getTestDatabaseUrl();
+  return true;
 }

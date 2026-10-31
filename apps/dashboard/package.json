@@ -11,7 +11,7 @@
     "format": "biome format --write .",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "find src -name '*.test.ts' -o -name '*.spec.ts' | grep -q . && bun test --exit src || echo 'No tests yet'"
+    "test": "bun test --exit --pass-with-no-tests src"
   },
   "dependencies": {
     "@ai-sdk/openai": "catalog:",

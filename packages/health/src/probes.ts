@@ -9,7 +9,11 @@
 
 import { Provider } from "@midday/banking";
 import { checkHealth as checkCacheHealth } from "@midday/cache/health";
-import { checkHealth as checkDbHealth } from "@midday/db/utils/health";
+import {
+  checkHealth as checkDbHealth,
+  checkWorkerHealth,
+} from "@midday/db/utils/health";
+import { pingRedisClient } from "./redis-probe";
 import type { Dependency } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -25,6 +29,17 @@ export function databaseProbe(): Dependency {
     timeoutMs: 3_000,
     probe: async () => {
       await checkDbHealth();
+      return true;
+    },
+  };
+}
+
+/** Worker readiness must use DATABASE_PRIMARY_POOLER_URL, like its jobs. */
+export function workerDatabaseProbe(): Dependency {
+  return {
+    ...databaseProbe(),
+    probe: async () => {
+      await checkWorkerHealth();
       return true;
     },
   };
@@ -85,10 +100,7 @@ export function redisQueueProbe(): Dependency {
       if (!url) throw new Error("REDIS_QUEUE_URL not set");
 
       const client = new RedisClient(url, { connectionTimeout: 3000 });
-      await client.connect();
-      await client.send("PING", []);
-      client.close();
-      return true;
+      return pingRedisClient(client);
     },
   };
 }
@@ -107,7 +119,7 @@ export function plaidProbe(): Dependency {
     probe: async () => {
       try {
         const provider = new Provider({ provider: "plaid" });
-        return await provider.getHealthCheck().then((h) => h.plaid.healthy);
+        return await provider.getProviderHealthCheck();
       } catch {
         return false;
       }
@@ -125,9 +137,7 @@ export function gocardlessProbe(): Dependency {
     probe: async () => {
       try {
         const provider = new Provider({ provider: "gocardless" });
-        return await provider
-          .getHealthCheck()
-          .then((h) => h.gocardless.healthy);
+        return await provider.getProviderHealthCheck();
       } catch {
         return false;
       }
@@ -145,9 +155,7 @@ export function enableBankingProbe(): Dependency {
     probe: async () => {
       try {
         const provider = new Provider({ provider: "enablebanking" });
-        return await provider
-          .getHealthCheck()
-          .then((h) => h.enablebanking.healthy);
+        return await provider.getProviderHealthCheck();
       } catch {
         return false;
       }
@@ -165,7 +173,7 @@ export function tellerProbe(): Dependency {
     probe: async () => {
       try {
         const provider = new Provider({ provider: "teller" });
-        return await provider.getHealthCheck().then((h) => h.teller.healthy);
+        return await provider.getProviderHealthCheck();
       } catch {
         return false;
       }
@@ -440,7 +448,7 @@ export function apiDependencies(): Dependency[] {
 export function workerDependencies(): Dependency[] {
   return [
     // Tier 1 — Core
-    databaseProbe(),
+    workerDatabaseProbe(),
     redisQueueProbe(),
     supabaseProbe(),
     // Tier 2 — Important
