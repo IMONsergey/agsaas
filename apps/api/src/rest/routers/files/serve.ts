@@ -6,7 +6,6 @@ import { HTTPException } from "hono/http-exception";
 import { withDatabase } from "../../middleware/db";
 import { withFileAuth } from "../../middleware/file-auth";
 import { withClientIp } from "../../middleware/ip";
-import { normalizeAndValidatePath } from "./utils";
 
 const app = new OpenAPIHono<Context>();
 
@@ -64,11 +63,10 @@ app.openapi(
         },
       },
     },
-    middleware: [withClientIp, withDatabase, withFileAuth],
+    middleware: [withClientIp, withDatabase, withFileAuth("filePath")],
   }),
   async (c) => {
-    const { filePath } = c.req.valid("query");
-    const { normalizedPath } = normalizeAndValidatePath(filePath);
+    const normalizedPath = c.get("authorizedFilePath");
 
     const supabase = await createAdminClient();
 

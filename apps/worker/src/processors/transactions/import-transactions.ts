@@ -4,6 +4,7 @@ import { transform } from "@midday/import/transform";
 import { validateTransactions } from "@midday/import/validate";
 import { triggerJob } from "@midday/job-client";
 import { createClient } from "@midday/supabase/job";
+import { assertTeamStoragePath } from "@midday/supabase/storage";
 import type { Job } from "bullmq";
 import Papa from "papaparse";
 import type { ImportTransactionsPayload } from "../../schemas/transactions";
@@ -27,6 +28,11 @@ export class ImportTransactionsProcessor extends BaseProcessor<ImportTransaction
   }> {
     const { teamId, filePath, bankAccountId, currency, mappings, inverted } =
       job.data;
+    if (!filePath) {
+      throw new Error("File path is required");
+    }
+    assertTeamStoragePath(filePath, teamId);
+
     const db = getDb();
     const supabase = createClient();
 
@@ -37,10 +43,6 @@ export class ImportTransactionsProcessor extends BaseProcessor<ImportTransaction
       bankAccountId,
       currency,
     });
-
-    if (!filePath) {
-      throw new Error("File path is required");
-    }
 
     await this.updateProgress(job, this.ProgressMilestones.FETCHED);
 

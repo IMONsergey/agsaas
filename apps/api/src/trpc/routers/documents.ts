@@ -9,6 +9,7 @@ import {
   signedUrlsSchema,
 } from "@api/schemas/documents";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { assertTeamFilePath } from "@api/utils/storage-path";
 import {
   checkDocumentAttachments,
   deleteDocument,
@@ -91,6 +92,10 @@ export const documentsRouter = createTRPCRouter({
   processDocument: protectedProcedure
     .input(processDocumentSchema)
     .mutation(async ({ ctx: { teamId, db }, input }) => {
+      for (const item of input) {
+        assertTeamFilePath(item.filePath, teamId!);
+      }
+
       const supportedDocuments = input.filter((item) =>
         isMimeTypeSupportedForProcessing(item.mimetype),
       );

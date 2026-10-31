@@ -10,6 +10,7 @@ export type Context = {
     db: Database;
     session: Session;
     teamId: string;
+    authorizedFilePath: string;
     clientIp?: string;
     scopes?: Scope[];
     user?: User;

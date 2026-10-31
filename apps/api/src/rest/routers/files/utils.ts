@@ -1,6 +1,7 @@
 import { teamCache } from "@midday/cache/team-cache";
 import type { Database } from "@midday/db/client";
 import { hasTeamAccess } from "@midday/db/queries";
+import { parseTeamStoragePath, StoragePathError } from "@midday/supabase/storage";
 import { HTTPException } from "hono/http-exception";
 
 /**
@@ -17,24 +18,19 @@ export function normalizeAndValidatePath(filePath: string): {
     ? filePath.substring("vault/".length)
     : filePath;
 
-  // Extract teamId from path and validate
-  const pathParts = normalizedPath.split("/");
-  const pathTeamId = pathParts[0];
-  const uuidRegex =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-  if (!pathTeamId || !uuidRegex.test(pathTeamId)) {
-    throw new HTTPException(400, {
-      message:
-        "Invalid file path format. Path must start with a valid teamId UUID.",
-    });
+  try {
+    const parsed = parseTeamStoragePath(normalizedPath);
+    return {
+      normalizedPath: parsed.path,
+      pathTeamId: parsed.teamId,
+      pathArray: parsed.segments,
+    };
+  } catch (error) {
+    if (error instanceof StoragePathError) {
+      throw new HTTPException(400, { message: error.message });
+    }
+    throw error;
   }
-
-  return {
-    normalizedPath,
-    pathTeamId,
-    pathArray: pathParts,
-  };
 }
 
 /**

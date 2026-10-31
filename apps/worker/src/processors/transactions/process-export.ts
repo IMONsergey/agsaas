@@ -1,6 +1,6 @@
 import { getTransactionsByIds } from "@midday/db/queries";
 import { createClient } from "@midday/supabase/job";
-import { download } from "@midday/supabase/storage";
+import { assertTeamStoragePath, download } from "@midday/supabase/storage";
 import { ensureFileExtension } from "@midday/utils";
 import {
   calculateBaseTaxAmount,
@@ -45,6 +45,14 @@ export class ProcessExportProcessor extends BaseProcessor<ProcessExportPayload> 
       ids,
       teamId,
     });
+
+    // Validate the complete batch before any privileged download, including
+    // paths persisted before the API ingress checks were introduced.
+    for (const transaction of transactionsData ?? []) {
+      for (const attachment of transaction.attachments ?? []) {
+        assertTeamStoragePath(attachment.path ?? [], teamId);
+      }
+    }
 
     if (onProgress) await onProgress(30);
 

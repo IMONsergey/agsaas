@@ -9,6 +9,7 @@ import {
 import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
 import { createClient } from "@midday/supabase/job";
+import { assertTeamStoragePath } from "@midday/supabase/storage";
 import type { Job } from "bullmq";
 import type { ProcessAttachmentPayload } from "../../schemas/inbox";
 import { getDb } from "../../utils/db";
@@ -30,6 +31,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       senderEmail,
       inboxAccountId,
     } = job.data;
+    assertTeamStoragePath(filePath, teamId);
     const supabase = createClient();
     const db = getDb();
 

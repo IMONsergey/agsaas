@@ -15,6 +15,7 @@ import {
   updateTransactionsSchema,
 } from "@api/schemas/transactions";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { assertTeamFilePath } from "@api/utils/storage-path";
 import {
   createTransaction,
   deleteTransactions,
@@ -186,6 +187,8 @@ export const transactionsRouter = createTRPCRouter({
       if (!teamId) {
         throw new Error("Team not found");
       }
+
+      assertTeamFilePath(input.filePath ?? [], teamId);
 
       // Only update balance/currency for manual accounts (backfill into connected accounts keeps bank-synced balance)
       const account = await getBankAccountById(db, {

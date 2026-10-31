@@ -5,6 +5,7 @@ import {
 } from "@midday/documents/utils";
 import { triggerJob, triggerJobAndWait } from "@midday/job-client";
 import { createClient } from "@midday/supabase/job";
+import { assertTeamStoragePath } from "@midday/supabase/storage";
 import type { Job } from "bullmq";
 import type { ProcessDocumentPayload } from "../../schemas/documents";
 import { getDb } from "../../utils/db";
@@ -29,6 +30,7 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
   async process(job: Job<ProcessDocumentPayload>): Promise<void> {
     const processStartTime = Date.now();
     const { mimetype, filePath, teamId } = job.data;
+    assertTeamStoragePath(filePath, teamId);
     const supabase = createClient();
     const db = getDb();
     const fileName = filePath.join("/");

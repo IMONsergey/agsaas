@@ -15,7 +15,7 @@ import {
   updateDocumentByPath,
 } from "@midday/db/queries";
 import { createClient } from "@midday/supabase/job";
-import { download } from "@midday/supabase/storage";
+import { assertTeamStoragePath, download } from "@midday/supabase/storage";
 import archiver from "archiver";
 import type { Job } from "bullmq";
 import { format, formatISO } from "date-fns";
@@ -247,6 +247,7 @@ export class ExportTeamDataProcessor extends BaseProcessor<ExportTeamDataPayload
         if (!fp?.length || !num) continue;
         const storagePath = fp.join("/");
         try {
+          assertTeamStoragePath(storagePath, teamId);
           const { data } = await download(supabase, {
             bucket: "vault",
             path: storagePath,
@@ -373,6 +374,7 @@ export class ExportTeamDataProcessor extends BaseProcessor<ExportTeamDataPayload
             const storagePath = tokens.join("/");
             const safeName = tokens.join("_").replace(/[/\\?%*:|"<>]/g, "_");
             try {
+              assertTeamStoragePath(storagePath, teamId);
               const { data } = await download(supabase, {
                 bucket: "vault",
                 path: storagePath,
@@ -435,6 +437,7 @@ export class ExportTeamDataProcessor extends BaseProcessor<ExportTeamDataPayload
         const storagePath = fp.join("/");
         const safeFn = fn.replace(/[/\\?%*:|"<>]/g, "_");
         try {
+          assertTeamStoragePath(storagePath, teamId);
           const { data } = await download(supabase, {
             bucket: "vault",
             path: storagePath,

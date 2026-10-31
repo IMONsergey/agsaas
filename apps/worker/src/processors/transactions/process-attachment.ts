@@ -2,6 +2,7 @@ import { updateTransaction } from "@midday/db/queries";
 import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
 import { createClient } from "@midday/supabase/job";
+import { assertTeamStoragePath } from "@midday/supabase/storage";
 import type { Job } from "bullmq";
 import type { ProcessTransactionAttachmentPayload } from "../../schemas/transactions";
 import { getDb } from "../../utils/db";
@@ -15,6 +16,7 @@ import { BaseProcessor } from "../base";
 export class ProcessTransactionAttachmentProcessor extends BaseProcessor<ProcessTransactionAttachmentPayload> {
   async process(job: Job<ProcessTransactionAttachmentPayload>): Promise<void> {
     const { transactionId, mimetype, filePath, teamId } = job.data;
+    assertTeamStoragePath(filePath, teamId);
     const supabase = createClient();
 
     this.logger.info("Processing transaction attachment", {

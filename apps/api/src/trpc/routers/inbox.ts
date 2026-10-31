@@ -18,6 +18,7 @@ import {
   updateInboxSchema,
 } from "@api/schemas/inbox";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { assertTeamFilePath } from "@api/utils/storage-path";
 import {
   checkInboxAttachments,
   confirmSuggestedMatch,
@@ -127,6 +128,8 @@ export const inboxRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createInboxItemSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
+      assertTeamFilePath(input.filePath, teamId!);
+
       return createInbox(db, {
         displayName: input.filename,
         teamId: teamId!,
@@ -141,6 +144,10 @@ export const inboxRouter = createTRPCRouter({
   processAttachments: protectedProcedure
     .input(processAttachmentsSchema)
     .mutation(async ({ ctx: { teamId }, input }) => {
+      for (const item of input) {
+        assertTeamFilePath(item.filePath, teamId!);
+      }
+
       const jobResults = await Promise.all(
         input.map((item) =>
           triggerJob(

@@ -12,7 +12,7 @@ import { publicMiddleware } from "../../middleware";
 import { withDatabase } from "../../middleware/db";
 import { withFileAuth } from "../../middleware/file-auth";
 import { withClientIp } from "../../middleware/ip";
-import { getContentTypeFromFilename, normalizeAndValidatePath } from "./utils";
+import { getContentTypeFromFilename } from "./utils";
 
 const app = new OpenAPIHono<Context>();
 
@@ -79,11 +79,11 @@ app.openapi(
         },
       },
     },
-    middleware: [withClientIp, withDatabase, withFileAuth],
+    middleware: [withClientIp, withDatabase, withFileAuth("path")],
   }),
   async (c) => {
-    const { path, filename } = c.req.valid("query");
-    const { normalizedPath } = normalizeAndValidatePath(path);
+    const { filename } = c.req.valid("query");
+    const normalizedPath = c.get("authorizedFilePath");
 
     const supabase = await createAdminClient();
 
