@@ -1,0 +1,26 @@
+name: Setup
+description: Setup Bun, cache dependencies, and install
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: v1.3.10
+
+    - name: Mount bun global cache
+      uses: useblacksmith/stickydisk@v1
+      with:
+        key: ${{ github.repository }}-bun-cache
+        path: ~/.bun/install/cache
+
+    - name: Mount node_modules
+      uses: useblacksmith/stickydisk@v1
+      with:
+        key: ${{ github.repository }}-node-modules
+        path: node_modules
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install
