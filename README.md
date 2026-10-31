@@ -39,6 +39,9 @@ Midday is an all-in-one tool designed to help freelancers, contractors, consulta
 
 We are working on the documentation to get started with Midday for local development: https://docs.midday.ai
 
+For this AGSAAS fork, see the [development and verification runbook](docs/agsaas-development.md)
+and [refactor notes](docs/agsaas-refactor.md) for local checks and the scope of the refactor.
+
 ## App Architecture
 
 - Monorepo

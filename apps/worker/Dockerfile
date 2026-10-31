@@ -3,7 +3,7 @@ FROM oven/bun:1.3.11 AS base
 
 # Install turbo CLI globally
 FROM base AS turbo-cli
-RUN bun add -g turbo@2.9.3
+RUN bun add -g turbo@2.11.10
 
 # Builder stage - prune worker workspace
 FROM turbo-cli AS builder

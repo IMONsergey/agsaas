@@ -190,7 +190,18 @@ redisSuite("QueueManager with real Redis / BullMQ", () => {
         return { completed: true };
       });
       await withDeadline(
-        Promise.all(jobs.map((job) => job.waitUntilFinished(events, 10_000))),
+        (async () => {
+          // Each wait registers a queue "closing" listener. Keep only a small
+          // batch active; BullMQ also checks jobs that already finished.
+          const batchSize = 5;
+          for (let offset = 0; offset < jobs.length; offset += batchSize) {
+            await Promise.all(
+              jobs
+                .slice(offset, offset + batchSize)
+                .map((job) => job.waitUntilFinished(events, 10_000)),
+            );
+          }
+        })(),
         "range test jobs to complete",
       );
 

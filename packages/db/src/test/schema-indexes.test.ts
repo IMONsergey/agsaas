@@ -39,7 +39,7 @@ const indexCases = [
       ["parent_id", "PgText", "text_ops"],
     ],
   },
-];
+] as const;
 
 describe("composite index declarations", () => {
   for (const { table, name, columns } of indexCases) {

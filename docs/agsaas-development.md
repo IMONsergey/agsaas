@@ -72,8 +72,14 @@ docker build -f apps/api/Dockerfile --build-arg GIT_COMMIT_SHA="$(git rev-parse 
 docker build -f apps/worker/Dockerfile --build-arg GIT_COMMIT_SHA="$(git rev-parse HEAD)" -t agsaas-worker:local .
 ```
 
-Bun and Turbo versions are pinned. Pruned workspaces use the pruned lockfile with
-`--frozen-lockfile`; do not delete the lockfile to bypass dependency errors.
+Bun and Turbo versions are pinned. Turbo **2.11.10** preserves a Bun-compatible
+pruned dependency graph, including HTTP(S) tarball dependencies such as XLSX.
+The older 2.9.3 corrupts that tuple; 2.9.4 fixes its syntax but still produces a
+hoisted graph rejected by Bun 1.3.11 for this repository. The pinned 2.11.10 was
+verified for the API, worker, and dashboard prune targets without changing any
+non-Turbo dependency version or integrity value.
+Pruned workspaces use the pruned lockfile with `--frozen-lockfile`; do not delete
+the lockfile or strip its integrity values to bypass dependency errors.
 The build accepts an explicit commit argument, the legacy commit stamp, or an
 unstamped checkout. An empty stamp keeps the existing runtime/build-ID fallback.
 

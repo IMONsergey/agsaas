@@ -59,6 +59,9 @@ No production migration is executed by this work.
 - Pin Docker Bun and Turbo versions, install the pruned frozen lockfile, accept
   optional commit stamps, and exclude local credentials and build output from
   Docker contexts. Keep dashboard presentation code unchanged.
+- Pin Turbo 2.11.10 to correct Bun URL-dependency serialization and hoisted-graph
+  pruning. Preserve non-Turbo dependency versions and integrity checks; keep
+  the frozen lockfile check enabled for all three container build targets.
 - Separate mock-heavy test suites, typecheck Workbench tests without emitting
   them in the library, and add explicit embedded-client build checks.
 - Guard disposable PostgreSQL test setup before constructing clients or
