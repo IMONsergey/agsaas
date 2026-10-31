@@ -8,6 +8,8 @@ x-runtime-env: &runtime-env
   DATABASE_PRIMARY_POOLER_URL: postgres://postgres:runtime-test@postgres:5432/agsaas_runtime_test?sslmode=disable
   SUPABASE_URL: http://auth-health-fixture:8080
   SUPABASE_SECRET_KEY: runtime-test-server-key-not-a-real-credential
+  INTERNAL_API_KEY: runtime-test-internal-shared-key-not-a-real-credential
+  API_INTERNAL_URL: http://api:8080
   REDIS_URL: redis://redis:6379/14
   REDIS_QUEUE_URL: redis://redis:6379/15
   DB_POOL_STATS_INTERVAL_MS: "0"

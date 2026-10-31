@@ -16,7 +16,12 @@ const required: Record<Service, string[]> = {
     "REDIS_URL",
     "REDIS_QUEUE_URL",
   ],
-  worker: ["SUPABASE_SECRET_KEY", "REDIS_URL", "REDIS_QUEUE_URL"],
+  worker: [
+    "INTERNAL_API_KEY",
+    "SUPABASE_SECRET_KEY",
+    "REDIS_URL",
+    "REDIS_QUEUE_URL",
+  ],
   dashboard: [
     "NEXT_PUBLIC_SUPABASE_URL",
     "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
@@ -128,6 +133,17 @@ export function inspectEnvironment(service: Service, env: Environment) {
         "warning",
         "BOARD_USERNAME / BOARD_PASSWORD",
         "Both values are required; administration remains disabled with only one.",
+      );
+    }
+    if (env.API_INTERNAL_URL) {
+      checkUrl("API_INTERNAL_URL", ["http:", "https:"]);
+    } else if (env.NEXT_PUBLIC_API_URL) {
+      checkUrl("NEXT_PUBLIC_API_URL", ["http:", "https:"]);
+    } else {
+      add(
+        "warning",
+        "API_INTERNAL_URL",
+        "Set the API endpoint for service-to-service jobs; the existing fallback is localhost:3003.",
       );
     }
   }

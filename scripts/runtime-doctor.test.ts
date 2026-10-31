@@ -8,6 +8,8 @@ const core = {
     "postgres://test:test@localhost:5433/runtime_test?sslmode=disable",
   SUPABASE_URL: "http://localhost:54321",
   SUPABASE_SECRET_KEY: "sb_secret_test-only-key",
+  INTERNAL_API_KEY: "internal-test-only-key",
+  API_INTERNAL_URL: "http://api:8080",
   REDIS_URL: "redis://localhost:6380/1",
   REDIS_QUEUE_URL: "redis://localhost:6380/15",
   ALLOWED_API_ORIGINS: "http://localhost:3001",
@@ -54,6 +56,28 @@ describe("offline runtime doctor", () => {
         DATABASE_PRIMARY_URL: undefined,
       }).ok,
     ).toBe(false);
+  });
+  test("worker requires its service-to-service key", () => {
+    expect(
+      inspectEnvironment("worker", { ...core, INTERNAL_API_KEY: "" }).ok,
+    ).toBe(false);
+  });
+  test("worker validates the configured internal API URL", () => {
+    expect(
+      inspectEnvironment("worker", { ...core, API_INTERNAL_URL: "not-a-url" })
+        .ok,
+    ).toBe(false);
+    const fallback = inspectEnvironment("worker", {
+      ...core,
+      API_INTERNAL_URL: undefined,
+    });
+    expect(fallback.ok).toBe(true);
+    expect(fallback.findings).toContainEqual(
+      expect.objectContaining({
+        variable: "API_INTERNAL_URL",
+        severity: "warning",
+      }),
+    );
   });
   test("worker supports the existing primary-URL fallback", () => {
     expect(

@@ -186,6 +186,10 @@ enabled only when their SDK-required credential group is complete; unavailable
 platform webhooks return 503 before initialization. Existing configured
 integrations retain their SDK behavior. Email/AI/connectors/messaging are still
 real features that require valid provider configuration when selected.
+The worker payment-issue processor also creates its email client only when the
+email job runs. A fresh-process regression imports all 38 registered processors
+without optional-provider keys and forbids all network attempts; separate SDK
+fixtures preserve the configured email payload and original failure behavior.
 In particular, existing account deletion still includes Resend contact cleanup,
 and email notification jobs still require Resend. Core startup success does not
 certify these feature flows without their configured providers.
@@ -206,8 +210,15 @@ schema, TLS certificates, external connectivity, or production readiness.
 | Service | Core configuration |
 | --- | --- |
 | API | `DATABASE_PRIMARY_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `REDIS_URL`, `REDIS_QUEUE_URL`; set exact `ALLOWED_API_ORIGINS` for browser access |
-| Worker | `DATABASE_PRIMARY_POOLER_URL` (existing `DATABASE_PRIMARY_URL` fallback), `SUPABASE_URL` (existing `NEXT_PUBLIC_SUPABASE_URL` fallback), `SUPABASE_SECRET_KEY`, `REDIS_URL`, `REDIS_QUEUE_URL` |
+| Worker | `DATABASE_PRIMARY_POOLER_URL` (existing `DATABASE_PRIMARY_URL` fallback), `SUPABASE_URL` (existing `NEXT_PUBLIC_SUPABASE_URL` fallback), `SUPABASE_SECRET_KEY`, `REDIS_URL`, `REDIS_QUEUE_URL`, `INTERNAL_API_KEY` shared with API; set `API_INTERNAL_URL` to that API |
 | Dashboard build | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_URL`; stable release/key configuration for replicas |
+
+`INTERNAL_API_KEY` is a core API/worker service credential, not an optional
+third-party integration. Use the same private value in both services. Worker
+internal calls use `API_INTERNAL_URL`, then `NEXT_PUBLIC_API_URL`, then the
+existing development fallback `http://localhost:3003`. In separate containers,
+localhost does not refer to the API container. Never expose the internal key
+through a `NEXT_PUBLIC_*` variable.
 
 BullMQ now respects the numeric database in `REDIS_QUEUE_URL` and decodes escaped
 credentials. Both producers and workers use the same parser; ordinary `redis://`
@@ -254,6 +265,14 @@ setup must be restored/reconstructed and tested before a fresh product install
 can be claimed. Do not copy synthetic test auth or tracker functions into a real
 deployment, run `db push` blindly against customer data, or report the runtime
 smoke as a successful signup-to-invoice journey.
+
+The migration journal also refers to `0000_silly_sage`, but the corresponding
+initial SQL is absent. A read-only comparison with the imported upstream revision
+`51587319f26a0ffaa9dfccab1920373cb65689b7` found the same 39 SQL migration blobs,
+snapshot/journal and Supabase client files: this baseline gap was not introduced
+by the AGSAAS import. Restore a version-matched bootstrap or schema-only export
+(including custom functions, triggers, grants/policies and migration history),
+without customer records or credentials, before treating the install as complete.
 
 The next functional gate is an approved bootstrap against a disposable real
 Supabase deployment, followed by actual registration, workspace membership,

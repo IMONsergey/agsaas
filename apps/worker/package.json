@@ -6,7 +6,8 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --exit src/http src/runtime",
+    "test": "bun test --exit src/http src/runtime && bun run test:startup",
+    "test:startup": "bun --no-env-file test --exit --timeout 30000 src/processors/teams/payment-issue.test.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },

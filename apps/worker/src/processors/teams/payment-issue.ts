@@ -5,11 +5,19 @@ import { Resend } from "resend";
 import type { PaymentIssuePayload } from "../../schemas/teams";
 import { BaseProcessor } from "../base";
 
-const resend = new Resend(process.env.RESEND_API_KEY!);
+let resend: Resend | undefined;
+
+function getResend(): Resend {
+  // Email credentials are only required when this processor sends an email,
+  // not when the worker imports its registry to start unrelated queues.
+  if (!resend) resend = new Resend(process.env.RESEND_API_KEY!);
+  return resend;
+}
 
 export class PaymentIssueProcessor extends BaseProcessor<PaymentIssuePayload> {
   async process(job: Job<PaymentIssuePayload>): Promise<void> {
     const { teamId, email, fullName, teamName } = job.data;
+    const resend = getResend();
 
     this.logger.info("Sending payment issue email", {
       jobId: job.id,
