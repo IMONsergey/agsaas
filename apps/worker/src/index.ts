@@ -130,7 +130,10 @@ const app = new Hono();
 
 // Initialize Workbench dashboard
 function initializeWorkbench() {
-  const auth = getWorkerAdminAuth(process.env);
+  const auth = getWorkerAdminAuth({
+    BOARD_USERNAME: process.env.BOARD_USERNAME,
+    BOARD_PASSWORD: process.env.BOARD_PASSWORD,
+  });
   if (!auth) {
     logger.warn(
       "Worker administration disabled: set both BOARD_USERNAME and BOARD_PASSWORD to enable it",

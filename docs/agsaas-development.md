@@ -162,7 +162,9 @@ distributed as an independent product until they are reviewed and replaced.
   This pass does not rewrite customer data or deploy constraints/policies.
 - Storage/file-export validation work was interrupted by an environment safety
   restriction and is excluded from the verified checkpoint. Do not count that
-  unfinished work as a closed security issue.
+  unfinished work as a closed security issue. Its unvalidated source is retained
+  separately on `wip/storage-review-paused-2026-10-31`; do not merge or deploy it
+  without completing the review and restoring green regression checks.
 - Six incompatible operator classes in four existing index declarations are
   corrected to match UUID/text column types. Index names, columns, order, and
   uniqueness remain unchanged; production schema changes are not executed.

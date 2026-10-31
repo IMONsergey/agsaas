@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import type { Queue } from "bullmq";
+import type { JobsOptions, Queue } from "bullmq";
 import { Hono } from "hono";
 import { createWorkerAdminApp, getWorkerAdminAuth } from "./admin";
 
@@ -7,7 +7,11 @@ const auth = { username: "local-admin", password: "local-test:password" };
 const authorization = `Basic ${btoa(`${auth.username}:${auth.password}`)}`;
 
 function makeQueue() {
-  const add = mock(async () => ({ id: "local-job" }));
+  const add = mock(
+    async (_name: string, _data: unknown, _options?: JobsOptions) => ({
+      id: "local-job",
+    }),
+  );
   // The real adapter is used; omitting connection prevents Redis I/O.
   const queue = { name: "local-test", opts: {}, add } as unknown as Queue;
   return { queue, add };
