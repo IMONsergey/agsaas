@@ -1,5 +1,26 @@
 import type { Database, DatabaseWithPrimary } from "@midday/db/client";
 
+type RetryOnPrimaryOptions = {
+  maxRetries?: number;
+  baseDelay?: number;
+  retryOnNull?: boolean;
+};
+
+function isRetryableReplicaError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
+
+  return [
+    "timeout",
+    "connection",
+    "failed query",
+    "canceling statement",
+    "cancelled",
+  ].some((fragment) => message.includes(fragment));
+}
+
 /**
  * Retry helper for database queries that may fail due to replication lag
  * or transient connection issues. Tries replica first, falls back to primary on failure.
@@ -17,111 +38,49 @@ import type { Database, DatabaseWithPrimary } from "@midday/db/client";
 export async function withRetryOnPrimary<T>(
   db: Database,
   fn: (db: Database) => Promise<T>,
-  options?: {
-    maxRetries?: number;
-    baseDelay?: number;
-    retryOnNull?: boolean;
-  },
+  options?: RetryOnPrimaryOptions,
 ): Promise<T> {
   const {
     maxRetries = 1,
     baseDelay = 100,
     retryOnNull = false,
-  } = options || {};
-  const dbWithPrimary = db as DatabaseWithPrimary;
-  let lastError: unknown;
+  } = options ?? {};
+  const primaryOnly = (db as DatabaseWithPrimary).usePrimaryOnly;
 
-  // First attempt: try with replica (default behavior)
-  try {
-    const result = await fn(db);
+  const retryPrimary = async (): Promise<T> => {
+    let lastError: unknown;
 
-    // If retryOnNull is enabled and result is null/undefined, retry on primary
-    if (retryOnNull && (result === null || result === undefined)) {
-      // Check if we can use primary
-      if (!dbWithPrimary.usePrimaryOnly) {
-        return result;
-      }
-
-      // Retry on primary
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          const primaryOnly = dbWithPrimary.usePrimaryOnly;
-          if (!primaryOnly) {
-            return result;
-          }
-          const primaryDb = primaryOnly();
-          const primaryResult = await fn(primaryDb);
-          // Return primary result even if it's still null (user genuinely doesn't exist)
-          return primaryResult;
-        } catch (error) {
-          lastError = error;
-
-          // Don't retry on the last attempt
-          if (attempt === maxRetries) {
-            break;
-          }
-
-          // Exponential backoff with jitter
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // The presence of primaryOnly is checked before retryPrimary is called.
+        return await fn(primaryOnly!());
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
           const delay = baseDelay * 2 ** attempt + Math.random() * 50;
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
-
-      // If all retries failed, throw the last error
-      if (lastError) {
-        throw lastError;
-      }
-
-      // If no error but still null, return null
-      return result;
     }
 
-    return result;
+    throw lastError;
+  };
+
+  let result: T;
+  try {
+    result = await fn(db);
   } catch (error) {
-    lastError = error;
-
-    // Check if this is a retryable error
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const isRetryableError =
-      errorMessage.includes("timeout") ||
-      errorMessage.includes("connection") ||
-      errorMessage.includes("Failed query") ||
-      errorMessage.includes("canceling statement") ||
-      errorMessage.includes("cancelled");
-
-    // If not retryable, throw immediately
-    if (!isRetryableError) {
+    if (!primaryOnly || !isRetryableReplicaError(error)) {
       throw error;
     }
-
-    // If we can't use primary, throw the original error
-    if (!dbWithPrimary.usePrimaryOnly) {
-      throw error;
-    }
+    return retryPrimary();
   }
 
-  // Retry attempts: use primary database
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const primaryOnly = dbWithPrimary.usePrimaryOnly;
-      if (!primaryOnly) {
-        throw lastError;
-      }
-      const primaryDb = primaryOnly();
-      return await fn(primaryDb);
-    } catch (error) {
-      lastError = error;
-
-      // Don't retry on the last attempt
-      if (attempt === maxRetries) {
-        break;
-      }
-
-      // Exponential backoff with jitter
-      const delay = baseDelay * 2 ** attempt + Math.random() * 50;
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
+  // A missing row on a replica may be replication lag. Retry on primary
+  // outside the replica catch so a primary failure is never retried twice.
+  if (retryOnNull && result == null && typeof primaryOnly === "function") {
+    return retryPrimary();
   }
 
-  throw lastError;
+  return result;
 }
