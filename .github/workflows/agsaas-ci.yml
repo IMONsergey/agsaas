@@ -28,6 +28,8 @@ jobs:
           bun-version: "1.3.11"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Block high and critical dependency advisories
+        run: bun run test:dependencies
       - name: Lint
         run: bun run lint
       - name: Typecheck workspaces sequentially
