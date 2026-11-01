@@ -44,8 +44,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
         const teamId = randomUUID();
         const invoiceId = randomUUID();
         await client.query(
-          "INSERT INTO public.teams (id,inbox_id,name) VALUES ($1,$1,'Payment upgrade fixture')",
-          [teamId],
+          "INSERT INTO public.teams (id,inbox_id,name) VALUES ($1,$2,'Payment upgrade fixture')",
+          [teamId, teamId],
         );
         await client.query(
           "INSERT INTO public.invoices (id,team_id,amount,currency,status) VALUES ($1,$2,120.05,'USD','unpaid')",
