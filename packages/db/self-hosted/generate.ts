@@ -10,6 +10,7 @@ const directory = __dirname;
 type SnapshotColumn = {
   name: string;
   type: string;
+  notNull?: boolean;
   default?: unknown;
   generated?: { as: string; type: "stored" | "virtual" };
 };
@@ -32,6 +33,7 @@ type SnapshotTable = {
   foreignKeys: Record<string, SnapshotForeignKey>;
   policies: Record<string, unknown>;
   isRLSEnabled: boolean;
+  uniqueConstraints?: Record<string, unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,6 +58,7 @@ function isColumn(value: unknown): value is SnapshotColumn {
     isRecord(value) &&
     typeof value.name === "string" &&
     typeof value.type === "string" &&
+    (value.notNull === undefined || typeof value.notNull === "boolean") &&
     (value.generated === undefined ||
       (isRecord(value.generated) &&
         typeof value.generated.as === "string" &&
@@ -86,7 +89,8 @@ function isTable(value: unknown): value is SnapshotTable {
     isRecordOf(value.columns, isColumn) &&
     isRecordOf(value.foreignKeys, isForeignKey) &&
     isRecord(value.policies) &&
-    typeof value.isRLSEnabled === "boolean"
+    typeof value.isRLSEnabled === "boolean" &&
+    (value.uniqueConstraints === undefined || isRecord(value.uniqueConstraints))
   );
 }
 
@@ -209,8 +213,9 @@ $fresh_install$;`;
 }
 
 /** Offline generation only: no credentials, DB connections, or remote calls. */
-export async function generateBootstrapSql(): Promise<string> {
-  const snapshot = createApplicationSnapshot();
+export async function generateBootstrapSql(
+  snapshot = createApplicationSnapshot(),
+): Promise<string> {
   const tableNames = Object.values(snapshot.tables)
     .map((table) => table.name)
     .sort();

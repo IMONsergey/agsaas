@@ -2,6 +2,7 @@ import { relations, type SQL, sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  check,
   customType,
   date,
   foreignKey,
@@ -24,6 +25,11 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 import type { AnyAppConfig } from "./app-config";
+import type {
+  InvoiceEmailActivity,
+  InvoiceEmailDeliveryKind,
+  InvoiceEmailDeliveryState,
+} from "./invoice-email-delivery";
 
 export const tsvector = customType<{
   data: string;
@@ -1017,6 +1023,7 @@ export const invoices = pgTable(
       .on(table.invoiceRecurringId, table.recurringSequence)
       .where(sql`invoice_recurring_id IS NOT NULL`),
     unique("invoices_scheduled_job_id_key").on(table.scheduledJobId),
+    unique("invoices_id_team_id_key").on(table.id, table.teamId),
     // Invoice page query indexes
     index("invoices_team_due_date_idx")
       .on(table.teamId, table.dueDate.desc())
@@ -1041,6 +1048,68 @@ export const invoices = pgTable(
     }),
   ],
 );
+
+// Internal payment handoff. No public/client policy is granted: the API checks
+// the signed invoice token, then all writes bind invoice and team together.
+export const invoicePaymentReservations = pgTable(
+  "invoice_payment_reservations",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    invoiceId: uuid("invoice_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    stripeAccountId: text("stripe_account_id").notNull(),
+    amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    currency: text().notNull(),
+    invoiceNumber: text("invoice_number").notNull(),
+    paymentIntentId: text("payment_intent_id"),
+    state: text()
+      .$type<"reserved" | "attached" | "reconciliation_required">()
+      .default("reserved")
+      .notNull(),
+    failureCode: text("failure_code"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    lastAttemptAt: timestamp("last_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("invoice_payment_reservations_invoice_id_key").on(table.invoiceId),
+    index("invoice_payment_reservations_team_id_idx").on(table.teamId),
+    foreignKey({
+      columns: [table.invoiceId, table.teamId],
+      foreignColumns: [invoices.id, invoices.teamId],
+      name: "invoice_payment_reservations_invoice_team_fkey",
+    }).onDelete("cascade"),
+    check(
+      "invoice_payment_reservations_amount_check",
+      sql`${table.amountMinor} BETWEEN 1 AND 99999999`,
+    ),
+    check(
+      "invoice_payment_reservations_currency_check",
+      sql`${table.currency} ~ '^[a-z]{3}$'`,
+    ),
+    check(
+      "invoice_payment_reservations_state_check",
+      sql`${table.state} IN ('reserved', 'attached', 'reconciliation_required')`,
+    ),
+    check(
+      "invoice_payment_reservations_attached_check",
+      sql`${table.state} <> 'attached' OR ${table.paymentIntentId} IS NOT NULL`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 export const customers = pgTable(
   "customers",
@@ -3136,7 +3205,7 @@ export const oauthApplications = pgTable(
       columns: [table.createdBy],
       foreignColumns: [users.id],
       name: "oauth_applications_created_by_fkey",
-    }).onDelete("cascade"),
+    }).onDelete("set null"),
     pgPolicy("OAuth applications can be managed by team members", {
       as: "permissive",
       for: "all",
@@ -3859,6 +3928,109 @@ export const activities = pgTable(
     }).onDelete("set null"),
   ],
 );
+
+// Durable customer invoice envelopes. No browser/Data API access is granted.
+// Completed rows retain the audit receipt, but discard the HTML/PDF payload.
+export const invoiceEmailDeliveries = pgTable(
+  "invoice_email_deliveries",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    teamId: uuid("team_id").notNull(),
+    invoiceId: uuid("invoice_id").notNull(),
+    operationKey: text("operation_key").notNull(),
+    kind: text().$type<InvoiceEmailDeliveryKind>().notNull(),
+    expectedScheduledJobId: text("expected_scheduled_job_id"),
+    recipient: text().notNull(),
+    envelope: text(),
+    envelopeHash: text("envelope_hash").notNull(),
+    activitySnapshot: jsonb("activity_snapshot")
+      .$type<InvoiceEmailActivity[]>()
+      .notNull(),
+    status: text()
+      .$type<InvoiceEmailDeliveryState>()
+      .default("pending")
+      .notNull(),
+    attempts: integer().default(0).notNull(),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    firstAttemptAt: timestamp("first_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    acceptedAt: timestamp("accepted_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    completedAt: timestamp("completed_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("invoice_email_deliveries_operation_idx").on(
+      table.teamId,
+      table.operationKey,
+    ),
+    index("invoice_email_deliveries_invoice_idx").on(table.invoiceId),
+    index("invoice_email_deliveries_recovery_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    check(
+      "invoice_email_deliveries_kind_check",
+      sql`${table.kind} in ('invoice', 'reminder')`,
+    ),
+    check(
+      "invoice_email_deliveries_state_check",
+      sql`${table.status} in ('pending', 'sending', 'accepted', 'completed', 'reconciliation', 'canceled', 'rejected')`,
+    ),
+    check(
+      "invoice_email_deliveries_attempts_check",
+      sql`${table.attempts} >= 0`,
+    ),
+    check(
+      "invoice_email_deliveries_envelope_check",
+      sql`(${table.status} = 'completed' and ${table.envelope} is null) or (${table.status} <> 'completed' and ${table.envelope} is not null and octet_length(${table.envelope}) <= 4194304)`,
+    ),
+    check(
+      "invoice_email_deliveries_receipt_check",
+      sql`${table.status} not in ('accepted', 'completed') or (${table.providerMessageId} is not null and length(${table.providerMessageId}) > 0 and ${table.acceptedAt} is not null)`,
+    ),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "invoice_email_deliveries_team_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.invoiceId, table.teamId],
+      foreignColumns: [invoices.id, invoices.teamId],
+      name: "invoice_email_deliveries_invoice_id_fkey",
+    }).onDelete("cascade"),
+    pgPolicy("agsaas_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 export const notificationSettings = pgTable(
   "notification_settings",

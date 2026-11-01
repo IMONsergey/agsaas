@@ -17,7 +17,6 @@ import {
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  deleteInvoice,
   getCustomerById,
   getInvoiceById,
   getInvoiceSummary,
@@ -26,8 +25,9 @@ import {
   getNextInvoiceNumber,
   getPaymentStatus,
   isInvoiceNumberUsed,
+  deleteInvoice as persistInvoiceDelete,
   draftInvoice as persistInvoiceDraft,
-  updateInvoice,
+  updateInvoice as persistInvoiceUpdate,
 } from "@midday/db/queries";
 import {
   getInvoiceSnapshotAmounts,
@@ -55,6 +55,28 @@ async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
       throw new HTTPException(error instanceof InvoiceAmountError ? 400 : 409, {
         message: error.message,
       });
+    }
+    throw error;
+  }
+}
+
+async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
+  try {
+    return await persistInvoiceUpdate(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError) {
+      throw new HTTPException(409, { message: error.message });
+    }
+    throw error;
+  }
+}
+
+async function deleteInvoice(...args: Parameters<typeof persistInvoiceDelete>) {
+  try {
+    return await persistInvoiceDelete(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError) {
+      throw new HTTPException(409, { message: error.message });
     }
     throw error;
   }

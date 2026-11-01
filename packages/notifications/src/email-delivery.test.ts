@@ -11,6 +11,7 @@ import {
 } from "bun:test";
 import { Socket } from "node:net";
 import type { Database } from "@midday/db/client";
+import * as durableQueries from "@midday/db/queries/invoice-email-deliveries";
 import { Resend } from "resend";
 import type { EmailInput } from "./base";
 import {
@@ -68,6 +69,7 @@ globalThis.fetch = Object.assign(
 );
 
 mock.module("@midday/db/queries", () => ({
+  ...durableQueries,
   shouldSendNotification: async (
     _db: unknown,
     _userId: string,

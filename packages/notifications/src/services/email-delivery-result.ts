@@ -14,6 +14,8 @@ export interface EmailDeliveryResult {
   providerMessageIds: string[];
   /** Time of the last confirmed provider acceptance, before activity writes. */
   acceptedAt?: string;
+  /** Invoice receipt, timestamps and activities already committed atomically. */
+  recorded?: boolean;
 }
 
 export function emptyEmailDeliveryResult(skipped = 0): EmailDeliveryResult {

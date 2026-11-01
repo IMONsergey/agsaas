@@ -1,3 +1,13 @@
+export class InvoicePaymentError extends Error {
+  constructor(
+    public readonly status: 400 | 404 | 409 | 503,
+    message: string,
+  ) {
+    super(message);
+    this.name = "InvoicePaymentError";
+  }
+}
+
 export class ReportNotFoundError extends Error {
   code = "REPORT_NOT_FOUND" as const;
 

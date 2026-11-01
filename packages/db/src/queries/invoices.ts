@@ -40,6 +40,7 @@ import type { Database, DatabaseOrTransaction } from "../client";
 import {
   type activityTypeEnum,
   customers,
+  invoicePaymentReservations,
   invoiceRecurring,
   invoiceStatusEnum,
   invoices,
@@ -868,9 +869,19 @@ export async function draftInvoice(
           { ...restInput, template: restTemplate },
         )
       : true;
+    const [paymentReservation] = existing
+      ? await tx
+          .select({ id: invoicePaymentReservations.id })
+          .from(invoicePaymentReservations)
+          .where(eq(invoicePaymentReservations.invoiceId, id))
+          .limit(1)
+      : [];
     const financialLock =
       existing &&
-      (existing.paymentIntentId !== null ||
+      (paymentReservation !== undefined ||
+        existing.paymentIntentId !== null ||
+        existing.paidAt !== null ||
+        existing.refundedAt !== null ||
         ["paid", "refunded", "canceled"].includes(existing.status));
     if (financialLock && financialChanges)
       throw new InvoiceFinancialStateError();
@@ -1089,21 +1100,35 @@ export type DeleteInvoiceParams = {
 
 export async function deleteInvoice(db: Database, params: DeleteInvoiceParams) {
   const { id, teamId } = params;
-
-  const [result] = await db
-    .delete(invoices)
-    .where(
-      and(
-        eq(invoices.id, id),
-        eq(invoices.teamId, teamId),
-        and(or(eq(invoices.status, "draft"), eq(invoices.status, "canceled"))),
-      ),
-    )
-    .returning({
-      id: invoices.id,
-    });
-
-  return result;
+  return db.transaction(async (tx) => {
+    const [invoice] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+      .for("update");
+    if (!invoice || !["draft", "canceled"].includes(invoice.status))
+      return undefined;
+    const [reservation] = await tx
+      .select({ id: invoicePaymentReservations.id })
+      .from(invoicePaymentReservations)
+      .where(eq(invoicePaymentReservations.invoiceId, id))
+      .limit(1);
+    if (
+      invoice.paymentIntentId ||
+      invoice.paidAt ||
+      invoice.refundedAt ||
+      reservation
+    ) {
+      throw new InvoiceFinancialStateError(
+        "Invoices with payment history or a reserved payment cannot be deleted",
+      );
+    }
+    const [result] = await tx
+      .delete(invoices)
+      .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+      .returning({ id: invoices.id });
+    return result;
+  });
 }
 
 export type DuplicateInvoiceParams = {
@@ -1223,14 +1248,47 @@ export async function updateInvoice(
 ) {
   const { id, teamId, userId, ...rest } = params;
 
-  const [result] = await db
-    .update(invoices)
-    .set(rest)
-    .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
-    .returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+      .for("update");
+    if (!current) return undefined;
+    if (
+      rest.status &&
+      rest.status !== current.status &&
+      ((["paid", "refunded", "canceled"].includes(current.status) &&
+        !(current.status === "paid" && rest.status === "refunded")) ||
+        ((current.paidAt || current.refundedAt) &&
+          !["paid", "refunded"].includes(rest.status)) ||
+        (rest.status === "refunded" && current.status !== "paid"))
+    ) {
+      throw new InvoiceFinancialStateError(
+        "Finalized invoice status cannot be reopened; create a correction invoice instead",
+      );
+    }
+    if (
+      (current.paidAt && rest.paidAt === null) ||
+      (current.refundedAt && rest.refundedAt === null) ||
+      (current.paymentIntentId &&
+        rest.paymentIntentId !== undefined &&
+        rest.paymentIntentId !== current.paymentIntentId)
+    ) {
+      throw new InvoiceFinancialStateError(
+        "Payment history cannot be cleared or replaced",
+      );
+    }
+    const [updated] = await tx
+      .update(invoices)
+      .set(rest)
+      .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+      .returning();
+    return updated;
+  });
 
   // Log activity if not draft
-  if (rest.status !== "draft" && userId) {
+  if (result && rest.status !== "draft" && userId) {
     let priority: number | undefined;
     let activityType: (typeof activityTypeEnum.enumValues)[number] | null =
       null;

@@ -67,6 +67,10 @@ export const sendInvoiceEmailSchema = z.object({
   filename: z.string(),
   fullPath: z.string(),
   expectedScheduledJobId: z.string().min(1).optional(),
+  deliveryKey: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
 });
 
 export type SendInvoiceEmailPayload = z.infer<typeof sendInvoiceEmailSchema>;

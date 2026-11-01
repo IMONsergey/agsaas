@@ -1,0 +1,48 @@
+# LAST layer, only in the separate /opt/agsaas/rehearsal-20261101 runtime.
+# The existing agsaas-stage project and its volumes must never use this overlay.
+name: agsaas-rehearsal-20261101
+
+services:
+  studio:
+    container_name: agsaas-rehearsal-20261101-studio
+  api-gw:
+    container_name: agsaas-rehearsal-20261101-envoy
+    ports: !override
+      - "127.0.0.1:3900:8000/tcp"
+  auth:
+    container_name: agsaas-rehearsal-20261101-auth
+  rest:
+    container_name: agsaas-rehearsal-20261101-rest
+  realtime:
+    container_name: realtime-dev.agsaas-rehearsal-20261101-realtime
+  storage:
+    container_name: agsaas-rehearsal-20261101-storage
+  imgproxy:
+    container_name: agsaas-rehearsal-20261101-imgproxy
+  meta:
+    container_name: agsaas-rehearsal-20261101-meta
+  functions:
+    container_name: agsaas-rehearsal-20261101-edge-functions
+  db:
+    container_name: agsaas-rehearsal-20261101-db
+  supavisor:
+    container_name: agsaas-rehearsal-20261101-pooler
+  api:
+    image: "agsaas-api:rehearsal-${AGSAAS_RELEASE:?Set the exact rehearsal commit}"
+    ports: !override
+      - "127.0.0.1:3403:8080/tcp"
+  worker:
+    image: "agsaas-worker:rehearsal-${AGSAAS_RELEASE:?Set the exact rehearsal commit}"
+  dashboard:
+    image: "agsaas-dashboard:rehearsal-${AGSAAS_RELEASE:?Set the exact rehearsal commit}"
+    ports: !override
+      - "127.0.0.1:3400:3000/tcp"
+  mailpit:
+    ports: !override
+      - "127.0.0.1:3925:8025/tcp"
+
+networks:
+  default:
+    # Runtime cannot reach payment, bank, email or AI providers. Docker builds
+    # happen separately; no application container gets a second egress network.
+    internal: true

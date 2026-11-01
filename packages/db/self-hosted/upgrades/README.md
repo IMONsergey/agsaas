@@ -60,9 +60,46 @@ holding a pre-deletion author snapshot can fail its foreign key check and
 retry with fresh data; the series itself is preserved.
 
 Explicit follow-ups outside this migration: third-party grant revocation or
-reconnection, retention of team OAuth application definitions, and policy for
+reconnection and policy for
 author-owned report/share links. Report links retain existing revocation
 behavior; their underlying financial transactions are not deleted by those
 report-link cascades. Retaining an integration row does not guarantee that an
 external provider credential remains valid, nor does it anonymize arbitrary
 provider settings JSON.
+
+## Durable payments, email and team OAuth (packet 03)
+
+Apply all three migrations in order, before starting the corresponding API or
+worker revision:
+
+1. `20261101060329_preserve_team_oauth_applications.sql` changes only the
+   application creator FK to `SET NULL`. Team ownership and personal grant
+   revocation remain distinct. Retained client secrets may still be known to a
+   departed creator; secret rotation is an explicit operational decision.
+2. `20261101060354_reserve_invoice_payments.sql` creates the backend-only
+   reservation table and the unique invoice/team key. Existing payment intents
+   are validated and adopted through the normal application path, not blindly
+   backfilled by migration. Old checkout writers must not run concurrently with
+   the new reservation writer.
+3. `20261101060507_durable_invoice_email_delivery.sql` creates the backend-only
+   immutable delivery journal. It depends on the preceding composite key.
+   Existing Redis jobs have no retroactive provider receipt. Drain or reconcile
+   old in-flight jobs before switching workers; do not empty queues blindly.
+
+Both new tables contain private financial or email metadata. Verify RLS and
+the absence of grants for `PUBLIC`, `anon` and `authenticated`, using actual
+effective privileges, not only policy names. A freshly initialized Supabase
+database has default grants: a successful `pg_restore` is not sufficient proof
+that the restored object ACLs match the source. The dedicated rehearsal helper
+normalizes target defaults before restore and compares canonical permissions
+afterward. Do not weaken the account-deletion migration's browser-write guard
+to get past a restore mismatch.
+
+Do not roll application code back while payment reservations or unfinished
+delivery operations exist. Old code does not understand their locks, receipts
+or retry boundaries. Keep writes stopped until an explicitly reviewed forward
+fix or reconciliation is ready. Provider idempotency windows are finite;
+changing a key or resetting first-attempt timestamps is not a recovery plan.
+
+See [invoice email operations](../../../../docs/agsaas-invoice-email-delivery.md)
+and the [packet 03 report](../../../../docs/agsaas-hardening-packet-03.md).

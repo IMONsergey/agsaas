@@ -106,6 +106,9 @@ let duringUpload: (() => void) | undefined;
 let rendered = 0;
 let uploaded = 0;
 let queueFailure = false;
+let durableReceipt: "pending" | "accepted" | "completed" | null = null;
+let durableFinalizations = 0;
+let durableRecoveries = 0;
 const queued: Array<{ name: string; payload: unknown }> = [];
 const documentsQueued: Array<{ name: string; payload: unknown }> = [];
 const fileWrites: Array<Record<string, unknown>> = [];
@@ -125,6 +128,8 @@ const writes: Array<{
 }> = [];
 
 mock.module("@midday/db/queries", () => ({
+  INVOICE_EMAIL_ENVELOPE_MAX_BYTES: 4 * 1024 * 1024,
+  deferInvoiceEmailFinalization: async () => undefined,
   canSendInvoiceEmail,
   canSendInvoiceReminder,
   isCurrentInvoiceSchedule,
@@ -132,6 +137,16 @@ mock.module("@midday/db/queries", () => ({
     const snapshot = invoiceMissing ? undefined : structuredClone(invoice);
     afterRead?.();
     return snapshot;
+  },
+  getInvoiceEmailDelivery: async () =>
+    durableReceipt ? { status: durableReceipt } : null,
+  finalizeInvoiceEmailDelivery: async () => {
+    durableFinalizations += 1;
+    if (writeError)
+      throw new Error("SQL parameters contain customer@example.test");
+    if (writeMissing) return null;
+    durableReceipt = "completed";
+    return { status: "completed" };
   },
   updateInvoice: async (_db: unknown, params: Record<string, unknown>) => {
     const { id, teamId: invoiceTeamId, filePath, fileSize, ...other } = params;
@@ -214,6 +229,14 @@ mock.module("@midday/notifications", () => ({
     constructor() {
       notificationsConstructed += 1;
     }
+    async reconcileInvoiceDelivery() {
+      durableRecoveries += 1;
+      return {
+        type: "invoice_sent",
+        activities: 0,
+        emails: { ...accepted(), recorded: true },
+      };
+    }
     async create(
       type: string,
       notificationTeamId: string,
@@ -276,6 +299,7 @@ const generateProcessor = new GenerateInvoiceProcessor();
 function sendJob(): Job<SendInvoiceEmailPayload> {
   return {
     id: "send-fixture-1",
+    timestamp: 1793448000000,
     name: "send-invoice-email",
     attemptsMade: 0,
     opts: { attempts: 3, removeOnComplete: false },
@@ -289,6 +313,7 @@ function sendJob(): Job<SendInvoiceEmailPayload> {
 function reminderJob(): Job<SendInvoiceReminderPayload> {
   return {
     id: "reminder-fixture-1",
+    timestamp: 1793448000000,
     name: "send-invoice-reminder",
     attemptsMade: 0,
     opts: { attempts: 3, removeOnComplete: false },
@@ -355,6 +380,9 @@ beforeEach(() => {
   rendered = 0;
   uploaded = 0;
   queueFailure = false;
+  durableReceipt = null;
+  durableFinalizations = 0;
+  durableRecoveries = 0;
   queued.length = 0;
   documentsQueued.length = 0;
   fileWrites.length = 0;
@@ -608,6 +636,52 @@ describe("versioned scheduled invoice pipeline", () => {
 });
 
 describe("invoice send processor", () => {
+  test("known acceptance is finalized after payment without touching storage or provider", async () => {
+    invoice.status = "paid";
+    invoice.template.includePdf = true;
+    durableReceipt = "accepted";
+    await sendProcessor.handle(sendJob());
+    expect(durableFinalizations).toBe(1);
+    expect<string | null>(durableReceipt).toBe("completed");
+    expect(notificationsConstructed).toBe(0);
+    expect(storageConstructed).toBe(0);
+    expect(writes).toHaveLength(0);
+  });
+
+  test("a persisted operation bypasses mutable PDF and notification reconstruction", async () => {
+    invoice.template.includePdf = true;
+    durableReceipt = "pending";
+    await sendProcessor.handle(sendJob());
+    expect(durableRecoveries).toBe(1);
+    expect(storageConstructed).toBe(0);
+    expect(notificationCalls).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
+
+  test("an atomically finalized notification does not run a second invoice write", async () => {
+    delivery = { ...accepted(), recorded: true };
+    await sendProcessor.handle(sendJob());
+    expect(notificationCalls).toHaveLength(1);
+    expect(writes).toHaveLength(0);
+    expect(notificationCalls[0]?.options.invoiceDelivery?.operationKey).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+  });
+
+  test("receipt finalization errors do not leak SQL parameters or return false success", async () => {
+    durableReceipt = "accepted";
+    writeError = true;
+    await expect(sendProcessor.handle(sendJob())).rejects.toThrow(
+      "temporarily unavailable",
+    );
+    writeError = false;
+    writeMissing = true;
+    await expect(sendProcessor.handle(sendJob())).rejects.toThrow(
+      "temporarily unavailable",
+    );
+    expect(notificationCalls).toHaveLength(0);
+  });
+
   for (const status of ["paid", "canceled", "refunded"] as const) {
     test(`a queued ${status} invoice is skipped before any external clients`, async () => {
       invoice.status = status;

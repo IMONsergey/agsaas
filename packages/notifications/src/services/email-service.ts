@@ -17,6 +17,10 @@ import {
   emptyEmailDeliveryResult,
 } from "./email-delivery-result";
 
+export type InvoiceEnvelopeOutcome =
+  | { kind: "accepted"; messageId: string }
+  | { kind: "retry" | "rejected" | "reconciliation"; code: string };
+
 function providerRejection(
   error: ErrorResponse,
   count: number,
@@ -40,13 +44,91 @@ function providerRejection(
 }
 
 export class EmailService {
-  private client: Resend;
+  private client?: Resend;
 
   constructor(
     private db: Database,
     client?: Resend,
   ) {
-    this.client = client ?? new Resend(process.env.RESEND_API_KEY!);
+    this.client = client;
+  }
+
+  #provider(): Resend {
+    this.client ??= new Resend(process.env.RESEND_API_KEY!);
+    return this.client;
+  }
+
+  /** Fully rendered provider wire body; no React/template work occurs on replay. */
+  async prepareInvoiceEnvelope(email: EmailInput): Promise<string> {
+    const payload = await this.#buildEmailPayload(email);
+    const attachments = payload.attachments?.map((attachment) => {
+      // URLs and mutable Storage paths are not an immutable envelope.
+      if (attachment.path || typeof attachment.content !== "string") {
+        throw new Error("Invoice attachments must contain frozen base64 bytes");
+      }
+      return {
+        content: attachment.content,
+        filename: attachment.filename,
+        content_type: attachment.contentType,
+        content_id: attachment.contentId,
+      };
+    });
+    return JSON.stringify({
+      from: payload.from,
+      to: payload.to,
+      subject: payload.subject,
+      html: payload.html,
+      text: payload.text,
+      headers: payload.headers,
+      reply_to: payload.replyTo,
+      cc: payload.cc,
+      bcc: payload.bcc,
+      tags: payload.tags,
+      attachments,
+    });
+  }
+
+  async sendInvoiceEnvelope(
+    envelope: string,
+    idempotencyKey: string,
+  ): Promise<InvoiceEnvelopeOutcome> {
+    const body: unknown = JSON.parse(envelope);
+    try {
+      // Public SDK post() preserves this already-rendered wire body. The
+      // timeout is passed through by the pinned SDK; it does not prove rejection.
+      const options = { idempotencyKey, signal: AbortSignal.timeout(30_000) };
+      const response = await this.#provider().post<{ id: string }>(
+        "/emails",
+        body,
+        options,
+      );
+      if (response.error) {
+        const { statusCode: status, name } = response.error;
+        if (status === 409 && name === "invalid_idempotent_request")
+          return { kind: "reconciliation", code: "provider_payload_conflict" };
+        if (status === 409 && name === "concurrent_idempotent_requests")
+          return { kind: "retry", code: "provider_concurrent" };
+        if (status === 429)
+          return { kind: "retry", code: "provider_rate_limit" };
+        if (
+          typeof status === "number" &&
+          status >= 400 &&
+          status < 500 &&
+          status !== 408
+        )
+          return { kind: "rejected", code: "provider_rejected" };
+        return { kind: "retry", code: "provider_uncertain" };
+      }
+      if (
+        typeof response.data?.id !== "string" ||
+        !response.data.id.trim() ||
+        response.data.id.length > 256
+      )
+        return { kind: "retry", code: "provider_uncertain" };
+      return { kind: "accepted", messageId: response.data.id };
+    } catch {
+      return { kind: "retry", code: "provider_uncertain" };
+    }
   }
 
   async sendBulk(
@@ -91,7 +173,7 @@ export class EmailService {
       // earlier acceptance, or cause a blanket retry of accepted envelopes.
       for (const payload of emailPayloads) {
         try {
-          const response = await this.client.emails.send(payload);
+          const response = await this.#provider().emails.send(payload);
           if (response.error) {
             const rejection = providerRejection(response.error, 1);
             result.failed += rejection.failed;
@@ -112,7 +194,7 @@ export class EmailService {
       }
     } else {
       try {
-        const response = await this.client.batch.send(emailPayloads);
+        const response = await this.#provider().batch.send(emailPayloads);
         if (response.error) {
           const rejection = providerRejection(
             response.error,

@@ -1,14 +1,16 @@
 import { protectedMiddleware, publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
+import { prepareInvoicePaymentSession } from "@api/services/invoice-payment-session";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { InvoicePaymentError } from "@midday/db/errors";
 import {
-  getInvoiceById,
+  attachInvoicePayment,
   getTeamById,
-  updateInvoice,
+  requireInvoicePaymentReconciliation,
+  reserveInvoicePayment,
   updateTeamById,
 } from "@midday/db/queries";
 import { decryptOAuthState, encryptOAuthState } from "@midday/encryption";
-import { toStripeAmount } from "@midday/invoice/currency";
 import { verify as verifyInvoiceToken } from "@midday/invoice/token";
 import { logger } from "@midday/logger";
 import { HTTPException } from "hono/http-exception";
@@ -383,6 +385,13 @@ app.openapi(
       404: {
         description: "Invoice not found",
       },
+      409: {
+        description: "Existing payment needs confirmation or reconciliation",
+      },
+      503: {
+        description:
+          "Provider or persistence outcome is uncertain; no new intent is created",
+      },
     },
   }),
   async (c) => {
@@ -395,7 +404,7 @@ app.openapi(
       const { id } = (await verifyInvoiceToken(decodeURIComponent(token))) as {
         id: string;
       };
-      if (!id) {
+      if (!z.string().uuid().safeParse(id).success) {
         throw new Error("Invalid token");
       }
       invoiceId = id;
@@ -403,171 +412,33 @@ app.openapi(
       throw new HTTPException(400, { message: "Invalid invoice token" });
     }
 
-    // Get invoice by ID
-    const invoice = await getInvoiceById(db, { id: invoiceId });
-
-    if (!invoice) {
-      throw new HTTPException(404, { message: "Invoice not found" });
-    }
-
-    // Check if invoice can be paid
-    if (invoice.status === "paid") {
-      throw new HTTPException(400, { message: "Invoice is already paid" });
-    }
-
-    if (invoice.status === "draft") {
-      throw new HTTPException(400, { message: "Invoice is still a draft" });
-    }
-
-    if (invoice.status === "canceled") {
-      throw new HTTPException(400, { message: "Invoice has been canceled" });
-    }
-
-    // Check if payment is enabled for this invoice's template
-    const template = invoice.template as { paymentEnabled?: boolean } | null;
-    if (!template?.paymentEnabled) {
-      throw new HTTPException(400, {
-        message: "Online payment is not enabled for this invoice",
-      });
-    }
-
-    // Get team to retrieve Stripe account
-    const team = await getTeamById(db, invoice.teamId);
-
-    if (!team?.stripeAccountId) {
-      throw new HTTPException(400, {
-        message: "Payment provider is not configured",
-      });
-    }
-
-    if (team.stripeConnectStatus !== "connected") {
-      throw new HTTPException(400, {
-        message: "Payment provider account is not fully set up",
-      });
-    }
-
-    // Calculate amount in Stripe's smallest currency unit
-    const currency = (invoice.currency || "usd").toLowerCase();
-    const amount = toStripeAmount(invoice.amount || 0, currency);
-
-    if (amount <= 0) {
-      throw new HTTPException(400, { message: "Invalid invoice amount" });
-    }
-
     try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-      // Check if there's an existing payment intent for this invoice
-      if (invoice.paymentIntentId) {
-        try {
-          const existingIntent = await stripe.paymentIntents.retrieve(
-            invoice.paymentIntentId,
-            { stripeAccount: team.stripeAccountId },
-          );
-
-          // If payment already succeeded, reject - prevents double payments
-          // This catches edge case where webhook hasn't updated invoice status yet
-          if (existingIntent.status === "succeeded") {
-            throw new HTTPException(400, {
-              message: "Invoice has already been paid",
-            });
-          }
-
-          // If the existing intent is still usable, return it
-          // Include requires_action (3DS pending) and processing (payment in progress)
-          // to prevent duplicate charges from creating new intents
-          if (
-            existingIntent.status === "requires_payment_method" ||
-            existingIntent.status === "requires_confirmation" ||
-            existingIntent.status === "requires_action" ||
-            existingIntent.status === "processing"
-          ) {
-            // Check if the invoice amount has changed since the payment intent was created
-            // If so, update the payment intent (only possible for certain statuses)
-            if (existingIntent.amount !== amount) {
-              // Can only update amount if payment is not actively in progress
-              if (
-                existingIntent.status === "requires_payment_method" ||
-                existingIntent.status === "requires_confirmation"
-              ) {
-                const updatedIntent = await stripe.paymentIntents.update(
-                  invoice.paymentIntentId,
-                  { amount },
-                  { stripeAccount: team.stripeAccountId },
-                );
-                return c.json({
-                  clientSecret: updatedIntent.client_secret!,
-                  amount: updatedIntent.amount,
-                  currency: updatedIntent.currency,
-                  stripeAccountId: team.stripeAccountId,
-                });
-              }
-              // For requires_action or processing, the payment is in-flight
-              // (e.g., 3DS authentication in progress or payment being processed)
-              // Allow it to complete at the original amount to avoid disrupting
-              // the customer mid-payment. Any amount discrepancy should be handled
-              // manually by the business after the payment completes.
-            }
-
-            return c.json({
-              clientSecret: existingIntent.client_secret!,
-              amount: existingIntent.amount,
-              currency: existingIntent.currency,
-              stripeAccountId: team.stripeAccountId,
-            });
-          }
-        } catch (err) {
-          // Re-throw HTTP exceptions (like the "already paid" check above)
-          if (err instanceof HTTPException) {
-            throw err;
-          }
-          // Intent doesn't exist or is invalid, create a new one
-        }
-      }
-
-      // Create PaymentIntent on the connected account
-      // Use an idempotency key to prevent race conditions - if two requests
-      // arrive simultaneously for the same invoice, Stripe will only create
-      // one payment intent and return the same result to both requests.
-      const idempotencyKey = `invoice_payment_${invoice.id}_${amount}_${currency}`;
-      const paymentIntent = await stripe.paymentIntents.create(
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+        timeout: 10_000,
+        maxNetworkRetries: 0,
+      });
+      const session = await prepareInvoicePaymentSession(
         {
-          amount,
-          currency,
-          automatic_payment_methods: {
-            enabled: true,
-          },
-          metadata: {
-            invoice_id: invoice.id,
-            invoice_number: invoice.invoiceNumber || "",
-            team_id: invoice.teamId,
-          },
+          reserve: () => reserveInvoicePayment(db, { invoiceId }),
+          attach: (reservation, paymentIntentId) =>
+            attachInvoicePayment(db, { ...reservation, paymentIntentId }),
+          reconcile: (reservation, reason, paymentIntentId) =>
+            requireInvoicePaymentReconciliation(
+              db,
+              reservation,
+              reason,
+              paymentIntentId,
+            ),
         },
-        {
-          stripeAccount: team.stripeAccountId,
-          idempotencyKey,
-        },
+        stripe,
       );
-
-      // Save payment intent ID to invoice
-      await updateInvoice(db, {
-        id: invoice.id,
-        teamId: invoice.teamId,
-        paymentIntentId: paymentIntent.id,
-      });
-
-      return c.json({
-        clientSecret: paymentIntent.client_secret!,
-        amount: paymentIntent.amount,
-        currency: paymentIntent.currency,
-        stripeAccountId: team.stripeAccountId,
-      });
+      return c.json(session);
     } catch (err) {
-      logger.error("Failed to create payment intent", {
-        error: err instanceof Error ? err.message : String(err),
-        invoiceId: invoice.id,
-      });
-
+      if (err instanceof InvoicePaymentError) {
+        throw new HTTPException(err.status, { message: err.message });
+      }
+      // Do not log provider payloads or client secrets on an unexpected error.
+      logger.error("Failed to prepare invoice payment session", { invoiceId });
       throw new HTTPException(500, {
         message: "Failed to create payment session",
       });

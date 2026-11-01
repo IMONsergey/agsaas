@@ -27,6 +27,12 @@ export async function deliverInvoiceEmail(
     assertEmailAccepted(delivery);
   } catch (error) {
     if (
+      error instanceof Error &&
+      error.name === "InvoiceDeliveryStoppedError"
+    ) {
+      throw new NonRetryableError(error.message, error);
+    }
+    if (
       error instanceof EmailDeliveryError &&
       error.phase === "activity" &&
       isEmailAccepted(error.result)
@@ -44,6 +50,8 @@ export async function deliverInvoiceEmail(
   }
 
   const acceptedAt = delivery.acceptedAt ?? new Date().toISOString();
+  // The durable invoice path committed receipt + invoice + activities together.
+  if (delivery.recorded) return delivery;
   try {
     const updated = await recordAcceptance(acceptedAt);
     if (!updated)

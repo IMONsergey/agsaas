@@ -1,8 +1,9 @@
+import { requestInvoiceRefund } from "@api/services/invoice-refund-request";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { InvoicePaymentError } from "@midday/db/errors";
 import {
-  getInvoiceById,
+  getInvoiceRefundContext,
   getTeamById,
-  updateInvoice,
   updateTeamById,
 } from "@midday/db/queries";
 import { logger } from "@midday/logger";
@@ -104,86 +105,33 @@ export const invoicePaymentsRouter = createTRPCRouter({
         });
       }
 
-      // Get the invoice
-      const invoice = await getInvoiceById(db, {
-        id: input.invoiceId,
-        teamId,
-      });
-
-      if (!invoice) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Invoice not found",
-        });
-      }
-
-      // Verify invoice is paid and has a payment intent
-      if (invoice.status !== "paid") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Invoice is not paid",
-        });
-      }
-
-      if (!invoice.paymentIntentId) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Invoice was not paid via Stripe",
-        });
-      }
-
-      // Get team's Stripe account
-      const team = await getTeamById(db, teamId);
-
-      if (!team?.stripeAccountId) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Stripe is not connected",
-        });
-      }
-
       try {
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-        // Create refund on the connected account
-        const refund = await stripe.refunds.create(
-          { payment_intent: invoice.paymentIntentId },
-          { stripeAccount: team.stripeAccountId },
-        );
-
-        // Update invoice status immediately after Stripe confirms refund
-        // The webhook will also fire but will find invoice already updated
-        await updateInvoice(db, {
-          id: input.invoiceId,
-          teamId,
-          status: "refunded",
-          refundedAt: new Date().toISOString(),
-        });
-
-        logger.info("Refund created and invoice updated", {
+        const context = await getInvoiceRefundContext(db, {
           invoiceId: input.invoiceId,
-          paymentIntentId: invoice.paymentIntentId,
-          refundId: refund.id,
           teamId,
         });
-
-        return { success: true };
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+          timeout: 10_000,
+          maxNetworkRetries: 0,
+        });
+        return await requestInvoiceRefund(context, stripe);
       } catch (err) {
-        logger.error("Failed to create refund", {
-          error: err instanceof Error ? err.message : String(err),
+        if (err instanceof InvoicePaymentError) {
+          throw new TRPCError({
+            code:
+              err.status === 404
+                ? "NOT_FOUND"
+                : err.status === 400
+                  ? "BAD_REQUEST"
+                  : err.status === 409
+                    ? "CONFLICT"
+                    : "INTERNAL_SERVER_ERROR",
+            message: err.message,
+          });
+        }
+        logger.error("Failed to request invoice refund", {
           invoiceId: input.invoiceId,
         });
-
-        // Handle specific Stripe errors
-        if (err instanceof Stripe.errors.StripeError) {
-          if (err.code === "charge_already_refunded") {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "This payment has already been refunded",
-            });
-          }
-        }
-
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to process refund",

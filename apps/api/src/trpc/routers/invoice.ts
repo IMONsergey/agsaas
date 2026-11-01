@@ -21,7 +21,6 @@ import {
 import { parseInputValue } from "@api/utils/parse";
 import { UTCDate } from "@date-fns/utc";
 import {
-  deleteInvoice,
   getAverageDaysToPayment,
   getAverageInvoiceSize,
   getCustomerById,
@@ -39,10 +38,11 @@ import {
   getTrackerProjectById,
   getTrackerRecordsByRange,
   getUserById,
+  deleteInvoice as persistInvoiceDelete,
   draftInvoice as persistInvoiceDraft,
   duplicateInvoice as persistInvoiceDuplicate,
+  updateInvoice as persistInvoiceUpdate,
   searchInvoiceNumber,
-  updateInvoice,
 } from "@midday/db/queries";
 import { DEFAULT_TEMPLATE } from "@midday/invoice";
 import {
@@ -82,6 +82,22 @@ async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
     return await persistInvoiceDraft(...args);
   } catch (error) {
     return invoiceWriteError(error);
+  }
+}
+
+async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
+  try {
+    return await persistInvoiceUpdate(...args);
+  } catch (error) {
+    invoiceWriteError(error);
+  }
+}
+
+async function deleteInvoice(...args: Parameters<typeof persistInvoiceDelete>) {
+  try {
+    return await persistInvoiceDelete(...args);
+  } catch (error) {
+    invoiceWriteError(error);
   }
 }
 

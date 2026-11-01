@@ -1,6 +1,10 @@
 import {
   canSendInvoiceEmail,
+  deferInvoiceEmailFinalization,
+  finalizeInvoiceEmailDelivery,
   getInvoiceById,
+  getInvoiceEmailDelivery,
+  INVOICE_EMAIL_ENVELOPE_MAX_BYTES,
   isCurrentInvoiceSchedule,
   recordInvoiceEmailAccepted,
 } from "@midday/db/queries";
@@ -9,7 +13,9 @@ import { createClient } from "@midday/supabase/job";
 import type { Job } from "bullmq";
 import type { SendInvoiceEmailPayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
+import { NonRetryableError } from "../../utils/error-classification";
 import { BaseProcessor } from "../base";
+import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 import { deliverInvoiceEmail } from "./invoice-email-delivery";
 
 /**
@@ -18,7 +24,13 @@ import { deliverInvoiceEmail } from "./invoice-email-delivery";
  */
 export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPayload> {
   async process(job: Job<SendInvoiceEmailPayload>): Promise<void> {
-    const { invoiceId, filename, fullPath, expectedScheduledJobId } = job.data;
+    const {
+      invoiceId,
+      filename,
+      fullPath,
+      expectedScheduledJobId,
+      deliveryKey,
+    } = job.data;
     const db = getDb();
 
     this.logger.info("Starting send invoice email", {
@@ -33,6 +45,45 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
     if (!invoice) {
       this.logger.error("Invoice not found", { invoiceId });
       throw new Error(`Invoice not found: ${invoiceId}`);
+    }
+
+    const operationKey = invoiceDeliveryOperationKey({
+      teamId: invoice.teamId,
+      invoiceId,
+      kind: "invoice",
+      job,
+      expectedScheduledJobId,
+      deliveryKey,
+    });
+    const scope = { teamId: invoice.teamId, invoiceId, operationKey };
+    const receipt = await getInvoiceEmailDelivery(db, scope);
+    if (receipt?.status === "accepted" || receipt?.status === "completed") {
+      // Known acceptance must be finalized even if the invoice has since been paid.
+      try {
+        const finalized = await finalizeInvoiceEmailDelivery(db, scope);
+        if (finalized?.status !== "completed")
+          throw new Error("Receipt disappeared");
+      } catch {
+        try {
+          await deferInvoiceEmailFinalization(db, scope);
+        } catch {
+          /* Keep errors free of SQL payloads. */
+        }
+        throw new Error("Invoice receipt finalization temporarily unavailable");
+      }
+      return;
+    }
+    if (receipt) {
+      // A retry resumes the frozen bytes, not current Storage/template/customer
+      // data. The DB claim rechecks the current status and schedule version.
+      const notifications = new Notifications(db);
+      await deliverInvoiceEmail(
+        () => notifications.reconcileInvoiceDelivery(scope),
+        async () => {
+          throw new Error("Durable recovery must finalize its own receipt");
+        },
+      );
+      return;
     }
 
     if (!canSendInvoiceEmail(invoice.status)) {
@@ -60,9 +111,18 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
     if (template?.includePdf) {
       // No storage/provider client is constructed for an already terminal job.
       const supabase = createClient();
-      const { data: attachmentData } = await supabase.storage
-        .from("vault")
-        .download(fullPath);
+      const { data: attachmentData, error: attachmentError } =
+        await supabase.storage.from("vault").download(fullPath);
+
+      if (attachmentError || !attachmentData)
+        throw new Error("Invoice PDF download failed before email preparation");
+      if (
+        attachmentData.size > Math.floor(INVOICE_EMAIL_ENVELOPE_MAX_BYTES * 0.7)
+      ) {
+        throw new NonRetryableError(
+          "Invoice PDF exceeds the durable envelope size limit",
+        );
+      }
 
       if (attachmentData) {
         attachments = [
@@ -165,6 +225,11 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
           {
             sendEmail: true,
             requireEmailAcceptance: true,
+            invoiceDelivery: {
+              invoiceId,
+              operationKey,
+              expectedScheduledJobId,
+            },
             bcc,
             attachments,
             replyTo: invoice.team?.email ?? undefined,

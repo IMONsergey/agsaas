@@ -42,34 +42,53 @@ describe("self-hosted application baseline (offline)", () => {
     );
     // Project ONLY the reviewed incremental changes back to the installed
     // baseline. Exact equality still protects every other schema detail.
-    const addition = '\t"deletion_started_at" timestamp with time zone,\n';
-    expect(sql.split(addition)).toHaveLength(2);
-    let projected = sql.replace(addition, "");
-    for (const [table, column, constraint] of retainedAuthorKeys) {
-      const retained = `ALTER TABLE "${table}" ADD CONSTRAINT "${constraint}" FOREIGN KEY ("${column}") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;`;
-      expect(projected.split(retained)).toHaveLength(2);
-      projected = projected.replace(
-        retained,
-        retained.replace("ON DELETE set null", "ON DELETE cascade"),
-      );
+    const projected = createApplicationSnapshot();
+    expect(
+      projected.tables["public.users"]!.columns.deletion_started_at,
+    ).toMatchObject({
+      name: "deletion_started_at",
+      type: "timestamp with time zone",
+      notNull: false,
+    });
+    delete projected.tables["public.users"]!.columns.deletion_started_at;
+    for (const [table, column, constraint] of [
+      ...retainedAuthorKeys,
+      [
+        "oauth_applications",
+        "created_by",
+        "oauth_applications_created_by_fkey",
+      ],
+    ]) {
+      const key = projected.tables[`public.${table}`]!.foreignKeys[constraint!];
+      expect(key).toMatchObject({
+        columnsFrom: [column],
+        onDelete: "set null",
+        tableTo: "users",
+      });
+      key!.onDelete = "cascade";
     }
     for (const [table, column] of [
       ["bank_accounts", "created_by"],
       ["invoice_recurring", "user_id"],
     ]) {
-      const start = projected.indexOf(`CREATE TABLE "${table}" (`);
-      const end = projected.indexOf("\n);", start);
-      expect(start).toBeGreaterThan(-1);
-      expect(end).toBeGreaterThan(start);
-      const definition = projected.slice(start, end);
-      const nullable = `\t"${column}" uuid,\n`;
-      expect(definition.split(nullable)).toHaveLength(2);
-      projected = projected.replace(
-        definition,
-        definition.replace(nullable, `\t"${column}" uuid NOT NULL,\n`),
-      );
+      const author = projected.tables[`public.${table}`]!.columns[column!];
+      expect(author?.notNull).toBe(false);
+      author!.notNull = true;
     }
-    expect(projected).toBe(baseline);
+    for (const name of [
+      "invoice_payment_reservations",
+      "invoice_email_deliveries",
+    ]) {
+      expect(projected.tables[`public.${name}`]?.isRLSEnabled).toBe(true);
+      delete projected.tables[`public.${name}`];
+    }
+    const constraints = projected.tables["public.invoices"]!.uniqueConstraints!;
+    expect(constraints.invoices_id_team_id_key).toMatchObject({
+      columns: ["id", "team_id"],
+    });
+    delete constraints.invoices_id_team_id_key;
+    expect(Object.keys(projected.tables)).toHaveLength(49);
+    expect(await generateBootstrapSql(projected)).toBe(baseline);
     expect(
       createApplicationSnapshot().tables["public.users"]?.columns
         .deletion_started_at,
@@ -170,9 +189,9 @@ describe("self-hosted application baseline (offline)", () => {
     );
   });
 
-  test("manages all 49 application tables and 33 enums, never platform tables", () => {
+  test("manages 49 baseline and 2 incremental application tables, never platform tables", () => {
     const snapshot = createApplicationSnapshot();
-    expect(Object.keys(snapshot.tables)).toHaveLength(49);
+    expect(Object.keys(snapshot.tables)).toHaveLength(51);
     expect(Object.keys(snapshot.enums)).toHaveLength(33);
     expect(Object.keys(snapshot.views)).toHaveLength(0);
     expect(Object.keys(snapshot.roles)).toHaveLength(0);
@@ -270,7 +289,7 @@ describe("self-hosted application baseline (offline)", () => {
         },
       ]);
     }
-    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(49);
+    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(51);
     expect(sql).toContain("AND NOT r.rolinherit AND NOT r.rolbypassrls");
     expect(sql).toContain("m.member = r.oid");
   });

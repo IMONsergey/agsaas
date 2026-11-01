@@ -20,6 +20,8 @@ export * from "./insights";
 
 export * from "./institutions";
 export * from "./invoice-delivery";
+export * from "./invoice-email-deliveries";
+export * from "./invoice-payments";
 export * from "./invoice-products";
 export * from "./invoice-recurring";
 export * from "./invoice-templates";

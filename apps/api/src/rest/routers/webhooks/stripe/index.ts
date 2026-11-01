@@ -1,10 +1,9 @@
 import type { Context } from "@api/rest/types";
+import { getConfirmedFullInvoiceRefund } from "@api/services/invoice-refund-request";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  getInvoiceById,
-  getInvoiceByPaymentIntentId,
+  applyStripeInvoicePaymentEvent,
   getTeamByStripeAccountId,
-  updateInvoice,
   updateTeamById,
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
@@ -16,6 +15,12 @@ const app = new OpenAPIHono<Context>();
 
 const webhookResponseSchema = z.object({
   received: z.boolean(),
+});
+
+const refundCandidateIdentitySchema = z.object({
+  invoiceId: z.string().uuid(),
+  teamId: z.string().uuid(),
+  reservationId: z.string().uuid(),
 });
 
 app.openapi(
@@ -96,54 +101,42 @@ app.openapi(
             break;
           }
 
-          const paidAt = new Date().toISOString();
-
-          // Update invoice to paid status
-          const updatedInvoice = await updateInvoice(db, {
-            id: invoiceId,
+          if (
+            !z.string().uuid().safeParse(invoiceId).success ||
+            !z.string().uuid().safeParse(teamId).success ||
+            !event.account ||
+            paymentIntent.status !== "succeeded" ||
+            paymentIntent.amount_received !== paymentIntent.amount
+          ) {
+            throw new Error(
+              "Payment event does not establish a complete invoice payment",
+            );
+          }
+          const paidAt = new Date(event.created * 1000).toISOString();
+          const { invoice, notify } = await applyStripeInvoicePaymentEvent(db, {
+            invoiceId,
             teamId,
-            status: "paid",
-            paidAt,
+            reservationId: paymentIntent.metadata.payment_reservation_id,
             paymentIntentId: paymentIntent.id,
+            stripeAccountId: event.account,
+            amountMinor: paymentIntent.amount_received,
+            currency: paymentIntent.currency,
+            kind: "paid",
+            occurredAt: paidAt,
           });
-
-          if (updatedInvoice) {
-            logger.info("Invoice marked as paid", {
-              invoiceId,
-              paymentIntentId: paymentIntent.id,
-              amount: paymentIntent.amount,
-            });
-
-            // Fetch full invoice details for notification
-            const invoice = await getInvoiceById(db, { id: invoiceId });
-
-            if (invoice) {
-              // Trigger notification job
-              await triggerJob(
-                "notification",
-                {
-                  type: "invoice_paid",
-                  invoiceId,
-                  invoiceNumber: invoice.invoiceNumber || "",
-                  teamId,
-                  customerName: invoice.customerName || "",
-                  paidAt,
-                },
-                "notifications",
-              );
-
-              logger.info("Invoice paid notification triggered", {
-                invoiceId,
-                invoiceNumber: invoice.invoiceNumber,
-              });
-            }
-          } else {
-            logger.warn(
-              "Failed to update invoice - not found or unauthorized",
+          if (notify) {
+            await triggerJob(
+              "notification",
               {
+                type: "invoice_paid",
                 invoiceId,
+                invoiceNumber: invoice.invoiceNumber || "",
                 teamId,
+                customerName: invoice.customerName || "",
+                paidAt: invoice.paidAt ?? paidAt,
               },
+              "notifications",
+              { jobId: `stripe-event-${event.id}` },
             );
           }
 
@@ -166,49 +159,72 @@ app.openapi(
           break;
         }
 
-        case "charge.refunded": {
-          const charge = event.data.object as Stripe.Charge;
-          const paymentIntentId = charge.payment_intent as string;
+        case "charge.refunded":
+        case "refund.created":
+        case "refund.updated":
+        case "refund.failed": {
+          const object = event.data.object as Stripe.Charge | Stripe.Refund;
+          const paymentIntentId =
+            typeof object.payment_intent === "string"
+              ? object.payment_intent
+              : object.payment_intent?.id;
 
           if (!paymentIntentId) {
-            logger.warn("Refunded charge missing payment_intent", {
-              chargeId: charge.id,
+            logger.warn("Refund event missing payment_intent", {
+              objectId: object.id,
             });
             break;
           }
 
-          // Find the invoice by payment intent ID
-          const invoice = await getInvoiceByPaymentIntentId(
-            db,
-            paymentIntentId,
-          );
-
-          if (!invoice) {
-            logger.warn("No invoice found for refunded payment intent", {
-              paymentIntentId,
-              chargeId: charge.id,
-            });
-            break;
+          if (
+            !event.account ||
+            (event.type === "charge.refunded" &&
+              !(object as Stripe.Charge).paid)
+          ) {
+            throw new Error(
+              "Refund event is missing its connected-account payment binding",
+            );
           }
-
-          const refundedAt = new Date().toISOString();
-
-          // Update invoice: set status to refunded, keep payment history, set refundedAt
-          const updatedInvoice = await updateInvoice(db, {
-            id: invoice.id,
-            teamId: invoice.teamId,
-            status: "refunded",
-            refundedAt,
+          // A charge's refunded flag/amount also includes asynchronous refund
+          // requests. Read the complete current refund list and count succeeded
+          // entries only; refund.updated can finish a previously pending refund.
+          const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+            timeout: 5_000,
+            maxNetworkRetries: 0,
           });
-
-          if (updatedInvoice) {
-            logger.info("Invoice marked as refunded", {
-              invoiceId: invoice.id,
-              invoiceNumber: invoice.invoiceNumber,
-              paymentIntentId,
-            });
-
-            // Trigger refund notification job
+          const confirmation = await getConfirmedFullInvoiceRefund(stripe, {
+            paymentIntentId,
+            stripeAccountId: event.account,
+          });
+          if (!confirmation) {
+            logger.info(
+              "Full refund is not currently confirmed; partial, pending or reversed refunds require ledger reconciliation",
+              {
+                paymentIntentId,
+                eventId: event.id,
+              },
+            );
+            break;
+          }
+          const refundedAt = new Date(event.created * 1000).toISOString();
+          // A full refund can reach us before either checkout attachment or the
+          // paid webhook. Fresh intent metadata can locate its reservation but
+          // is not authority: the DB still checks account + exact reservation.
+          // Legacy/malformed metadata is never used to select an unbound invoice;
+          // that path may only find an already attached paymentIntentId.
+          const candidateIdentity = refundCandidateIdentitySchema.safeParse(
+            confirmation.candidateIdentity,
+          );
+          const { invoice, notify } = await applyStripeInvoicePaymentEvent(db, {
+            ...(candidateIdentity.success ? candidateIdentity.data : {}),
+            paymentIntentId,
+            stripeAccountId: event.account,
+            amountMinor: confirmation.amountMinor,
+            currency: confirmation.currency,
+            kind: "refunded",
+            occurredAt: refundedAt,
+          });
+          if (notify) {
             await triggerJob(
               "notification",
               {
@@ -217,15 +233,12 @@ app.openapi(
                 invoiceNumber: invoice.invoiceNumber || "",
                 teamId: invoice.teamId,
                 customerName: invoice.customerName || "",
-                refundedAt,
+                refundedAt: invoice.refundedAt ?? refundedAt,
               },
               "notifications",
+              // Multiple refund event types may confirm the same full refund.
+              { jobId: `stripe-invoice-refunded-${paymentIntentId}` },
             );
-
-            logger.info("Invoice refund notification triggered", {
-              invoiceId: invoice.id,
-              invoiceNumber: invoice.invoiceNumber,
-            });
           }
 
           break;
@@ -287,14 +300,16 @@ app.openapi(
             type: event.type,
           });
       }
-    } catch (err) {
+    } catch {
       logger.error("Error processing Stripe webhook", {
-        error: err instanceof Error ? err.message : String(err),
         eventType: event.type,
         eventId: event.id,
       });
-      // Don't throw - we want to return 200 to Stripe to prevent retries
-      // for events we partially processed
+      // DB/Redis failures are not acknowledgements. Stripe must be able to retry
+      // the same signed event; financial writes and queue IDs are idempotent.
+      throw new HTTPException(500, {
+        message: "Payment event processing is pending",
+      });
     }
 
     return c.json({ received: true });

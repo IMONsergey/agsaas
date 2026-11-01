@@ -72,6 +72,10 @@ describe("Currency Utilities", () => {
   });
 
   describe("getCurrencyMultiplier", () => {
+    test("preserves Stripe's two-decimal wire format for whole-unit ISK and UGX", () => {
+      expect(getCurrencyMultiplier("ISK")).toBe(100);
+      expect(getCurrencyMultiplier("ugx")).toBe(100);
+    });
     test("should return 1 for zero-decimal currencies", () => {
       expect(getCurrencyMultiplier("jpy")).toBe(1);
       expect(getCurrencyMultiplier("krw")).toBe(1);
@@ -89,6 +93,13 @@ describe("Currency Utilities", () => {
   });
 
   describe("toStripeAmount", () => {
+    test("converts whole UGX/ISK units without undercharging or accepting fractions", () => {
+      for (const currency of ["UGX", "isk"]) {
+        expect(toStripeAmount(5, currency)).toBe(500);
+        expect(() => toStripeAmount(5.25, currency)).toThrow(RangeError);
+      }
+      expect(toStripeAmount(50000, "UGX")).toBe(5000000);
+    });
     describe("standard currencies (2 decimal places)", () => {
       test("should multiply by 100 for USD", () => {
         expect(toStripeAmount(10.0, "usd")).toBe(1000);
@@ -138,6 +149,10 @@ describe("Currency Utilities", () => {
   });
 
   describe("fromStripeAmount", () => {
+    test("displays the original UGX/ISK units instead of the wire-scaled amount", () => {
+      expect(fromStripeAmount(5000000, "UGX")).toBe(50000);
+      expect(fromStripeAmount(500, "isk")).toBe(5);
+    });
     test("should divide by 100 for USD", () => {
       expect(fromStripeAmount(1000, "usd")).toBe(10);
       expect(fromStripeAmount(1050, "usd")).toBe(10.5);

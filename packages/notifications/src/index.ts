@@ -3,6 +3,8 @@ import {
   createActivity,
   getTeamById,
   getTeamMembers,
+  type InvoiceEmailActivity,
+  type InvoiceEmailDeliveryScope,
   shouldSendNotification,
   updateActivityMetadata,
 } from "@midday/db/queries";
@@ -13,6 +15,7 @@ import type {
   UserData,
 } from "./base";
 import { createActivitySchema, type NotificationTypes } from "./schemas";
+import { deliverPersistedInvoiceNotification } from "./services/durable-invoice-delivery";
 import {
   assertEmailAccepted,
   EmailDeliveryError,
@@ -206,8 +209,13 @@ export class Notifications {
 
     // Apply runtime options (highest priority)
     // Extract non-email options first
-    const { priority, sendEmail, requireEmailAcceptance, ...resendOptions } =
-      options || {};
+    const {
+      priority,
+      sendEmail,
+      requireEmailAcceptance,
+      invoiceDelivery,
+      ...resendOptions
+    } = options || {};
     if (Object.keys(resendOptions).length > 0) {
       Object.assign(baseEmailInput, resendOptions);
     }
@@ -221,6 +229,109 @@ export class Notifications {
     payload: Omit<NotificationTypes[T], "users">,
     options?: NotificationOptions,
   ): Promise<NotificationResult> {
+    if (options?.invoiceDelivery) {
+      if (
+        options.sendEmail !== true ||
+        options.requireEmailAcceptance !== true
+      ) {
+        throw new Error(
+          "Durable invoice delivery requires explicit email acceptance mode",
+        );
+      }
+      if (type !== "invoice_sent" && type !== "invoice_reminder_sent")
+        throw new Error(
+          "Durable delivery is restricted to customer invoice emails",
+        );
+      if (
+        options.invoiceDelivery.invoiceId !==
+        (payload as { invoiceId?: string }).invoiceId
+      )
+        throw new Error("Invoice delivery scope mismatch");
+      const scope = {
+        teamId,
+        invoiceId: options.invoiceDelivery.invoiceId,
+        operationKey: options.invoiceDelivery.operationKey,
+      };
+      return deliverPersistedInvoiceNotification(
+        this.#db,
+        scope,
+        (envelope, key) =>
+          this.#emailService.sendInvoiceEnvelope(envelope, key),
+        async () => {
+          const [members, team] = await Promise.all([
+            getTeamMembers(this.#db, teamId),
+            getTeamById(this.#db, teamId),
+          ]);
+          if (!team || members.length === 0)
+            throw new Error("Invoice email requires an active team context");
+          const users = [
+            ...new Map(
+              this.#toUserData(members, teamId, team).map((user) => [
+                user.id,
+                user,
+              ]),
+            ).values(),
+          ];
+          const handler = handlers[type];
+          const data = handler.schema.parse({ ...payload, users });
+          const firstUser = users[0]!;
+          const email = this.#createEmailInput(
+            handler,
+            data,
+            firstUser,
+            {
+              id: team.id,
+              name: team.name || "Team",
+              inboxId: team.inboxId || "",
+            },
+            options,
+          );
+          const recipient = String(
+            (data as { customerEmail?: string }).customerEmail,
+          );
+          const recipients = Array.isArray(email.to) ? email.to : [email.to];
+          if (recipients.length !== 1 || recipients[0] !== recipient)
+            throw new Error(
+              "Durable invoice recipient does not match the customer envelope",
+            );
+          const activitySnapshot: InvoiceEmailActivity[] = [];
+          for (const user of users) {
+            const activity = createActivitySchema.parse(
+              handler.createActivity(data, user),
+            );
+            const inAppEnabled = await shouldSendNotification(
+              this.#db,
+              user.id,
+              teamId,
+              type,
+              "in_app",
+            );
+            const priority =
+              options.priority ??
+              (inAppEnabled
+                ? activity.priority
+                : Math.min(10, Math.max(7, activity.priority + 4)));
+            const validated = createActivitySchema.parse({
+              ...activity,
+              priority,
+            });
+            activitySnapshot.push({
+              userId: user.id,
+              priority: validated.priority,
+              metadata: validated.metadata,
+            });
+          }
+          return {
+            kind: type === "invoice_sent" ? "invoice" : "reminder",
+            expectedScheduledJobId:
+              options.invoiceDelivery?.expectedScheduledJobId,
+            recipient,
+            envelope: await this.#emailService.prepareInvoiceEnvelope(email),
+            activitySnapshot,
+          };
+        },
+      );
+    }
     const [teamMembers, teamInfo] = await Promise.all([
       getTeamMembers(this.#db, teamId),
       getTeamById(this.#db, teamId),
@@ -247,6 +358,17 @@ export class Notifications {
     const data = { ...payload, users } as NotificationTypes[T];
 
     return this.#createInternal(type, data, options, teamInfo);
+  }
+
+  /** Recovery reads an already persisted envelope; never rebuilds a new one. */
+  reconcileInvoiceDelivery(
+    scope: InvoiceEmailDeliveryScope,
+  ): Promise<NotificationResult> {
+    return deliverPersistedInvoiceNotification(
+      this.#db,
+      scope,
+      (envelope, key) => this.#emailService.sendInvoiceEnvelope(envelope, key),
+    );
   }
 
   /**
@@ -451,6 +573,10 @@ export {
   transactionsCreatedSchema,
   transactionsExportedSchema,
 } from "./schemas";
+export {
+  InvoiceDeliveryPendingError,
+  InvoiceDeliveryStoppedError,
+} from "./services/durable-invoice-delivery";
 export type { EmailDeliveryResult } from "./services/email-delivery-result";
 export {
   assertEmailAccepted,

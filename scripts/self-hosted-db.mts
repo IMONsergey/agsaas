@@ -282,7 +282,7 @@ export function sqlStatements(sql: string): SqlStatement[] {
   return statements;
 }
 
-function isTransactionControl(statement: SqlStatement): boolean {
+export function isTransactionControl(statement: SqlStatement): boolean {
   return /^(?:BEGIN|COMMIT|END|ROLLBACK|ABORT|SAVEPOINT|RELEASE|START TRANSACTION|PREPARE TRANSACTION|SET TRANSACTION)(?: |$)/.test(
     statement.code,
   );

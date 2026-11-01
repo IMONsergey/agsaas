@@ -10,7 +10,8 @@
 
 /**
  * Zero-decimal currencies where 1 unit = 1 smallest unit.
- * For these currencies, amounts should NOT be multiplied by 100.
+ * Most use the same Stripe wire unit. UGX is a compatibility exception; use
+ * getCurrencyMultiplier rather than this display-oriented set for payments.
  * Example: ¥1000 JPY should be passed as 1000, not 100000.
  *
  * List from Stripe docs (as of 2024):
@@ -85,6 +86,7 @@ export function isThreeDecimalCurrency(currency: string): boolean {
  * - Zero-decimal currencies: 1 (no conversion needed)
  * - Three-decimal currencies: 1000
  * - Standard currencies: 100 (cents)
+ * - ISK and UGX: 100 (Stripe compatibility format; whole-unit charges only)
  *
  * @param currency - ISO 4217 currency code (case-insensitive)
  * @returns The multiplier to convert from currency units to smallest units
@@ -96,6 +98,10 @@ export function isThreeDecimalCurrency(currency: string): boolean {
  */
 export function getCurrencyMultiplier(currency: string): number {
   const normalized = currency.toLowerCase();
+
+  // Stripe preserves two-decimal API amounts for these whole-unit currencies.
+  // For example, 5 UGX or ISK must be sent as 500 and displayed as 5 again.
+  if (normalized === "isk" || normalized === "ugx") return 100;
 
   if (ZERO_DECIMAL_CURRENCIES.has(normalized)) {
     return 1;
@@ -127,6 +133,13 @@ export function getCurrencyMultiplier(currency: string): number {
  * toStripeAmount(10.50, "EUR")  // 1050 (cents)
  */
 export function toStripeAmount(amount: number, currency: string): number {
+  const normalized = currency.toLowerCase();
+  if (
+    (normalized === "isk" || normalized === "ugx") &&
+    !Number.isInteger(amount)
+  ) {
+    throw new RangeError("ISK and UGX charges must use whole currency units");
+  }
   const multiplier = getCurrencyMultiplier(currency);
   return Math.round(amount * multiplier);
 }

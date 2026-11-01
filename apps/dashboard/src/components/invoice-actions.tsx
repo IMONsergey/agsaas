@@ -165,6 +165,11 @@ export function InvoiceActions({
   const refundMutation = useMutation(
     trpc.invoicePayments.refundPayment.mutationOptions({
       onSuccess: () => {
+        toast({
+          title: "Refund requested",
+          description:
+            "The invoice will be marked refunded after the payment provider confirms completion.",
+        });
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.getById.queryKey({ id }),
         });
@@ -179,6 +184,14 @@ export function InvoiceActions({
         });
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.paymentStatus.queryKey(),
+        });
+      },
+      onError: () => {
+        toast({
+          title: "Refund not confirmed",
+          description:
+            "Check the original payment and refund status before retrying.",
+          variant: "destructive",
         });
       },
     }),
@@ -266,13 +279,15 @@ export function InvoiceActions({
         <AlertDialogHeader>
           <AlertDialogTitle>Refund payment</AlertDialogTitle>
           <AlertDialogDescription>
-            This will issue a full refund for this invoice. The invoice status
-            will be changed to refunded. This action cannot be undone.
+            This requests a full refund for this invoice. Its status changes
+            after the payment provider confirms completion, which may take time.
+            A completed refund cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
+            disabled={refundMutation.isPending}
             onClick={() => refundMutation.mutate({ invoiceId: id })}
           >
             Refund

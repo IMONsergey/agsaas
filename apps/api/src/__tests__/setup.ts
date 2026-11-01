@@ -113,6 +113,7 @@ export const mocks = {
     meta: { hasNextPage: false, hasPreviousPage: false },
   })) as MockFn,
   getInvoiceById: mock(() => null) as MockFn,
+  getInvoiceRefundContext: mock(() => null) as MockFn,
   createInvoice: mock(() => ({})) as MockFn,
   updateInvoice: mock(() => ({})) as MockFn,
   deleteInvoice: mock(() => ({})) as MockFn,
@@ -824,6 +825,7 @@ const dbQueriesMock = new Proxy(
     // Invoice functions
     getInvoices: mocks.getInvoices,
     getInvoiceById: mocks.getInvoiceById,
+    getInvoiceRefundContext: mocks.getInvoiceRefundContext,
     createInvoice: mocks.createInvoice,
     updateInvoice: mocks.updateInvoice,
     deleteInvoice: mocks.deleteInvoice,

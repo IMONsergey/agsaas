@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { hash } from "@midday/encryption";
-import { and, desc, eq, gt, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Database } from "../client";
 import {
@@ -8,6 +8,7 @@ import {
   oauthApplications,
   oauthAuthorizationCodes,
   users,
+  usersOnTeam,
 } from "../schema";
 
 export type CreateAuthorizationCodeParams = {
@@ -226,10 +227,14 @@ export async function createAccessToken(
 
 // Validate access token
 export async function validateAccessToken(db: Database, token: string) {
+  // A retained application is company-owned, but each grant is still personal.
+  // Membership removal and pending deletion must not be hidden by replica lag.
+  const primaryOnly = db.usePrimaryOnly;
+  const authorizationDb = primaryOnly ? primaryOnly.call(db) : db;
   // Hash the incoming token to compare with stored hash
   const tokenHash = hash(token);
 
-  const [result] = await db
+  const [result] = await authorizationDb
     .select({
       id: oauthAccessTokens.id,
       token: oauthAccessTokens.token,
@@ -253,8 +258,15 @@ export async function validateAccessToken(db: Database, token: string) {
       },
     })
     .from(oauthAccessTokens)
-    .leftJoin(users, eq(oauthAccessTokens.userId, users.id))
-    .leftJoin(
+    .innerJoin(users, eq(oauthAccessTokens.userId, users.id))
+    .innerJoin(
+      usersOnTeam,
+      and(
+        eq(usersOnTeam.userId, oauthAccessTokens.userId),
+        eq(usersOnTeam.teamId, oauthAccessTokens.teamId),
+      ),
+    )
+    .innerJoin(
       oauthApplications,
       eq(oauthAccessTokens.applicationId, oauthApplications.id),
     )
@@ -263,6 +275,7 @@ export async function validateAccessToken(db: Database, token: string) {
         eq(oauthAccessTokens.token, tokenHash), // Compare with hashed token
         eq(oauthAccessTokens.revoked, false),
         gt(oauthAccessTokens.expiresAt, new Date().toISOString()),
+        isNull(users.deletionStartedAt),
       ),
     )
     .limit(1);
@@ -276,7 +289,7 @@ export async function validateAccessToken(db: Database, token: string) {
   }
 
   // Update last used timestamp
-  await db
+  await authorizationDb
     .update(oauthAccessTokens)
     .set({ lastUsedAt: new Date().toISOString() })
     .where(eq(oauthAccessTokens.id, result.id));
@@ -290,12 +303,14 @@ export async function refreshAccessToken(
   params: RefreshAccessTokenParams,
 ) {
   const { refreshToken, applicationId, scopes } = params;
+  const primaryOnly = db.usePrimaryOnly;
+  const authorizationDb = primaryOnly ? primaryOnly.call(db) : db;
 
   // Hash the incoming refresh token to compare with stored hash
   const refreshTokenHash = hash(refreshToken);
 
   // Get the existing token
-  const [existingToken] = await db
+  const [existingToken] = await authorizationDb
     .select({
       id: oauthAccessTokens.id,
       userId: oauthAccessTokens.userId,
@@ -305,11 +320,25 @@ export async function refreshAccessToken(
       revoked: oauthAccessTokens.revoked,
     })
     .from(oauthAccessTokens)
+    .innerJoin(users, eq(oauthAccessTokens.userId, users.id))
+    .innerJoin(
+      usersOnTeam,
+      and(
+        eq(usersOnTeam.userId, oauthAccessTokens.userId),
+        eq(usersOnTeam.teamId, oauthAccessTokens.teamId),
+      ),
+    )
+    .innerJoin(
+      oauthApplications,
+      eq(oauthApplications.id, oauthAccessTokens.applicationId),
+    )
     .where(
       and(
         eq(oauthAccessTokens.refreshToken, refreshTokenHash), // Compare with hashed refresh token
         eq(oauthAccessTokens.applicationId, applicationId),
         eq(oauthAccessTokens.revoked, false),
+        eq(oauthApplications.active, true),
+        isNull(users.deletionStartedAt),
       ),
     )
     .limit(1);

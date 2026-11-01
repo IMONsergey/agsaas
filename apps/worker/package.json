@@ -12,7 +12,7 @@
     "test:base": "bun --no-env-file test --exit --timeout 30000 src/processors/base.test.ts",
     "test:import-transactions": "bun --no-env-file test --exit --timeout 30000 src/processors/transactions/import-transactions.test.ts",
     "test:recurring-template": "bun --no-env-file test --exit src/utils/invoice-template-builder.test.ts",
-    "test:invoice-delivery": "bun --no-env-file test --exit --timeout 30000 src/processors/invoices/invoice-email-delivery.test.ts",
+    "test:invoice-delivery": "bun --no-env-file test --exit --timeout 30000 src/processors/invoices/invoice-email-delivery.test.ts && bun --no-env-file test --exit src/processors/invoices/invoice-delivery-operation.test.ts && bun --no-env-file test --exit --timeout 30000 src/processors/invoices/reconcile-invoice-deliveries.test.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },

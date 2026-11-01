@@ -1,6 +1,9 @@
 import {
   canSendInvoiceReminder,
+  deferInvoiceEmailFinalization,
+  finalizeInvoiceEmailDelivery,
   getInvoiceById,
+  getInvoiceEmailDelivery,
   recordInvoiceReminderAccepted,
 } from "@midday/db/queries";
 import { Notifications } from "@midday/notifications";
@@ -8,6 +11,7 @@ import type { Job } from "bullmq";
 import type { SendInvoiceReminderPayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
 import { BaseProcessor } from "../base";
+import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 import { deliverInvoiceEmail } from "./invoice-email-delivery";
 
 /**
@@ -30,6 +34,40 @@ export class SendInvoiceReminderProcessor extends BaseProcessor<SendInvoiceRemin
     if (!invoice) {
       this.logger.error("Invoice not found", { invoiceId });
       throw new Error(`Invoice not found: ${invoiceId}`);
+    }
+
+    const operationKey = invoiceDeliveryOperationKey({
+      teamId: invoice.teamId,
+      invoiceId,
+      kind: "reminder",
+      job,
+    });
+    const scope = { teamId: invoice.teamId, invoiceId, operationKey };
+    const receipt = await getInvoiceEmailDelivery(db, scope);
+    if (receipt?.status === "accepted" || receipt?.status === "completed") {
+      try {
+        const finalized = await finalizeInvoiceEmailDelivery(db, scope);
+        if (finalized?.status !== "completed")
+          throw new Error("Receipt disappeared");
+      } catch {
+        try {
+          await deferInvoiceEmailFinalization(db, scope);
+        } catch {
+          /* Keep errors free of SQL payloads. */
+        }
+        throw new Error("Invoice receipt finalization temporarily unavailable");
+      }
+      return;
+    }
+    if (receipt) {
+      const notifications = new Notifications(db);
+      await deliverInvoiceEmail(
+        () => notifications.reconcileInvoiceDelivery(scope),
+        async () => {
+          throw new Error("Durable recovery must finalize its own receipt");
+        },
+      );
+      return;
     }
 
     if (!canSendInvoiceReminder(invoice.status)) {
@@ -81,6 +119,7 @@ export class SendInvoiceReminderProcessor extends BaseProcessor<SendInvoiceRemin
           {
             sendEmail: true,
             requireEmailAcceptance: true,
+            invoiceDelivery: { invoiceId, operationKey },
             replyTo: invoice.team?.email ?? undefined,
           },
         ),

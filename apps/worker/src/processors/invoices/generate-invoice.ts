@@ -12,6 +12,7 @@ import { invoicesQueue } from "../../queues/invoices";
 import type { GenerateInvoicePayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
 import { BaseProcessor } from "../base";
+import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 
 /**
  * Generate Invoice Processor
@@ -122,12 +123,20 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
 
     // Queue email sending if delivery type is create_and_send
     if (deliveryType === "create_and_send") {
+      const deliveryKey = invoiceDeliveryOperationKey({
+        teamId: invoiceData.teamId,
+        invoiceId,
+        kind: "invoice",
+        job,
+        expectedScheduledJobId,
+      });
       await invoicesQueue.add(
         "send-invoice-email",
         {
           invoiceId,
           filename,
           fullPath,
+          deliveryKey,
           ...(expectedScheduledJobId === undefined
             ? {}
             : { expectedScheduledJobId }),

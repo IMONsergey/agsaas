@@ -78,6 +78,12 @@ export type NotificationOptions = {
   sendEmail?: boolean;
   /** Record a "sent" activity only after every email has been accepted. */
   requireEmailAcceptance?: boolean;
+  /** Server-only operation identity. Only invoice send/reminder handlers support it. */
+  invoiceDelivery?: {
+    invoiceId: string;
+    operationKey: string;
+    expectedScheduledJobId?: string;
+  };
 } & Partial<CreateEmailOptions>;
 
 export interface NotificationResult {
