@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "../types";
+import { getAuthCookieOptions } from "./cookie-options";
 import { createSupabaseFetch } from "./server-fetch";
 
 type CreateClientOptions = {
@@ -10,6 +11,7 @@ type CreateClientOptions = {
 
 export async function createClient(options?: CreateClientOptions) {
   const { admin = false, ...rest } = options ?? {};
+  const publicUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const cookieStore = await cookies();
 
   const key = admin
@@ -24,33 +26,30 @@ export async function createClient(options?: CreateClientOptions) {
       }
     : {};
 
-  const client = createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    key,
-    {
-      ...rest,
-      global: {
-        fetch: createSupabaseFetch(process.env.NEXT_PUBLIC_SUPABASE_URL!),
-      },
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            for (const { name, value, options } of cookiesToSet) {
-              cookieStore.set(name, value, options);
-            }
-          } catch {
-            // The `setAll` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
-          }
-        },
-      },
-      auth,
+  const client = createServerClient<Database>(publicUrl, key, {
+    ...rest,
+    cookieOptions: getAuthCookieOptions(publicUrl),
+    global: {
+      fetch: createSupabaseFetch(publicUrl),
     },
-  );
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          for (const { name, value, options } of cookiesToSet) {
+            cookieStore.set(name, value, options);
+          }
+        } catch {
+          // The `setAll` method was called from a Server Component.
+          // This can be ignored if you have middleware refreshing
+          // user sessions.
+        }
+      },
+    },
+    auth,
+  });
 
   // The middleware validates and refreshes tokens via getClaims().
   // Server components only call getSession() to read the access token

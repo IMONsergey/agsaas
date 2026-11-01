@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { createServerClient } from "@supabase/ssr";
+import {
+  type CookieOptions,
+  createBrowserClient,
+  createServerClient,
+} from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
+import { getAuthCookieOptions } from "./cookie-options";
 import { createSupabaseFetch } from "./server-fetch";
 
 const canonical = "https://public.example.test/supabase";
@@ -8,6 +13,159 @@ const internal = "http://api-gw:8000/private";
 const originalInternal = process.env.SUPABASE_INTERNAL_URL;
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
+
+describe("Supabase auth cookie transport", () => {
+  test.each([
+    ["https://public.example.test", true],
+    ["https://192.0.2.10:8545/supabase", true],
+    ["http://localhost:3800", false],
+    ["http://api-gw:8000/private", false],
+  ] as const)("uses the canonical protocol for %s", (url, secure) => {
+    expect(getAuthCookieOptions(url)).toEqual({ secure });
+  });
+
+  test.each([
+    undefined,
+    "",
+    "not-a-url",
+    "/relative",
+    "ftp://public.example.test",
+    "https://fixture:secret@public.example.test",
+    "https://public.example.test?token=secret",
+    "https://public.example.test#secret",
+  ])("rejects invalid canonical config with a generic error (%s)", (url) => {
+    let failure: unknown;
+    try {
+      getAuthCookieOptions(url);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "NEXT_PUBLIC_SUPABASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
+    );
+    expect((failure as Error).cause).toBeUndefined();
+  });
+
+  for (const kind of ["browser", "server"] as const) {
+    test.each([
+      {
+        publicUrl: "https://192.0.2.10:8545",
+        internalUrl: "http://api-gw:8000",
+        cookieName: "sb-192-auth-token",
+        secure: true,
+      },
+      {
+        publicUrl: "http://localhost:3800",
+        internalUrl: "https://internal.example.test",
+        cookieName: "sb-localhost-auth-token",
+        secure: false,
+      },
+    ])(`${kind} SSR writer sets and removes cookies using $publicUrl`, async ({
+      publicUrl,
+      internalUrl,
+      cookieName,
+      secure,
+    }) => {
+      const cookieValues = new Map<string, string>();
+      const writes: {
+        name: string;
+        value: string;
+        options: CookieOptions;
+      }[] = [];
+      const payload = Buffer.from(
+        JSON.stringify({
+          sub: "fixture-user",
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        }),
+      ).toString("base64url");
+      const fetcher = fakeFetch(async (input) => {
+        if (String(input).includes("/logout")) {
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({
+          access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.fixture`,
+          refresh_token: "fixture-refresh",
+          token_type: "bearer",
+          expires_in: 3600,
+          user: {
+            id: "fixture-user",
+            aud: "authenticated",
+            email: "fixture@example.test",
+            created_at: "2030-01-01T00:00:00Z",
+            app_metadata: {},
+            user_metadata: {},
+          },
+        });
+      });
+      const options = {
+        cookieOptions: getAuthCookieOptions(publicUrl),
+        global: {
+          fetch: createSupabaseFetch(publicUrl, {
+            internalUrl,
+            fetch: fetcher,
+          }),
+        },
+        cookies: {
+          getAll: () =>
+            Array.from(cookieValues, ([name, value]) => ({ name, value })),
+          setAll: (values: typeof writes) => {
+            writes.push(...values);
+            for (const { name, value, options } of values) {
+              if (options.maxAge === 0) cookieValues.delete(name);
+              else cookieValues.set(name, value);
+            }
+          },
+        },
+      };
+      const client =
+        kind === "browser"
+          ? createBrowserClient(publicUrl, "fixture-publishable-key", {
+              ...options,
+              isSingleton: false,
+            })
+          : createServerClient(publicUrl, "fixture-publishable-key", options);
+
+      const result = await client.auth.verifyOtp({
+        email: "fixture@example.test",
+        token: "123456",
+        type: "email",
+      });
+      expect(result.error).toBeNull();
+      expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+        `${internalUrl}/auth/v1/verify`,
+      );
+      expect(cookieValues.has(cookieName)).toBe(true);
+      expect(writes.length).toBeGreaterThan(0);
+      for (const { name, options } of writes) {
+        expect(name).toBe(cookieName);
+        expect(options).toMatchObject({
+          secure,
+          path: "/",
+          sameSite: "lax",
+          httpOnly: false,
+        });
+      }
+
+      writes.length = 0;
+      const signedOut = await client.auth.signOut({ scope: "local" });
+      expect(signedOut.error).toBeNull();
+      expect(cookieValues.size).toBe(0);
+      expect(writes.length).toBeGreaterThan(0);
+      for (const { name, value, options } of writes) {
+        expect(name).toBe(cookieName);
+        expect(value).toBe("");
+        expect(options).toMatchObject({
+          secure,
+          path: "/",
+          sameSite: "lax",
+          httpOnly: false,
+          maxAge: 0,
+        });
+      }
+    });
+  }
+});
 
 function fakeFetch(
   handler: (
