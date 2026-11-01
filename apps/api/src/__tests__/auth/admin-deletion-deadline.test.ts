@@ -128,10 +128,13 @@ describe("admin deletion deadline through the actual SDK and private transport",
       const result = await client.auth.admin.deleteUser(userId);
       expect(result.data.user).toBeNull();
       expect(result.error?.name).toBe("AuthRetryableFetchError");
+      expect(result.error?.status).toBe(0);
       expect(result.error?.message).toBe(reason.message);
       expect(requests[0]?.signal.aborted).toBe(true);
       expect(Object.is(requests[0]?.signal.reason, reason)).toBe(true);
-      expect(diagnostic).toHaveBeenCalledTimes(1);
+      // Auth 2.118 returns transport failures without logging their details.
+      // The failure result and forwarded cancellation are the contract.
+      expect(diagnostic).not.toHaveBeenCalled();
     } finally {
       await client.auth.stopAutoRefresh();
     }
@@ -149,7 +152,10 @@ describe("admin deletion deadline through the actual SDK and private transport",
       expect(requests[0]?.signal.reason.name).toBe("TimeoutError");
       expect(result.data.user).toBeNull();
       expect(result.error?.name).toBe("AuthRetryableFetchError");
-      expect(diagnostic).toHaveBeenCalledTimes(1);
+      expect(result.error?.status).toBe(0);
+      expect(result.error?.message).toBe(signal.reason.message);
+      expect(Object.is(requests[0]?.signal.reason, signal.reason)).toBe(true);
+      expect(diagnostic).not.toHaveBeenCalled();
     } finally {
       await client.auth.stopAutoRefresh();
     }

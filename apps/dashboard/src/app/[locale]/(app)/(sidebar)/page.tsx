@@ -3,7 +3,7 @@ import { OverviewView } from "@/components/widgets";
 import { HydrateClient, prefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Overview | Midday",
+  title: "Overview | AGSaaS",
 };
 
 export default function Overview() {

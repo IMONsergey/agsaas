@@ -106,14 +106,6 @@ export async function registerDynamicScheduler(
   const jobKey = templateConfig.jobKey(accountId);
   const payload = templateConfig.payloadGenerator(accountId);
 
-  // Check if already registered
-  if (registeredDynamicSchedulers.has(jobKey)) {
-    logger.warn("Dynamic scheduler already registered, skipping", {
-      jobKey,
-    });
-    return;
-  }
-
   try {
     const queue = getQueueByName(templateConfig.queue);
 
@@ -169,16 +161,10 @@ export async function unregisterDynamicScheduler(
 
   const jobKey = templateConfig.jobKey(accountId);
 
-  if (!registeredDynamicSchedulers.has(jobKey)) {
-    logger.warn("Dynamic scheduler not registered", { jobKey });
-    return;
-  }
-
   try {
-    const queue = registeredDynamicSchedulers.get(jobKey);
-    if (!queue) {
-      return;
-    }
+    // Redis owns persistence. A restart or a different worker process has no
+    // local registration entry, but must still be able to remove the schedule.
+    const queue = getQueueByName(templateConfig.queue);
 
     // Remove job scheduler using the scheduler ID
     // With upsertJobScheduler, we can remove by calling removeJobScheduler

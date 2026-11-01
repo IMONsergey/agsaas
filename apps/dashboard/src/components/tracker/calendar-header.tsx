@@ -20,7 +20,7 @@ export function CalendarHeader({
   const minutes = Math.floor(((totalDuration || 0) % 3600) / 60);
 
   return (
-    <div className="flex items-center justify-between mb-6">
+    <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
       <div className="space-y-1 select-text">
         <h1 className="text-4xl flex items-baseline gap-1 space-x-2 font-serif">
           <div>
@@ -37,7 +37,7 @@ export function CalendarHeader({
           billableHoursData={billableHoursData}
         />
       </div>
-      <div className="flex space-x-2">
+      <div className="flex flex-wrap items-center gap-2 max-w-full">
         <TrackerPeriodSelect dateFormat="MMMM" />
         <TrackerSettings />
         <TrackerCalendarType selectedView={selectedView} />

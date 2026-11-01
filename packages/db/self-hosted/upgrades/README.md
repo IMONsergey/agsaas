@@ -116,3 +116,41 @@ only scans intents explicitly created by the new application transaction.
 
 See [team invitation delivery](../../../../docs/agsaas-team-invitation-delivery.md)
 for configuration, queued/accepted semantics and finite replay boundaries.
+
+## Packet 05: audit fixes
+
+Пакет добавляет ровно шесть upgrade migrations, созданных через Supabase CLI 2.84.6.
+Применять после packet 04 в порядке ниже, до запуска соответствующих API и workers.
+
+| Миграция | Изменение |
+| --- | --- |
+| `20261101111052_generic_notification_dispatch.sql` | Приватный SQL журнал generic notifications, подтверждений и восстановления. |
+| `20261101111923_inbox_oauth_intents.sql` | Одноразовые Inbox OAuth intents с привязкой к пользователю, команде и браузеру. |
+| `20261101112557_invoice_documents_and_tracker_integrity.sql` | Уникальные номера счетов, счетчик, снимки документов и условий времени, один работающий таймер. |
+| `20261101112922_financial_job_handoff_and_tracker_allocations.sql` | SQL intents финансовых задач, идемпотентное ручное создание транзакций, резервирование времени за счетом. |
+| `20261101114309_bank_connection_cleanup.sql` | Зашифрованный cleanup intent, сохраняющийся после удаления исходного подключения или команды. |
+| `20261101114925_billing_subscription_event_order.sql` | ID подписки и даты создания/изменения ресурса для защиты от устаревших Polar events. |
+
+Bootstrap baseline `20261031154237_application_baseline.sql` остается неизменным:
+SHA256 `e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd`.
+В установке с baseline и всеми upgrades packet 01-04 ledger увеличивается с 7 до 13 записей.
+Сверять нужно точные имена и SQL statements, а не только количество записей.
+
+Перед применением остановить прикладных writers, сохранить DB, конфигурацию и private Storage,
+проверить реальное восстановление на изолированной копии совместимого PostgreSQL/Supabase.
+На копии выполнить эти же шесть миграций, сверить данные, роли, ACL и migration ledger.
+Использовать проверенный upgrade runner с транзакцией на миграцию; не переигрывать baseline,
+не применять schema push к работающей базе и не снимать защитные проверки ради прохождения upgrade.
+
+Дубликаты номеров счетов и несколько работающих таймеров останавливают миграцию для явной сверки.
+Исторические данные не удаляются и не перенумеровываются автоматически.
+`legacy_current` обозначает состояние документа или условия времени, доступные при обновлении;
+это не реконструкция ранее отправленного PDF или исторической ставки.
+Старые provider receipts, удаления и привязки выставленного времени не выдумываются backfill.
+Новые приватные таблицы требуют проверки эффективных прав браузерных ролей после восстановления.
+Откат к writers, не понимающим снимки, allocations и durable intents, требует отдельного плана.
+
+Сводка реализации, подтвержденные проверки и незакрытые внешние проверки:
+[результаты аудита](../../../../docs/agsaas-audit-completion.md).
+Для операций использовать [почтовый runbook](../../../../docs/agsaas-invoice-email-delivery.md)
+и [bank cleanup runbook](../../../../docs/operations/bank-connection-cleanup.md).

@@ -5,6 +5,7 @@ import {
   updateAppSettingsSchema,
 } from "@api/schemas/apps";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
 import {
   createPlatformLinkToken,
   disconnectApp,
@@ -16,6 +17,7 @@ import {
 import { z } from "zod";
 
 export const appsRouter = createTRPCRouter({
+  capabilities: protectedProcedure.query(() => getInstanceCapabilities()),
   get: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
     return getApps(db, teamId!);
   }),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { type FlowProducer, Queue, QueueEvents, Worker } from "bullmq";
 import type { RedisOptions } from "ioredis";
@@ -205,7 +205,8 @@ redisSuite("QueueManager with real Redis / BullMQ", () => {
 
       const client = await queue.client;
       expect(await client.zcard(queue.toKey("completed"))).toBe(20);
-      expect(await client.exists(`bull:${queue.name}:completed`)).toBe(0);
+      expect(await client.zcard(`bull:${queue.name}:completed`)).toBe(0);
+      const rangeFallback = spyOn(queue, "getJobs");
       const filters = {
         status: "completed" as const,
         timeRange: { start: base - 1000, end: Date.now() + 1000 },
@@ -226,6 +227,38 @@ redisSuite("QueueManager with real Redis / BullMQ", () => {
       expect(oldest.data.map(({ id }) => id)).toEqual(["range-00", "range-01"]);
       expect(newest.hasMore).toBe(true);
       expect(oldest.hasMore).toBe(true);
+
+      // Check inclusive Redis score bounds independently of the UI's later
+      // processed/finished timestamp filtering.
+      const lower = (await queue.getJob("range-05"))?.finishedOn;
+      const upper = (await queue.getJob("range-14"))?.finishedOn;
+      if (lower === undefined || upper === undefined) {
+        throw new Error("Completed jobs are missing their finish timestamps");
+      }
+      for (const ascending of [true, false]) {
+        const bounded = await manager["getJobsByTimeRange"](
+          queue,
+          "completed",
+          lower,
+          upper,
+          2,
+          ascending,
+        );
+        expect(bounded.map(({ id }) => id)).toEqual(
+          ascending ? ["range-05", "range-06"] : ["range-14", "range-13"],
+        );
+      }
+      expect(
+        await manager["getJobsByTimeRange"](
+          queue,
+          "completed",
+          upper,
+          lower,
+          2,
+        ),
+      ).toEqual([]);
+      expect(rangeFallback).not.toHaveBeenCalled();
+      rangeFallback.mockRestore();
     });
   }, 30_000);
 

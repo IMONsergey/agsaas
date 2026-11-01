@@ -171,12 +171,20 @@ export class TellerApi {
   async deleteAccounts({
     accessToken,
   }: DisconnectAccountRequest): Promise<void> {
-    await this.#fetch(`${this.#baseUrl}/accounts`, {
+    const response = await this.#fetch(`${this.#baseUrl}/accounts`, {
       method: "delete",
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Basic ${btoa(`${accessToken}:`)}`,
       },
     });
+    // fetch resolves for rejected HTTP responses too. Never report a revoke
+    // after a 401/429/5xx, and never include the response body or token in logs.
+    if (!response.ok) {
+      throw Object.assign(new Error("Teller revoke was not confirmed"), {
+        status: response.status,
+      });
+    }
   }
 
   /**

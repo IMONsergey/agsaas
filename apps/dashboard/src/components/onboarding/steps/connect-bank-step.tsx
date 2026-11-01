@@ -5,6 +5,7 @@ import { Suspense, use } from "react";
 import { BankSearchContent } from "@/components/bank-search-content";
 import { SelectBankAccountsContent } from "@/components/select-bank-accounts-content";
 import { useConnectParams } from "@/hooks/use-connect-params";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 
 type Props = {
   onContinue: () => void;
@@ -18,6 +19,7 @@ export function ConnectBankStep({
   onSyncStarted,
 }: Props) {
   const countryCode = use(defaultCountryCodePromise);
+  const { data: capabilities, isPending } = useInstanceCapabilities();
   const { step: connectStep, setParams } = useConnectParams();
 
   const isSelectingAccounts = connectStep === "account";
@@ -30,6 +32,19 @@ export function ConnectBankStep({
   const handleClose = () => {
     setParams(null);
   };
+
+  if (!capabilities?.banking.enabled) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-lg lg:text-xl font-serif">Bank transactions</h1>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          {isPending
+            ? "Checking bank connection availability..."
+            : "Bank sync is not configured for this installation. You can continue setup and import a CSV statement from Transactions."}
+        </p>
+      </div>
+    );
+  }
 
   if (isSelectingAccounts) {
     return (

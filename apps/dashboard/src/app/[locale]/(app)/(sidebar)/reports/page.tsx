@@ -3,7 +3,7 @@ import { getInitialMetricsSettings } from "@/utils/metrics-settings";
 import { MetricsContent } from "./metrics-content";
 
 export const metadata: Metadata = {
-  title: "Reports | Midday",
+  title: "Reports | AGSaaS",
 };
 
 export default function MetricsPage() {

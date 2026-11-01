@@ -3,6 +3,7 @@ export interface UnifiedApp {
   name: string;
   category: string;
   active: boolean;
+  unavailableReason?: string;
   beta?: boolean;
   logo?: React.ComponentType | string;
   short_description?: string;

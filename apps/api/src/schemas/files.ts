@@ -7,7 +7,8 @@ export const proxyFileSchema = z.object({
     .openapi({
       description:
         "Path to the file in storage. Can include or exclude 'vault/' prefix.",
-      example: "vault/documents/2024/invoice.pdf",
+      example:
+        "vault/b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4/documents/invoice.pdf",
       param: {
         in: "query",
         name: "filePath",
@@ -17,14 +18,15 @@ export const proxyFileSchema = z.object({
   fk: z
     .string()
     .min(1)
+    .optional()
     .openapi({
       description:
-        "Team file key for proxy/download access to team files. This key is returned in the user data response (GET /users/me) as the `fileKey` field. It is team-scoped and deterministic - all members of the same team share the same file key. Use this key to authenticate file access requests.",
+        "Short-lived user-bound file capability. Membership is checked on every request. Alternatively use an Authorization Bearer token with the required file scope.",
       example: "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
       param: {
         in: "query",
         name: "fk",
-        required: true,
+        required: false,
       },
     }),
 });
@@ -36,7 +38,8 @@ export const downloadFileSchema = z.object({
     .openapi({
       description:
         "Path to the file in storage. Can include or exclude 'vault/' prefix.",
-      example: "vault/documents/2024/invoice.pdf",
+      example:
+        "vault/b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4/documents/invoice.pdf",
       param: {
         in: "query",
         name: "path",
@@ -57,14 +60,15 @@ export const downloadFileSchema = z.object({
   fk: z
     .string()
     .min(1)
+    .optional()
     .openapi({
       description:
-        "Team file key for proxy/download access to team files. This key is returned in the user data response (GET /users/me) as the `fileKey` field. It is team-scoped and deterministic - all members of the same team share the same file key. Use this key to authenticate file access requests.",
+        "Short-lived user-bound file capability. Membership is checked on every request. Alternatively use an Authorization Bearer token with the required file scope.",
       example: "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
       param: {
         in: "query",
         name: "fk",
-        required: true,
+        required: false,
       },
     }),
 });
@@ -89,7 +93,7 @@ export const downloadInvoiceSchema = z.object({
     .optional()
     .openapi({
       description:
-        "Team file key for authenticated invoice access. Required when using invoice ID. This key is returned in the user data response (GET /users/me) as the `fileKey` field.",
+        "Short-lived user-bound file capability for authenticated invoice access. An Authorization Bearer token with invoices.read can be used instead.",
       example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       param: {
         in: "query",
@@ -101,7 +105,7 @@ export const downloadInvoiceSchema = z.object({
     .optional()
     .openapi({
       description:
-        "Invoice access token for public access. When used alone (without id), allows public access to the invoice.",
+        "Invoice access token for public access. When used alone (without id), allows access to a published invoice. Draft, scheduled and canceled invoices are private.",
       example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       param: {
         in: "query",

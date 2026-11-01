@@ -138,15 +138,7 @@ export const teamRouter = createTRPCRouter({
     .input(deleteTeamSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
       const data = await withTeamMembershipErrors(() =>
-        deleteTeam(
-          db,
-          { teamId: input.teamId, userId: session.user.id },
-          async (cleanup) => {
-            // The query authorizes the owner under the membership lock BEFORE
-            // invoking cleanup. Queue failure leaves the database unchanged.
-            await triggerJob("delete-team", cleanup, "teams");
-          },
-        ),
+        deleteTeam(db, { teamId: input.teamId, userId: session.user.id }),
       );
 
       if (!data) {
@@ -165,6 +157,7 @@ export const teamRouter = createTRPCRouter({
       } catch {
         // Non-fatal — team deletion succeeded, cache will expire naturally
       }
+      return { id: data.id, cleanupPending: data.cleanupPending };
     }),
 
   deleteMember: protectedProcedure

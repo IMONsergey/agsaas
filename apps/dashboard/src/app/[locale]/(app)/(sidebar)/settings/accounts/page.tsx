@@ -3,7 +3,7 @@ import { ConnectedAccounts } from "@/components/connected-accounts";
 import { prefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Bank Connections | Midday",
+  title: "Bank Connections | AGSaaS",
 };
 
 export default async function Page() {

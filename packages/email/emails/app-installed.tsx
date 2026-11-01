@@ -1,4 +1,3 @@
-import { getAppUrl } from "@midday/utils/envs";
 import {
   Body,
   Container,
@@ -15,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   email?: string;
@@ -22,14 +22,12 @@ interface Props {
   appName?: string;
 }
 
-const baseAppUrl = getAppUrl();
-
 export const AppInstalledEmail = ({
-  email = "pontus@lostisland.co",
-  teamName = "Midday Labs AB",
+  email = "owner@example.test",
+  teamName = "Your team",
   appName = "Raycast",
 }: Props) => {
-  const appLink = `${baseAppUrl}/apps`;
+  const appLink = `${getProductEmailConfig().appUrl}/apps`;
   const themeClasses = getEmailThemeClasses();
   const lightStyles = getEmailInlineStyles("light");
 
@@ -62,7 +60,8 @@ export const AppInstalledEmail = ({
             style={{ color: lightStyles.text.color }}
           >
             The <strong>{appName}</strong> app has been added to your workspace{" "}
-            <strong>{teamName}</strong> on <strong>Midday</strong>.
+            <strong>{teamName}</strong> on{" "}
+            <strong>{getProductEmailConfig().productName}</strong>.
           </Text>
           <Section className="mb-[42px] mt-[32px] text-center">
             <Button href={appLink}>View installed app</Button>

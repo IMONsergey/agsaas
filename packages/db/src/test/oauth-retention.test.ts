@@ -13,18 +13,44 @@ import {
 
 function queryRecorder() {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
+  const transactionCommands: string[] = [];
   const primaryPool = new Pool({ host: "127.0.0.1", database: "query_only" });
   const replicaPool = new Pool({ host: "127.0.0.1", database: "query_only" });
   const query = async (config: string | QueryConfig, values?: unknown[]) => {
-    if (typeof config === "string")
+    const text = (typeof config === "string" ? config : config.text)
+      .replace(/\s+/g, " ")
+      .trim();
+    // Drizzle passes BEGIN/ROLLBACK as QueryConfig objects as well as strings.
+    // Record transaction control separately from authorization/data queries.
+    if (/^(begin|commit|rollback)$/i.test(text)) {
+      transactionCommands.push(text.toLowerCase());
+      return {
+        rows: [],
+        fields: [],
+        command: text.toUpperCase(),
+        rowCount: 0,
+        oid: 0,
+      };
+    }
+    if (typeof config === "string") {
       throw new Error("Expected parameterized SQL");
+    }
     queries.push({
-      sql: config.text.replace(/\s+/g, " ").trim(),
+      sql: text,
       params: values ?? config.values ?? [],
     });
     return { rows: [], fields: [], command: "SELECT", rowCount: 0, oid: 0 };
   };
   primaryPool.query = query as Pool["query"];
+  // Exercise real Drizzle transactions with an in-memory pg connection.
+  // Never let the consume/rotation regression open an actual socket.
+  primaryPool.connect = (async () => ({
+    query,
+    release() {},
+  })) as unknown as Pool["connect"];
+  replicaPool.connect = (() => {
+    throw new Error("OAuth transactions must not use a replica");
+  }) as Pool["connect"];
   replicaPool.query = (() => {
     throw new Error("OAuth authorization must not read from a replica");
   }) as Pool["query"];
@@ -37,7 +63,7 @@ function queryRecorder() {
     casing: "snake_case",
   });
   const db = withReplicas(primary, [replica], () => replica);
-  return { db, queries };
+  return { db, queries, transactionCommands };
 }
 
 function expectCurrentGrantMembership(sql: string) {
@@ -85,7 +111,7 @@ describe("OAuth retained ownership and grant SQL contracts (no connections)", ()
   });
 
   test("refresh reads membership and app status on primary before performing any write", async () => {
-    const { db, queries } = queryRecorder();
+    const { db, queries, transactionCommands } = queryRecorder();
     const refreshToken = "mid_refresh_token_never_connect_fixture";
     await expect(
       refreshAccessToken(db, {
@@ -94,8 +120,10 @@ describe("OAuth retained ownership and grant SQL contracts (no connections)", ()
       }),
     ).rejects.toThrow("Invalid refresh token");
     expect(queries).toHaveLength(1);
+    expect(transactionCommands).toEqual(["begin", "rollback"]);
     expectCurrentGrantMembership(queries[0]!.sql);
     expect(queries[0]!.sql).toMatch(/"oauth_applications"\."active" = \$\d+/);
+    expect(queries[0]!.sql).toContain('for update of "oauth_access_tokens"');
     expect(queries[0]!.params).not.toContain(refreshToken);
   });
 });

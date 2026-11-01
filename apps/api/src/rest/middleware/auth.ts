@@ -1,4 +1,5 @@
 import { verifyAccessToken } from "@api/utils/auth";
+import { MfaPolicyError, requireSessionMfa } from "@api/utils/mfa";
 import { expandScopes } from "@api/utils/scopes";
 import { isValidApiKeyFormat } from "@db/utils/api-keys";
 import type { Database, DatabaseWithPrimary } from "@midday/db/client";
@@ -61,7 +62,19 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
     await requireTeamMembership(authDb, user.teamId, user.id);
 
+    try {
+      await requireSessionMfa(supabaseSession);
+    } catch (error) {
+      if (error instanceof MfaPolicyError) {
+        throw new HTTPException(error.reason === "required" ? 403 : 503, {
+          message: error.message,
+        });
+      }
+      throw error;
+    }
+
     const session = {
+      aal: supabaseSession.aal,
       teamId: user.teamId,
       user: {
         id: user.id,

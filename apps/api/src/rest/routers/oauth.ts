@@ -28,6 +28,10 @@ import {
   refreshAccessToken,
   revokeAccessToken,
 } from "@midday/db/queries";
+import {
+  getProductEmailConfig,
+  requireProductEmailReceipt,
+} from "@midday/email/config";
 import { AppInstalledEmail } from "@midday/email/emails/app-installed";
 import { render } from "@midday/email/render";
 import { createLoggerWithContext } from "@midday/logger";
@@ -398,6 +402,7 @@ app.openapi(
         const userTeam = userTeams.find((team) => team.id === teamId);
 
         if (userTeam && session.user.email) {
+          const config = getProductEmailConfig();
           const html = await render(
             AppInstalledEmail({
               email: session.user.email,
@@ -406,12 +411,15 @@ app.openapi(
             }),
           );
 
-          await resend.emails.send({
-            from: "Midday <middaybot@midday.ai>",
-            to: session.user.email,
-            subject: "An app has been added to your team",
-            html,
-          });
+          requireProductEmailReceipt(
+            await resend.emails.send({
+              from: config.from,
+              replyTo: config.replyTo,
+              to: session.user.email,
+              subject: "An app has been added to your team",
+              html,
+            }),
+          );
         }
       }
     } catch (error) {

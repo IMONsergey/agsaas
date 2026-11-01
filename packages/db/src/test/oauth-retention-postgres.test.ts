@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, TransactionClient } from "../client";
 import {
   claimDCRApplication,
   deleteOAuthApplication,
@@ -14,7 +14,9 @@ import {
 import {
   createAccessToken,
   createAuthorizationCode,
+  exchangeAuthorizationCode,
   refreshAccessToken,
+  revokeAccessToken,
   validateAccessToken,
 } from "../queries/oauth-flow";
 import { deleteTeam, leaveTeam } from "../queries/teams";
@@ -152,6 +154,256 @@ describe.skipIf(!isTestDatabaseAvailable())(
           .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
         await db.delete(users).where(inArray(users.id, userIds));
       }
+    }
+
+    function failGrantInsert(database: Database): Database {
+      return new Proxy(database, {
+        get(target, key, receiver) {
+          if (key === "transaction") {
+            return (run: (tx: TransactionClient) => Promise<unknown>) =>
+              target.transaction((tx) =>
+                run(
+                  new Proxy(tx, {
+                    get(transaction, operation, txReceiver) {
+                      if (operation === "insert") {
+                        return () => {
+                          throw new Error("fixture grant insert failed");
+                        };
+                      }
+                      const value = Reflect.get(
+                        transaction,
+                        operation,
+                        txReceiver,
+                      );
+                      return typeof value === "function"
+                        ? value.bind(transaction)
+                        : value;
+                    },
+                  }),
+                ),
+              );
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }
+
+    async function grantsFor(f: Fixture, userId = f.memberId) {
+      return db
+        .select()
+        .from(oauthAccessTokens)
+        .where(
+          and(
+            eq(oauthAccessTokens.applicationId, f.applicationId),
+            eq(oauthAccessTokens.userId, userId),
+          ),
+        );
+    }
+
+    async function freshCode(f: Fixture, verifier?: string) {
+      return (await createAuthorizationCode(db, {
+        applicationId: f.applicationId,
+        userId: f.memberId,
+        teamId: f.teamId,
+        scopes: ["invoices.read"],
+        redirectUri: "https://example.test/callback",
+        codeChallenge: verifier
+          ? createHash("sha256").update(verifier).digest("base64url")
+          : undefined,
+      }))!;
+    }
+
+    test("concurrent authorization-code exchanges consume once and commit replay revocation", async () => {
+      await withFixture(async (f) => {
+        const code = await freshCode(f, "fixture-pkce-verifier");
+        const before = await grantsFor(f);
+        const results = await Promise.allSettled(
+          [1, 2].map(() =>
+            exchangeAuthorizationCode(
+              db,
+              code.code,
+              "https://example.test/callback",
+              f.applicationId,
+              "fixture-pkce-verifier",
+            ),
+          ),
+        );
+        expect(
+          results.filter((result) => result.status === "fulfilled"),
+        ).toHaveLength(1);
+        expect(
+          results.filter((result) => result.status === "rejected"),
+        ).toHaveLength(1);
+        const after = await grantsFor(f);
+        expect(after).toHaveLength(before.length + 1);
+        expect(after.every((grant) => grant.revoked)).toBe(true);
+        const [storedCode] = await db
+          .select()
+          .from(oauthAuthorizationCodes)
+          .where(eq(oauthAuthorizationCodes.id, code.id));
+        expect(storedCode?.used).toBe(true);
+      });
+    });
+
+    test("a failed grant insert rolls auth-code consumption back and allows a valid retry", async () => {
+      await withFixture(async (f) => {
+        const code = await freshCode(f);
+        await expect(
+          exchangeAuthorizationCode(
+            failGrantInsert(db),
+            code.code,
+            "https://example.test/callback",
+            f.applicationId,
+          ),
+        ).rejects.toThrow("fixture grant insert failed");
+        const [storedCode] = await db
+          .select()
+          .from(oauthAuthorizationCodes)
+          .where(eq(oauthAuthorizationCodes.id, code.id));
+        expect(storedCode?.used).toBe(false);
+        const grant = await exchangeAuthorizationCode(
+          db,
+          code.code,
+          "https://example.test/callback",
+          f.applicationId,
+        );
+        expect(await validateAccessToken(db, grant.accessToken)).not.toBeNull();
+      });
+    });
+
+    test("wrong PKCE or removed membership cannot consume a code or revoke an existing grant", async () => {
+      await withFixture(async (f) => {
+        const code = await freshCode(f, "correct-fixture-verifier");
+        const existing = f.grants.get(f.memberId)!;
+        await expect(
+          exchangeAuthorizationCode(
+            db,
+            code.code,
+            "https://example.test/callback",
+            f.applicationId,
+            "wrong-verifier",
+          ),
+        ).rejects.toThrow("Invalid code verifier");
+        expect(
+          await validateAccessToken(db, existing.accessToken),
+        ).not.toBeNull();
+        await db
+          .delete(usersOnTeam)
+          .where(
+            and(
+              eq(usersOnTeam.userId, f.memberId),
+              eq(usersOnTeam.teamId, f.teamId),
+            ),
+          );
+        await expect(
+          exchangeAuthorizationCode(
+            db,
+            code.code,
+            "https://example.test/callback",
+            f.applicationId,
+            "correct-fixture-verifier",
+          ),
+        ).rejects.toThrow("Invalid authorization code");
+        const [storedCode] = await db
+          .select()
+          .from(oauthAuthorizationCodes)
+          .where(eq(oauthAuthorizationCodes.id, code.id));
+        expect(storedCode?.used).toBe(false);
+      });
+    });
+
+    test("concurrent refreshes yield one replacement and one rejection", async () => {
+      await withFixture(async (f) => {
+        const existing = f.grants.get(f.memberId)!;
+        const before = await grantsFor(f);
+        const results = await Promise.allSettled(
+          [1, 2].map(() =>
+            refreshAccessToken(db, {
+              applicationId: f.applicationId,
+              refreshToken: existing.refreshToken,
+            }),
+          ),
+        );
+        const successful = results.filter(
+          (result) => result.status === "fulfilled",
+        );
+        expect(successful).toHaveLength(1);
+        expect(
+          results.filter((result) => result.status === "rejected"),
+        ).toHaveLength(1);
+        expect(await grantsFor(f)).toHaveLength(before.length + 1);
+        expect(await validateAccessToken(db, existing.accessToken)).toBeNull();
+        const winner = successful[0]!;
+        if (winner.status !== "fulfilled")
+          throw new Error("Expected one replacement");
+        expect(
+          await validateAccessToken(db, winner.value.accessToken),
+        ).not.toBeNull();
+      });
+    });
+
+    test("a failed refresh replacement insert preserves the old grant for retry", async () => {
+      await withFixture(async (f) => {
+        const existing = f.grants.get(f.memberId)!;
+        await expect(
+          refreshAccessToken(failGrantInsert(db), {
+            applicationId: f.applicationId,
+            refreshToken: existing.refreshToken,
+          }),
+        ).rejects.toThrow("fixture grant insert failed");
+        expect(
+          await validateAccessToken(db, existing.accessToken),
+        ).not.toBeNull();
+        const replacement = await refreshAccessToken(db, {
+          applicationId: f.applicationId,
+          refreshToken: existing.refreshToken,
+        });
+        expect(
+          await validateAccessToken(db, replacement.accessToken),
+        ).not.toBeNull();
+        expect(await validateAccessToken(db, existing.accessToken)).toBeNull();
+      });
+    });
+
+    for (const tokenType of ["accessToken", "refreshToken"] as const) {
+      test(
+        "revocation accepts " + tokenType + " and preserves client binding",
+        async () => {
+          await withFixture(async (f) => {
+            const existing = f.grants.get(f.memberId)!;
+            expect(
+              await revokeAccessToken(db, {
+                applicationId: f.controlApplicationId,
+                token: existing[tokenType],
+              }),
+            ).toBeUndefined();
+            expect(
+              await validateAccessToken(db, existing.accessToken),
+            ).not.toBeNull();
+            expect(
+              await revokeAccessToken(db, {
+                applicationId: f.applicationId,
+                token: existing[tokenType],
+              }),
+            ).toBeDefined();
+            expect(
+              await validateAccessToken(db, existing.accessToken),
+            ).toBeNull();
+            await expect(
+              refreshAccessToken(db, {
+                applicationId: f.applicationId,
+                refreshToken: existing.refreshToken,
+              }),
+            ).rejects.toThrow("Invalid refresh token");
+            expect(
+              await revokeAccessToken(db, {
+                applicationId: f.applicationId,
+                token: existing[tokenType],
+              }),
+            ).toBeUndefined();
+          });
+        },
+      );
     }
 
     async function application(f: Fixture) {

@@ -3,7 +3,7 @@ import { TeamMembers } from "@/components/team-members";
 import { prefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Members | Midday",
+  title: "Members | AGSaaS",
 };
 
 export default function Members() {

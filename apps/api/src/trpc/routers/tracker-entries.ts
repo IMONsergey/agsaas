@@ -20,6 +20,22 @@ import {
   stopTimer,
   upsertTrackerEntries,
 } from "@midday/db/queries";
+import { InvoiceFinancialStateError } from "@midday/invoice/calculate";
+import { TRPCError } from "@trpc/server";
+
+async function trackerWrite<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: error.message,
+        cause: error,
+      });
+    throw error;
+  }
+}
 
 export const trackerEntriesRouter = createTRPCRouter({
   getBillableHours: protectedProcedure
@@ -30,6 +46,7 @@ export const trackerEntriesRouter = createTRPCRouter({
         date: input.date,
         view: input.view,
         weekStartsOnMonday: input.weekStartsOnMonday,
+        timezone: input.timezone,
       });
     }),
 
@@ -55,19 +72,23 @@ export const trackerEntriesRouter = createTRPCRouter({
   upsert: protectedProcedure
     .input(upsertTrackerEntriesSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
-      return upsertTrackerEntries(db, {
-        ...input,
-        teamId: teamId!,
-      });
+      return trackerWrite(() =>
+        upsertTrackerEntries(db, {
+          ...input,
+          teamId: teamId!,
+        }),
+      );
     }),
 
   delete: protectedProcedure
     .input(deleteTrackerEntrySchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
-      return deleteTrackerEntry(db, {
-        teamId: teamId!,
-        id: input.id,
-      });
+      return trackerWrite(() =>
+        deleteTrackerEntry(db, {
+          teamId: teamId!,
+          id: input.id,
+        }),
+      );
     }),
 
   // Timer procedures

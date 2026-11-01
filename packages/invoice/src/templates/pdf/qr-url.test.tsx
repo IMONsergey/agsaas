@@ -9,6 +9,7 @@ import { PdfTemplate } from "./index";
 
 const envNames = [
   "DASHBOARD_URL",
+  "NEXT_PUBLIC_URL",
   "NODE_ENV",
   "RAILWAY_ENVIRONMENT",
   "RAILWAY_PUBLIC_DOMAIN",
@@ -99,7 +100,7 @@ describe("PDF invoice QR destination", () => {
       },
       {
         dashboardUrl: undefined,
-        expectedOrigin: "https://app.midday.ai",
+        expectedOrigin: "http://localhost:3001",
       },
     ])(`uses $expectedOrigin for ${isReceipt ? "receipt" : "invoice"} QR`, async ({
       dashboardUrl,

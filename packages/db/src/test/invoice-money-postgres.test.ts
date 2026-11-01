@@ -195,7 +195,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       });
     });
 
-    test("metadata-only saves do not reprice a historical issued invoice; explicit unpaid edits still work", async () => {
+    test("metadata-only saves preserve the issued document; explicit unpaid financial edits require a correction", async () => {
       await withInvoice(async (tx, input) => {
         await tx.insert(invoices).values({
           ...input,
@@ -219,12 +219,13 @@ describe.skipIf(!isTestDatabaseAvailable())(
           tax: 1,
           status: "unpaid",
         });
-        const edited = await draftInvoice(tx, {
-          ...input,
-          template: {},
-          lineItems: [{ price: 100, quantity: 2 }],
-        });
-        expect(edited).toMatchObject({ amount: 220, subtotal: 200, tax: 20 });
+        await expect(
+          draftInvoice(tx, {
+            ...input,
+            template: {},
+            lineItems: [{ price: 100, quantity: 2 }],
+          }),
+        ).rejects.toThrow(InvoiceFinancialStateError);
       });
     });
 

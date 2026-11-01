@@ -13,7 +13,7 @@ import {
 } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Apps | Midday",
+  title: "Apps | AGSaaS",
 };
 
 export default async function Page() {

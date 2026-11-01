@@ -21,11 +21,11 @@ import { differenceInDays } from "date-fns";
 import { useEffect, useRef } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { useDebounceValue } from "usehooks-ts";
+import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { useUserQuery } from "@/hooks/use-user";
 import { useInvoiceEditorStore } from "@/store/invoice-editor";
 import { useTRPC } from "@/trpc/client";
-import { getUrl } from "@/utils/environment";
 import { SavingBar } from "../saving-bar";
 import { CustomerDetails } from "./customer-details";
 import { EditBlock } from "./edit-block";
@@ -49,7 +49,12 @@ export function Form() {
   const { track } = useOpenPanel();
 
   const form = useFormContext();
-  const token = form.watch("token");
+  const documentId = form.watch("id") as string | undefined;
+  const { url: previewUrl } = useFileUrl(
+    documentId
+      ? { type: "invoice", invoiceId: documentId, preview: true }
+      : null,
+  );
   const deliveryType = form.watch("template.deliveryType");
 
   const trpc = useTRPC();
@@ -547,7 +552,7 @@ export function Form() {
                   </Tooltip>
                 )}
 
-                {token && (
+                {previewUrl && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -555,7 +560,11 @@ export function Form() {
                         size="icon"
                         type="button"
                         onClick={() => {
-                          window.open(`${getUrl()}/i/${token}`, "_blank");
+                          window.open(
+                            previewUrl,
+                            "_blank",
+                            "noopener,noreferrer",
+                          );
                         }}
                       >
                         <Icons.ExternalLink className="size-3" />

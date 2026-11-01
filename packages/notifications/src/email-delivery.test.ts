@@ -27,6 +27,16 @@ const previousFetch = globalThis.fetch;
 const previousConnect = Socket.prototype.connect;
 const previousResendKey = process.env.RESEND_API_KEY;
 const previousEncryptionKey = process.env.MIDDAY_ENCRYPTION_KEY;
+const identityKeys = [
+  "EMAIL_FROM",
+  "EMAIL_REPLY_TO",
+  "DASHBOARD_URL",
+  "APP_NAME",
+  "TEAM_INVITATION_FROM",
+] as const;
+const savedIdentity = Object.fromEntries(
+  identityKeys.map((key) => [key, process.env[key]]),
+);
 let networkAttempts = 0;
 const blockNetwork = (): never => {
   networkAttempts += 1;
@@ -41,6 +51,7 @@ const fixtureDb = {} as Database;
 const events: string[] = [];
 const requests: Array<{ url: string; body: unknown }> = [];
 const responses: Array<() => Response> = [];
+const activityInputs: Array<Record<string, unknown>> = [];
 let emailEnabled = true;
 let hasTeamMembers = true;
 let activityFails = false;
@@ -94,6 +105,10 @@ mock.module("@midday/db/queries", () => ({
   createActivity: async (_db: unknown, input: unknown) => {
     events.push("activity");
     if (activityFails) throw new Error("Fixture activity write failure");
+    const activity = input as Record<string, unknown>;
+    if (activity.id && activityInputs.some((item) => item.id === activity.id))
+      return undefined;
+    activityInputs.push(activity);
     return input;
   },
   updateActivityMetadata: async () => undefined,
@@ -153,11 +168,17 @@ function sendNotification(type: "invoice_sent" | "invoice_reminder_sent") {
 }
 
 beforeEach(() => {
+  delete process.env.TEAM_INVITATION_FROM;
   process.env.RESEND_API_KEY = "fixture-resend-key";
+  process.env.EMAIL_FROM = "AGSaaS <accounts@example.test>";
+  process.env.EMAIL_REPLY_TO = "Help <support@example.test>";
+  process.env.DASHBOARD_URL = "https://app.example.test";
+  process.env.APP_NAME = "AGSaaS";
   process.env.MIDDAY_ENCRYPTION_KEY = "a".repeat(64);
   requests.length = 0;
   responses.length = 0;
   events.length = 0;
+  activityInputs.length = 0;
   networkAttempts = 0;
   emailEnabled = true;
   hasTeamMembers = true;
@@ -172,11 +193,91 @@ afterAll(() => {
   if (previousEncryptionKey === undefined)
     delete process.env.MIDDAY_ENCRYPTION_KEY;
   else process.env.MIDDAY_ENCRYPTION_KEY = previousEncryptionKey;
+  for (const key of identityKeys) {
+    if (savedIdentity[key] === undefined) delete process.env[key];
+    else process.env[key] = savedIdentity[key];
+  }
   consoleLog.mockRestore();
   consoleError.mockRestore();
 });
 
 describe("provider acknowledgement, not inbox delivery", () => {
+  test("generic activity identity is deterministic and the email phase does not duplicate it", async () => {
+    const notifications = new Notifications(fixtureDb);
+    const payload = {
+      invoiceId,
+      invoiceNumber: "INV-1",
+      customerName: "Fixture customer",
+      customerEmail: "customer@example.test",
+      token: "fixture-token",
+    };
+    const options = { sendEmail: false, activityOperationKey: "operation-1" };
+    expect(
+      (await notifications.create("invoice_sent", teamId, payload, options))
+        .activities,
+    ).toBe(1);
+    expect(
+      (await notifications.create("invoice_sent", teamId, payload, options))
+        .activities,
+    ).toBe(0);
+    expect(activityInputs).toHaveLength(1);
+    expect(activityInputs[0]?.id).toMatch(/^[a-f0-9-]{36}$/);
+    expect(requests).toHaveLength(0);
+    expect(
+      (
+        await notifications.create("invoice_sent", teamId, payload, {
+          sendEmail: true,
+          skipActivities: true,
+        })
+      ).emails.sent,
+    ).toBe(1);
+    expect(activityInputs).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.body)).not.toContain(
+      "activityOperationKey",
+    );
+    expect(JSON.stringify(requests[0]?.body)).not.toContain("skipActivities");
+  });
+  test("missing provider is a local unavailable result, never provider uncertainty", async () => {
+    delete process.env.RESEND_API_KEY;
+    const result = await new EmailService(fixtureDb).sendBulk(
+      [input()],
+      "invoice_sent",
+    );
+    expect(result).toMatchObject({
+      sent: 0,
+      failed: 1,
+      uncertain: 0,
+      retryable: false,
+      reason: "configuration_unavailable",
+    });
+    expect(requests).toHaveLength(0);
+    expect(new EmailDeliveryError(result).requiresReconciliation).toBe(false);
+  });
+
+  test("new sends require own identity and cannot override its sender", async () => {
+    const result = await new EmailService(fixtureDb).sendBulk(
+      [input({ from: "Foreign <middaybot@midday.ai>" })],
+      "invoice_sent",
+    );
+    expect(result.sent).toBe(1);
+    expect(requests[0]?.body).toMatchObject([
+      {
+        from: "AGSaaS <accounts@example.test>",
+        reply_to: "Help <support@example.test>",
+      },
+    ]);
+    requests.length = 0;
+    delete process.env.EMAIL_FROM;
+    delete process.env.TEAM_INVITATION_FROM;
+    const unavailable = await new EmailService(fixtureDb).sendBulk(
+      [input()],
+      "invoice_sent",
+    );
+    expect(unavailable.reason).toBe("configuration_unavailable");
+    expect(unavailable.uncertain).toBe(0);
+    expect(requests).toHaveLength(0);
+  });
+
   test("empty and preference-filtered sends cannot be called accepted", async () => {
     const service = new EmailService(fixtureDb);
     const empty = await service.sendBulk([], "invoice_sent");

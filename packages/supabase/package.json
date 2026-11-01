@@ -33,6 +33,7 @@
     "./queries": "./src/queries/index.ts",
     "./cached-queries": "./src/queries/cached-queries.ts",
     "./storage": "./src/utils/storage.ts",
+    "./storage-path": "./src/utils/storage-path.ts",
     "./types": "./src/types/index.ts",
     "./account-matching": "./src/utils/account-matching.ts"
   }

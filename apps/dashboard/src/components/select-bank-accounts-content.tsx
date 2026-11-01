@@ -76,8 +76,8 @@ function SupportForm() {
   const handleOnSubmit = form.handleSubmit((values) => {
     sendSupport.execute({
       message: values.message,
-      type: "bank-connection",
-      priority: "3",
+      type: "Transactions",
+      priority: "low",
       subject: "Select bank accounts",
       url: document.URL,
     });

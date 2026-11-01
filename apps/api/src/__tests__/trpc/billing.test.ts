@@ -1,10 +1,114 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { createCallerFactory } from "../../trpc/init";
 import { billingRouter } from "../../trpc/routers/billing";
 import { createTestContext } from "../helpers/test-context";
 import { mockDb, mocks } from "../setup";
 
 const createCaller = createCallerFactory(billingRouter);
+
+const billingEnv = {
+  AGSAAS_BILLING_ENABLED: "true",
+  POLAR_ACCESS_TOKEN: "fixture-private",
+  POLAR_WEBHOOK_SECRET: "fixture-webhook",
+  POLAR_STARTER_PRODUCT_ID: "own-starter-monthly",
+  POLAR_STARTER_YEARLY_PRODUCT_ID: "own-starter-yearly",
+  POLAR_PRO_PRODUCT_ID: "own-pro-monthly",
+  POLAR_PRO_YEARLY_PRODUCT_ID: "own-pro-yearly",
+  DASHBOARD_URL: "https://workspace.example.test",
+};
+const previousBillingEnv = Object.fromEntries(
+  Object.keys(billingEnv).map((key) => [key, process.env[key]]),
+);
+beforeEach(() => {
+  Object.assign(process.env, billingEnv);
+  mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("owner"));
+  mocks.polarCheckoutCreate.mockClear();
+  mocks.getTeamById.mockImplementation(() =>
+    Promise.resolve({
+      id: "test-team-id",
+      name: "Test workspace",
+      plan: "trial",
+      subscriptionStatus: null,
+    }),
+  );
+});
+afterAll(() => {
+  for (const [key, value] of Object.entries(previousBillingEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+describe("tRPC: billing checkout isolation", () => {
+  test("configured owners use only their installation's product and team identity", async () => {
+    const caller = createCaller(createTestContext());
+    expect(
+      await caller.createCheckout({
+        plan: "pro",
+        planType: "pro_yearly",
+        embedOrigin: "https://workspace.example.test",
+      }),
+    ).toEqual({ url: "https://polar.test/checkout" });
+    expect(mocks.polarCheckoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        products: ["own-pro-yearly"],
+        externalCustomerId: "test-team-id",
+        metadata: { teamId: "test-team-id" },
+        embedOrigin: "https://workspace.example.test",
+        allowTrial: false,
+      }),
+    );
+  });
+  test("an existing paid subscription must use the portal instead of a new checkout", async () => {
+    mocks.getTeamById.mockImplementation(() =>
+      Promise.resolve({
+        id: "test-team-id",
+        plan: "pro",
+        subscriptionStatus: "active",
+      }),
+    );
+    const caller = createCaller(createTestContext());
+    await expect(
+      caller.createCheckout({
+        plan: "pro",
+        embedOrigin: "https://workspace.example.test",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.polarCheckoutCreate).not.toHaveBeenCalled();
+  });
+  test("no provider call occurs before billing is configured", async () => {
+    delete process.env.POLAR_ACCESS_TOKEN;
+    const caller = createCaller(createTestContext());
+    await expect(
+      caller.createCheckout({
+        plan: "pro",
+        embedOrigin: "https://workspace.example.test",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.polarCheckoutCreate).not.toHaveBeenCalled();
+  });
+  test("members cannot start a subscription", async () => {
+    mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("member"));
+    const caller = createCaller(createTestContext());
+    await expect(
+      caller.createCheckout({
+        plan: "pro",
+        embedOrigin: "https://workspace.example.test",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.polarCheckoutCreate).not.toHaveBeenCalled();
+  });
+  test("checkout rejects an unrelated origin", async () => {
+    const caller = createCaller(createTestContext());
+    await expect(
+      caller.createCheckout({
+        plan: "pro",
+        embedOrigin: "https://external.example.test",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.polarCheckoutCreate).not.toHaveBeenCalled();
+  });
+});
 
 describe("tRPC: billing.getActiveSubscription", () => {
   beforeEach(() => {

@@ -10,6 +10,7 @@ import {
   integer,
   json,
   jsonb,
+  numeric,
   pgEnum,
   pgPolicy,
   pgSchema,
@@ -25,11 +26,18 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 import type { AnyAppConfig } from "./app-config";
+import type { FinancialJobName, FinancialJobStatus } from "./financial-job";
+import type { InvoiceDocumentSnapshot } from "./invoice-document";
 import type {
   InvoiceEmailActivity,
   InvoiceEmailDeliveryKind,
   InvoiceEmailDeliveryState,
 } from "./invoice-email-delivery";
+import type {
+  NotificationDispatchKind,
+  NotificationDispatchOutcome,
+  NotificationDispatchStatus,
+} from "./notification-dispatch";
 import type {
   TeamInviteDeliveryState,
   TeamInviteEmailContext,
@@ -559,6 +567,9 @@ export const trackerEntries = pgTable(
     description: text(),
     rate: numericCasted({ precision: 10, scale: 2 }),
     currency: text(),
+    billingSnapshotSource: text("billing_snapshot_source").$type<
+      "recorded" | "legacy_current"
+    >(),
     billed: boolean().default(false),
     date: date().defaultNow(),
   },
@@ -569,6 +580,11 @@ export const trackerEntries = pgTable(
     ),
     // Composite index for insights activity date range queries
     index("tracker_entries_team_date_idx").on(table.teamId, table.date),
+    uniqueIndex("tracker_entries_one_running_timer")
+      .on(table.teamId, table.assignedId)
+      .where(
+        sql`${table.stop} IS NULL AND ${table.start} IS NOT NULL AND ${table.assignedId} IS NOT NULL`,
+      ),
     foreignKey({
       columns: [table.assignedId],
       foreignColumns: [users.id],
@@ -894,6 +910,30 @@ export const invoiceRecurring = pgTable(
   ],
 );
 
+/** Backend-only monotonically increasing invoice-number allocator. Gaps are intentional reservations. */
+export const invoiceNumberCounters = pgTable(
+  "invoice_number_counters",
+  {
+    teamId: uuid("team_id")
+      .primaryKey()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    lastNumber: numeric("last_number").notNull(),
+  },
+  (table) => [
+    check(
+      "invoice_number_counters_last_number_check",
+      sql`${table.lastNumber} >= 0 AND ${table.lastNumber} = trunc(${table.lastNumber})`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
 export const invoices = pgTable(
   "invoices",
   {
@@ -907,6 +947,8 @@ export const invoices = pgTable(
     }).defaultNow(),
     dueDate: timestamp("due_date", { withTimezone: true, mode: "string" }),
     invoiceNumber: text("invoice_number"),
+    documentSnapshot:
+      jsonb("document_snapshot").$type<InvoiceDocumentSnapshot>(),
     customerId: uuid("customer_id"),
     amount: numericCasted({ precision: 10, scale: 2 }),
     currency: text(),
@@ -1028,6 +1070,14 @@ export const invoices = pgTable(
       .where(sql`invoice_recurring_id IS NOT NULL`),
     unique("invoices_scheduled_job_id_key").on(table.scheduledJobId),
     unique("invoices_id_team_id_key").on(table.id, table.teamId),
+    uniqueIndex("invoices_team_number_key").on(
+      table.teamId,
+      sql`btrim(${table.invoiceNumber})`,
+    ),
+    check(
+      "invoices_document_snapshot_shape",
+      sql`${table.documentSnapshot} IS NULL OR (jsonb_typeof(${table.documentSnapshot}) = 'object' AND ${table.documentSnapshot}->'version' = '1'::jsonb AND jsonb_typeof(${table.documentSnapshot}->'document') = 'object' AND ${table.documentSnapshot}->>'source' IN ('issued','generation','legacy_current')) IS TRUE`,
+    ),
     // Invoice page query indexes
     index("invoices_team_due_date_idx")
       .on(table.teamId, table.dueDate.desc())
@@ -1829,6 +1879,15 @@ export const teams = pgTable(
     }),
     plan: plansEnum().default("trial").notNull(),
     subscriptionStatus: subscriptionStatusEnum("subscription_status"),
+    billingSubscriptionId: text("billing_subscription_id"),
+    billingSubscriptionCreatedAt: timestamp("billing_subscription_created_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    billingUpdatedAt: timestamp("billing_updated_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
     exportSettings: jsonb("export_settings"),
     stripeAccountId: text("stripe_account_id"),
     stripeConnectStatus: text("stripe_connect_status"),
@@ -4476,3 +4535,375 @@ export const insightUserStatusRelations = relations(
     }),
   }),
 );
+
+/** Private worker dispatch ledger; client roles never receive its payload. */
+export const notificationDispatches = pgTable(
+  "notification_dispatches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    operationKey: text("operation_key").notNull(),
+    kind: text("kind").$type<NotificationDispatchKind>().notNull(),
+    sourceJobId: text("source_job_id").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>(),
+    payloadHash: text("payload_hash").notNull(),
+    status: text("status")
+      .$type<NotificationDispatchStatus>()
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    dispatchToken: uuid("dispatch_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .notNull()
+      .defaultNow(),
+    outcome: jsonb("outcome").$type<NotificationDispatchOutcome>(),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("notification_dispatches_team_operation_key").on(
+      table.teamId,
+      table.operationKey,
+    ),
+    index("notification_dispatches_recovery_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    check(
+      "notification_dispatches_kind_check",
+      sql`${table.kind} in ('notification', 'payment-issue', 'recurring-upcoming')`,
+    ),
+    check(
+      "notification_dispatches_status_check",
+      sql`${table.status} in ('pending', 'dispatching', 'completed', 'rejected', 'reconciliation')`,
+    ),
+    check(
+      "notification_dispatches_attempts_check",
+      sql`${table.attempts} >= 0`,
+    ),
+    check(
+      "notification_dispatches_identity_check",
+      sql`${table.operationKey} ~ '^[a-f0-9]{64}$' and ${table.payloadHash} ~ '^[a-f0-9]{64}$' and length(${table.sourceJobId}) between 1 and 512`,
+    ),
+    check(
+      "notification_dispatches_payload_check",
+      sql`(${table.payload} is null and ${table.status} in ('completed', 'rejected', 'reconciliation')) or (${table.payload} is not null and jsonb_typeof(${table.payload}) = 'object' and ${table.payload}->>'teamId' is not null and ${table.payload}->>'teamId' = ${table.teamId}::text and octet_length(${table.payload}::text) <= 524288)`,
+    ),
+    check(
+      "notification_dispatches_fence_check",
+      sql`${table.status} <> 'dispatching' or (${table.dispatchToken} is not null and ${table.leaseExpiresAt} is not null and ${table.startedAt} is not null)`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+/** Browser-bound, single-use inbox authorization intents. No raw secrets. */
+export const inboxOAuthIntents = pgTable(
+  "inbox_oauth_intents",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    stateHash: text("state_hash").notNull(),
+    browserNonceHash: text("browser_nonce_hash").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    provider: text("provider").$type<"gmail" | "outlook">().notNull(),
+    source: text("source").$type<"inbox" | "apps">().notNull(),
+    aal: text("aal").$type<"aal1" | "aal2">().notNull(),
+    redirectPath: text("redirect_path"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+    consumedAt: timestamp("consumed_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    unique("inbox_oauth_intents_state_key").on(table.stateHash),
+    index("inbox_oauth_intents_actor_expiry_idx").on(
+      table.userId,
+      table.expiresAt,
+    ),
+    check(
+      "inbox_oauth_intents_hash_check",
+      sql`${table.stateHash} ~ '^[a-f0-9]{64}$' and ${table.browserNonceHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "inbox_oauth_intents_provider_check",
+      sql`${table.provider} in ('gmail', 'outlook')`,
+    ),
+    check(
+      "inbox_oauth_intents_source_check",
+      sql`${table.source} in ('inbox', 'apps')`,
+    ),
+    check(
+      "inbox_oauth_intents_aal_check",
+      sql`${table.aal} in ('aal1', 'aal2')`,
+    ),
+    check(
+      "inbox_oauth_intents_lifetime_check",
+      sql`${table.expiresAt} > ${table.createdAt} and ${table.expiresAt} <= ${table.createdAt} + interval '10 minutes'`,
+    ),
+    check(
+      "inbox_oauth_intents_redirect_check",
+      sql`${table.redirectPath} is null or length(${table.redirectPath}) <= 2048`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+/** Transactional handoff to Redis. Payloads survive an unavailable or restarted queue. */
+export const financialJobDispatches = pgTable(
+  "financial_job_dispatches",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    operationKey: text("operation_key").notNull(),
+    jobName: text("job_name").$type<FinancialJobName>().notNull(),
+    queueName: text("queue_name").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>(),
+    payloadHash: text("payload_hash").notNull(),
+    status: text("status")
+      .$type<FinancialJobStatus>()
+      .default("pending")
+      .notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("financial_job_dispatches_operation_key").on(
+      table.teamId,
+      table.operationKey,
+    ),
+    index("financial_job_dispatches_recovery_idx")
+      .on(table.nextAttemptAt)
+      .where(sql`${table.status} in ('pending', 'accepted')`),
+    check(
+      "financial_job_dispatches_status_check",
+      sql`${table.status} in ('pending', 'accepted', 'completed', 'failed') and ${table.attempts} >= 0`,
+    ),
+    check(
+      "financial_job_dispatches_hash_check",
+      sql`${table.operationKey} ~ '^[a-f0-9]{64}$' and ${table.payloadHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "financial_job_dispatches_queue_check",
+      sql`(${table.jobName}, ${table.queueName}) in (('generate-invoice', 'invoices'), ('enrich-transactions', 'transactions'), ('match-transactions-bidirectional', 'inbox'), ('notification', 'notifications'))`,
+    ),
+    check(
+      "financial_job_dispatches_payload_check",
+      sql`((${table.payload} is null and ${table.status} = 'completed') or (${table.payload} is not null and jsonb_typeof(${table.payload}) = 'object' and ${table.payload}->>'teamId' = ${table.teamId}::text and octet_length(${table.payload}::text) <= 65536)) is true`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+/** Keep the operation tombstone after a manual transaction is deleted. */
+export const manualTransactionOperations = pgTable(
+  "manual_transaction_operations",
+  {
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    operationId: uuid("operation_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    transactionId: uuid("transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "manual_transaction_operations_pkey",
+      columns: [table.teamId, table.operationId],
+    }),
+    check(
+      "manual_transaction_operations_hash_check",
+      sql`${table.requestHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+/** Entire closed tracker entries are reserved by one draft/issued invoice. */
+export const trackerInvoiceAllocations = pgTable(
+  "tracker_invoice_allocations",
+  {
+    trackerEntryId: uuid("tracker_entry_id")
+      .primaryKey()
+      .notNull()
+      .references(() => trackerEntries.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    duration: bigint("duration", { mode: "number" }).notNull(),
+    rate: numericCasted("rate", { precision: 10, scale: 2 }).notNull(),
+    currency: text("currency").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("tracker_invoice_allocations_invoice_idx").on(
+      table.teamId,
+      table.invoiceId,
+    ),
+    check(
+      "tracker_invoice_allocations_amount_check",
+      sql`${table.duration} > 0 and ${table.rate} > 0 and ${table.currency} ~ '^[A-Z]{3}$'`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+/** Encrypted bank revocation intents survive local team/user/connection deletion. */
+export const bankConnectionCleanups = pgTable(
+  "bank_connection_cleanups",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    teamId: uuid("team_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    provider: text("provider").$type<
+      "plaid" | "gocardless" | "teller" | "enablebanking"
+    >(),
+    encryptedPayload: text("encrypted_payload"),
+    status: text("status")
+      .$type<"pending" | "processing" | "completed" | "reconciliation">()
+      .default("pending")
+      .notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    dispatchToken: uuid("dispatch_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }),
+    completedAt: timestamp("completed_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("bank_connection_cleanups_connection_key").on(table.connectionId),
+    index("bank_connection_cleanups_recovery_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    index("bank_connection_cleanups_team_idx").on(
+      table.teamId,
+      table.updatedAt,
+    ),
+    check(
+      "bank_connection_cleanups_status_check",
+      sql`${table.status} in ('pending', 'processing', 'completed', 'reconciliation')`,
+    ),
+    check(
+      "bank_connection_cleanups_provider_check",
+      sql`${table.provider} is null or ${table.provider} in ('plaid', 'gocardless', 'teller', 'enablebanking')`,
+    ),
+    check(
+      "bank_connection_cleanups_attempts_check",
+      sql`${table.attempts} >= 0`,
+    ),
+    check(
+      "bank_connection_cleanups_payload_check",
+      sql`((${table.status} = 'completed' and ${table.encryptedPayload} is null and ${table.completedAt} is not null) or (${table.status} <> 'completed' and ${table.encryptedPayload} is not null and octet_length(${table.encryptedPayload}) between 44 and 65536 and ${table.completedAt} is null)) is true`,
+    ),
+    check(
+      "bank_connection_cleanups_fence_check",
+      sql`${table.status} <> 'processing' or (${table.dispatchToken} is not null and ${table.leaseExpiresAt} is not null and ${table.startedAt} is not null)`,
+    ),
+    pgPolicy("agsaas_backend", {
+      as: "permissive",
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();

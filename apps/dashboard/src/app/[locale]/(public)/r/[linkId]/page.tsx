@@ -122,13 +122,7 @@ export default async function Page({ params }: Props) {
       <footer className="mt-auto">
         <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-6">
           <p className="text-center text-xs text-muted-foreground">
-            Powered by{" "}
-            <a
-              href="https://midday.ai"
-              className="hover:text-foreground transition-colors"
-            >
-              Midday
-            </a>
+            Powered by <span className="text-primary">AGSaaS</span>
           </p>
         </div>
       </footer>

@@ -1,6 +1,10 @@
 import { onboardTeamSchema } from "@jobs/schema";
 import { shouldSendEmail } from "@jobs/utils/check-team-plan";
 import { resend } from "@jobs/utils/resend";
+import {
+  getProductEmailConfig,
+  requireProductEmailReceipt,
+} from "@midday/email/config";
 import { TrialActivationEmail } from "@midday/email/emails/trial-activation";
 import { WelcomeEmail } from "@midday/email/emails/welcome";
 import { render } from "@midday/email/render";
@@ -11,7 +15,10 @@ export const onboardTeam = schemaTask({
   id: "onboard-team",
   schema: onboardTeamSchema,
   maxDuration: 300,
+  // Legacy workflow has no durable per-email fence: a replay could duplicate the welcome.
+  retry: { maxAttempts: 1 },
   run: async ({ userId }) => {
+    const config = getProductEmailConfig();
     const supabase = createClient();
 
     const { data: user, error } = await supabase
@@ -38,16 +45,19 @@ export const onboardTeam = schemaTask({
       audienceId: process.env.RESEND_AUDIENCE_ID!,
     });
 
-    await resend.emails.send({
-      to: user.email,
-      subject: "Welcome to Midday",
-      from: "Pontus from Midday <pontus@midday.ai>",
-      html: await render(
-        WelcomeEmail({
-          fullName: user.full_name,
-        }),
-      ),
-    });
+    requireProductEmailReceipt(
+      await resend.emails.send({
+        to: user.email,
+        subject: `Welcome to ${config.productName}`,
+        from: config.from,
+        replyTo: config.replyTo,
+        html: await render(
+          WelcomeEmail({
+            fullName: user.full_name,
+          }),
+        ),
+      }),
+    );
 
     if (!user.team_id) {
       logger.info("User has no team, skipping onboarding");
@@ -64,14 +74,17 @@ export const onboardTeam = schemaTask({
         .eq("team_id", user.team_id);
 
       if (!count || count === 0) {
-        await resend.emails.send({
-          from: "Pontus from Midday <pontus@midday.ai>",
-          to: user.email,
-          subject: "Connect your bank to see the full picture",
-          html: await render(
-            TrialActivationEmail({ fullName: user.full_name }),
-          ),
-        });
+        requireProductEmailReceipt(
+          await resend.emails.send({
+            from: config.from,
+            replyTo: config.replyTo,
+            to: user.email,
+            subject: "Connect your bank to see the full picture",
+            html: await render(
+              TrialActivationEmail({ fullName: user.full_name }),
+            ),
+          }),
+        );
       }
     }
   },

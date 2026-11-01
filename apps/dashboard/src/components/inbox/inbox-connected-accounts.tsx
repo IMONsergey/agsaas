@@ -25,10 +25,15 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { useSyncStatus } from "@/hooks/use-sync-status";
+import { useInboxOAuth } from "@/hooks/use-inbox-oauth";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
+import { useJobStatus } from "@/hooks/use-job-status";
 import { useTRPC } from "@/trpc/client";
+import {
+  inboxQueuedAttachmentCount,
+  inboxSyncPhase,
+} from "@/utils/inbox-sync-status";
 import { ConnectEmailModal } from "./connect-email-modal";
 import { ConnectGmail } from "./connect-gmail";
 import { ConnectOutlook } from "./connect-outlook";
@@ -41,29 +46,44 @@ type InboxAccount = NonNullable<RouterOutputs["inboxAccounts"]["get"]>[number];
 function InboxAccountItem({ account }: { account: InboxAccount }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [runId, setRunId] = useState<string | undefined>();
-  const [accessToken, setAccessToken] = useState<string | undefined>();
+  const [jobId, setJobId] = useState<string | undefined>();
   const [isSyncing, setSyncing] = useState(false);
   const { toast, dismiss } = useToast();
-  const router = useRouter();
+  const { data: capabilities } = useInstanceCapabilities();
+  const canReconnect =
+    capabilities?.integrations[account.provider]?.enabled === true;
 
-  const { status, setStatus, result } = useSyncStatus({ runId, accessToken });
+  const {
+    status: jobState,
+    result,
+    queryError,
+    error,
+  } = useJobStatus({
+    jobId,
+    refetchInterval: (query) =>
+      ["completed", "failed", "unknown"].includes(
+        query.state.data?.status ?? "",
+      )
+        ? false
+        : 1000,
+  });
+  const status = inboxSyncPhase(jobId, jobState, Boolean(queryError || error));
 
   const syncInboxAccountMutation = useMutation(
     trpc.inboxAccounts.sync.mutationOptions({
       onMutate: () => {
+        setJobId(undefined);
         setSyncing(true);
       },
       onSuccess: (data) => {
         if (data) {
-          setRunId(data.id);
-          setAccessToken(data.publicAccessToken);
+          setJobId(data.id);
         }
       },
       onError: () => {
         setSyncing(false);
-        setRunId(undefined);
-        setStatus("FAILED");
+        setJobId(undefined);
+        dismiss();
 
         toast({
           duration: 3500,
@@ -89,18 +109,20 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
   useEffect(() => {
     if (status === "COMPLETED") {
       dismiss();
-      setRunId(undefined);
+      setJobId(undefined);
       setSyncing(false);
 
       // Show success toast with attachment count
-      const attachmentCount = result?.attachmentsProcessed || 0;
+      const attachmentCount = inboxQueuedAttachmentCount(result);
       const description =
-        attachmentCount > 0
-          ? `Found ${attachmentCount} new ${attachmentCount === 1 ? "attachment" : "attachments"}.`
-          : "No new attachments found.";
+        attachmentCount === undefined
+          ? "Scan completed. Refreshing your inbox."
+          : attachmentCount > 0
+            ? `${attachmentCount} ${attachmentCount === 1 ? "attachment" : "attachments"} queued for processing.`
+            : "No new attachments were queued.";
 
       toast({
-        title: "Sync completed successfully",
+        title: "Email scan completed",
         description,
         variant: "success",
         duration: 3500,
@@ -118,8 +140,9 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
 
   useEffect(() => {
     if (status === "FAILED") {
+      dismiss();
       setSyncing(false);
-      setRunId(undefined);
+      setJobId(undefined);
 
       queryClient.invalidateQueries({
         queryKey: trpc.inboxAccounts.get.queryKey(),
@@ -140,15 +163,7 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
     });
   };
 
-  const connectMutation = useMutation(
-    trpc.inboxAccounts.connect.mutationOptions({
-      onSuccess: (authUrl) => {
-        if (authUrl) {
-          router.push(authUrl);
-        }
-      },
-    }),
-  );
+  const connectMutation = useInboxOAuth();
 
   const isDisconnected = account.status === "disconnected";
 
@@ -208,6 +223,10 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
           <Button
             size="sm"
             variant="outline"
+            disabled={!canReconnect || connectMutation.isPending}
+            title={
+              canReconnect ? undefined : "Not configured for this installation"
+            }
             onClick={() =>
               connectMutation.mutate({
                 provider: account.provider as "gmail" | "outlook",
@@ -219,7 +238,14 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
           </Button>
         ) : (
           <SyncInboxAccount
-            disabled={isSyncing || syncInboxAccountMutation.isPending}
+            disabled={
+              !canReconnect || isSyncing || syncInboxAccountMutation.isPending
+            }
+            disabledReason={
+              !canReconnect
+                ? "Email sync is not configured for this installation"
+                : undefined
+            }
             onClick={handleManualSync}
           />
         )}

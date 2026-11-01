@@ -14,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   customerName: string;
@@ -24,7 +25,7 @@ interface Props {
 export const InvoiceOverdueEmail = ({
   customerName = "Customer",
   invoiceNumber = "INV-0001",
-  link = "https://app.midday.ai/invoices?invoiceId=40b25275-258c-48e0-9678-57324cd770a6&invoiceType=details",
+  link = `${getProductEmailConfig().appUrl}/invoices`,
 }: Props) => {
   const text = `Invoice ${invoiceNumber} is now overdue`;
   const themeClasses = getEmailThemeClasses();

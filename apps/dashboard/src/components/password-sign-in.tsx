@@ -12,6 +12,7 @@ import {
 import { Input } from "@midday/ui/input";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useToast } from "@midday/ui/use-toast";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useAction } from "next-safe-action/hooks";
 import { useRef, useState } from "react";
@@ -25,7 +26,11 @@ const formSchema = z.object({
   password: z.string().min(1, "Enter your password.").max(1024),
 });
 
-export function PasswordSignIn() {
+export function PasswordSignIn({
+  recoveryEnabled = false,
+}: {
+  recoveryEnabled?: boolean;
+}) {
   const signIn = useAction(signInWithPasswordAction);
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -64,6 +69,11 @@ export function PasswordSignIn() {
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="w-full">
         <div className="flex flex-col space-y-4">
+          {searchParams.get("password_reset") === "1" && (
+            <p role="status" className="text-sm text-primary">
+              Your password was updated. Sign in again.
+            </p>
+          )}
           <FormField
             control={form.control}
             name="email"
@@ -116,6 +126,19 @@ export function PasswordSignIn() {
           >
             Sign in
           </SubmitButton>
+          {recoveryEnabled ? (
+            <Link
+              href="/forgot-password"
+              className="text-sm text-primary underline underline-offset-4 text-center"
+            >
+              Forgot password?
+            </Link>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center">
+              Password reset emails are not enabled. Contact your workspace
+              owner if you cannot sign in.
+            </p>
+          )}
         </div>
       </form>
     </Form>

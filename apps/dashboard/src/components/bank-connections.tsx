@@ -17,6 +17,7 @@ import { useReconnect } from "@/hooks/use-reconnect";
 import { useTRPC } from "@/trpc/client";
 import { connectionStatus } from "@/utils/connection-status";
 import { BankAccount } from "./bank-account";
+import { BankCleanupStatus } from "./bank-cleanup-status";
 import { BankLogo } from "./bank-logo";
 import { DeleteConnection } from "./delete-connection";
 import { AddBankAccountsModal } from "./modals/add-bank-accounts-modal";
@@ -272,6 +273,7 @@ export function BankConnections() {
 
   return (
     <div className="divide-y">
+      <BankCleanupStatus />
       {data?.map((connection) => {
         return <BankConnection key={connection.id} connection={connection} />;
       })}

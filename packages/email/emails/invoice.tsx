@@ -16,6 +16,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 import {
   DEFAULT_EMAIL_BUTTON_TEXT,
   defaultEmailBody,
@@ -65,8 +66,8 @@ function formatInvoiceDueDate(dueDate: string, dateFormat: string) {
 
 export const InvoiceEmail = ({
   customerName = "Customer",
-  teamName = "Midday",
-  link = "https://app.midday.ai/i/1234567890",
+  teamName = "Your team",
+  link = `${getProductEmailConfig().appUrl}/invoices`,
   invoiceNumber,
   amount,
   currency,

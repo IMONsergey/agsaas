@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, mock, spyOn, test } from "bun:test";
+import { ProductEmailConfigurationError } from "@midday/email/config";
 
 const previousResendKey = process.env.RESEND_API_KEY;
 const previousComposioKey = process.env.COMPOSIO_API_KEY;
@@ -88,7 +89,7 @@ describe("optional provider imports", () => {
   });
 
   test("Resend retries missing/failed configuration and caches only success", async () => {
-    expect(() => email.resend.emails).toThrow("RESEND_API_KEY is required");
+    expect(() => email.resend.emails).toThrow(ProductEmailConfigurationError);
     expect(resendConstructed).not.toHaveBeenCalled();
 
     process.env.RESEND_API_KEY = "local-test-resend-key";

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import type { CreateEmailOptions } from "resend";
 
 const fixturePath = fileURLToPath(
   new URL("./fixtures/payment-issue-child.ts", import.meta.url),
@@ -13,12 +12,17 @@ type FixtureResult = {
   fetchAttempts: number;
   networkAttempts: number;
   registeredJobs?: string[];
-  missingKeyError?: string;
-  constructorCountAfterImport?: number;
-  constructionKeys?: string[];
-  sent?: CreateEmailOptions[];
-  resultsWereUndefined?: boolean;
-  preservedSdkError?: boolean;
+  requests?: Array<Record<string, unknown>>;
+  errors?: Array<{ name: string; message: string }>;
+  states?: Array<{
+    status: string;
+    attempts: number;
+    startedAt: string | null;
+    outcome?: { sent: number; failed: number; uncertain: number };
+  }>;
+  first?: { status: string; accepted: number; reused: boolean };
+  duplicate?: { status: string; accepted: number; reused: boolean };
+  second?: { status: string; accepted: number; reused: boolean };
 };
 
 async function runScenario(scenario: string): Promise<FixtureResult> {
@@ -34,13 +38,17 @@ async function runScenario(scenario: string): Promise<FixtureResult> {
       // access and replaces only the eager BullMQ Queue constructor.
       env: {
         NODE_ENV: "production",
+        EMAIL_FROM: "AGSaaS <accounts@example.test>",
+        EMAIL_REPLY_TO: "support@example.test",
+        APP_NAME: "AGSaaS",
+        DASHBOARD_URL: "https://app.example.test",
         WORKER_ENV: "production",
         INTERNAL_API_KEY: "agsaas-import-test-only",
         API_INTERNAL_URL: "http://127.0.0.1:1",
         DATABASE_PRIMARY_URL: "postgres://test:test@127.0.0.1:1/midday_test",
         REDIS_QUEUE_URL: "redis://127.0.0.1:1/15",
         REDIS_URL: "redis://127.0.0.1:1/15",
-        ...(scenario === "configured-send" || scenario === "send-error"
+        ...(scenario !== "registry-import" && scenario !== "missing-key"
           ? { RESEND_API_KEY: "re_fixture_only" }
           : {}),
       },
@@ -76,7 +84,7 @@ async function runScenario(scenario: string): Promise<FixtureResult> {
   }
 }
 
-describe("payment issue optional email client in isolated processes", () => {
+describe("payment issue delivery in isolated processes", () => {
   test("the real full processor registry imports without optional provider keys", async () => {
     const result = await runScenario("registry-import");
     expect(result.imported).toBe(true);
@@ -85,48 +93,91 @@ describe("payment issue optional email client in isolated processes", () => {
       "enrich-transactions",
       "process-document",
       "notification",
+      "reconcile-notification-dispatches",
     ]);
     expect(result.fetchAttempts).toBe(0);
     expect(result.networkAttempts).toBe(0);
   }, 25_000);
-
-  test("a missing email key fails only on use with the original SDK error", async () => {
+  test("a missing provider key remains recoverable with zero attempts and HTTP requests", async () => {
     const result = await runScenario("missing-key");
     expect(result.imported).toBe(true);
-    expect(result.missingKeyError).toBe(
-      'Missing API key. Pass it to the constructor `new Resend("re_123")`',
-    );
+    expect(result.errors?.map((error) => error.name)).toEqual([
+      "NotificationDispatchPendingError",
+      "NotificationDispatchPendingError",
+    ]);
+    expect(result.states).toEqual([
+      { status: "pending", attempts: 0, startedAt: null },
+    ]);
     expect(result.fetchAttempts).toBe(0);
     expect(result.networkAttempts).toBe(0);
   }, 25_000);
-
-  test("configured sends preserve addresses and rendered payload and reuse one client", async () => {
+  test("own identity and real rendered payload are accepted once per job identity", async () => {
     const result = await runScenario("configured-send");
-    expect(result.constructorCountAfterImport).toBe(0);
-    expect(result.constructionKeys).toEqual(["re_fixture_only"]);
-    expect(result.sent).toHaveLength(2);
-    for (const [index, payload] of (result.sent ?? []).entries()) {
+    expect(result.requests).toHaveLength(2);
+    for (const [index, payload] of (result.requests ?? []).entries()) {
       expect(payload).toMatchObject({
-        from: "Middaybot <middaybot@midday.ai>",
-        replyTo: "pontus@midday.ai",
+        from: "AGSaaS <accounts@example.test>",
+        reply_to: "support@example.test",
         to: `recipient-${index}@example.test`,
         subject: "Your payment didn't go through",
       });
       expect(payload.html).toContain(`FixtureTeam${index}`);
       expect(payload.html).toContain(`Hi FixtureName${index},`);
-      expect(payload.html).toContain("/settings/billing");
+      expect(payload.html).toContain(
+        "https://app.example.test/settings/billing",
+      );
+      expect(payload.html).not.toContain("midday.ai");
     }
-    expect(result.resultsWereUndefined).toBe(true);
-    expect(result.fetchAttempts).toBe(0);
+    expect(result.first).toMatchObject({
+      status: "completed",
+      accepted: 1,
+      reused: false,
+    });
+    expect(result.duplicate).toMatchObject({
+      status: "completed",
+      accepted: 1,
+      reused: true,
+    });
+    expect(result.second).toMatchObject({
+      status: "completed",
+      accepted: 1,
+      reused: false,
+    });
+    expect(result.fetchAttempts).toBe(2);
     expect(result.networkAttempts).toBe(0);
   }, 25_000);
-
-  test("SDK send rejections propagate without being replaced or swallowed", async () => {
+  test("resolved SDK rejection is failed, sanitized and not reported as sent", async () => {
+    const result = await runScenario("resolved-rejection");
+    expect(result.states?.[0]).toMatchObject({
+      status: "rejected",
+      attempts: 1,
+      outcome: { sent: 0, failed: 1, uncertain: 0 },
+    });
+    expect(
+      result.errors?.every(
+        (error) =>
+          error.name === "NonRetryableError" &&
+          !error.message.includes("recipient-private-value"),
+      ),
+    ).toBe(true);
+    expect(result.fetchAttempts).toBe(1);
+    expect(result.networkAttempts).toBe(0);
+  }, 25_000);
+  test("lost SDK acknowledgement becomes reconciliation and a retry never resends", async () => {
     const result = await runScenario("send-error");
-    expect(result.preservedSdkError).toBe(true);
-    expect(result.constructionKeys).toEqual(["re_fixture_only"]);
-    expect(result.sent).toHaveLength(1);
-    expect(result.fetchAttempts).toBe(0);
+    expect(result.states?.[0]).toMatchObject({
+      status: "reconciliation",
+      attempts: 1,
+      outcome: { sent: 0, failed: 1, uncertain: 1 },
+    });
+    expect(
+      result.errors?.every(
+        (error) =>
+          error.name === "NonRetryableError" &&
+          error.message.includes("reconciliation"),
+      ),
+    ).toBe(true);
+    expect(result.fetchAttempts).toBe(1);
     expect(result.networkAttempts).toBe(0);
   }, 25_000);
 });

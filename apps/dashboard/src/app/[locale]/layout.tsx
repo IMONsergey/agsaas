@@ -11,46 +11,19 @@ import { DesktopHeader } from "@/components/desktop-header";
 import { isDesktopApp } from "@/utils/desktop";
 import { Providers } from "./providers";
 
+const dashboardUrl = process.env.NEXT_PUBLIC_URL || "http://localhost:3001";
+
 export const metadata: Metadata = {
-  metadataBase: new URL("https://app.midday.ai"),
-  title: "Midday | Run your business smarter",
+  metadataBase: new URL(dashboardUrl),
+  title: "AGSaaS | Business workspace",
   description:
-    "Automate financial tasks, stay organized, and make informed decisions effortlessly.",
-  twitter: {
-    title: "Midday | Run your business smarter",
-    description:
-      "Automate financial tasks, stay organized, and make informed decisions effortlessly.",
-    images: [
-      {
-        url: "https://cdn.midday.ai/opengraph-image-v1.jpg",
-        width: 800,
-        height: 600,
-      },
-      {
-        url: "https://cdn.midday.ai/opengraph-image-v1.jpg",
-        width: 1800,
-        height: 1600,
-      },
-    ],
-  },
+    "Manage customers, invoices, time tracking and business finances in one workspace.",
+  robots: { index: false, follow: false },
   openGraph: {
-    title: "Midday | Run your business smarter",
-    description:
-      "Automate financial tasks, stay organized, and make informed decisions effortlessly.",
-    url: "https://app.midday.ai",
-    siteName: "Midday",
-    images: [
-      {
-        url: "https://cdn.midday.ai/opengraph-image-v1.jpg",
-        width: 800,
-        height: 600,
-      },
-      {
-        url: "https://cdn.midday.ai/opengraph-image-v1.jpg",
-        width: 1800,
-        height: 1600,
-      },
-    ],
+    title: "AGSaaS | Business workspace",
+    description: "Customers, invoices, time tracking and business finances.",
+    url: dashboardUrl,
+    siteName: "AGSaaS",
     locale: "en_US",
     type: "website",
   },
@@ -73,8 +46,6 @@ const hedvigSerif = Hedvig_Letters_Serif({
 export const viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   themeColor: [
     { media: "(prefers-color-scheme: light)" },
     { media: "(prefers-color-scheme: dark)" },

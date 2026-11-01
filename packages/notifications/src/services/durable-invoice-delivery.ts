@@ -1,6 +1,7 @@
 import type { Database } from "@midday/db/client";
 import {
   claimInvoiceEmailDelivery,
+  deferInvoiceEmailDelivery,
   deferInvoiceEmailFinalization,
   finalizeInvoiceEmailDelivery,
   getInvoiceEmailDelivery,
@@ -12,6 +13,7 @@ import {
   recordInvoiceDeliveryOutcome,
   validateInvoiceEmailEnvelope,
 } from "@midday/db/queries";
+import { isProductEmailTransportAvailable } from "@midday/email/config";
 import type { NotificationResult } from "../base";
 import { emptyEmailDeliveryResult } from "./email-delivery-result";
 import type { InvoiceEnvelopeOutcome } from "./email-service";
@@ -60,6 +62,7 @@ async function deliverPersistedInvoiceNotificationInternal(
     envelope: string;
     activitySnapshot: InvoiceEmailActivity[];
   }>,
+  transportAvailable: () => boolean = isProductEmailTransportAvailable,
 ): Promise<NotificationResult> {
   let existing = await getInvoiceEmailDelivery(db, scope);
   if (!existing && prepare) {
@@ -70,7 +73,12 @@ async function deliverPersistedInvoiceNotificationInternal(
   }
   if (!existing) throw new InvoiceDeliveryStoppedError();
 
-  const claim = await claimInvoiceEmailDelivery(db, scope);
+  const claim =
+    (existing.status === "pending" || existing.status === "sending") &&
+    !transportAvailable()
+      ? await deferInvoiceEmailDelivery(db, scope)
+      : await claimInvoiceEmailDelivery(db, scope);
+  if (claim.state === "deferred") throw new InvoiceDeliveryPendingError();
   if (claim.state === "busy") throw new InvoiceDeliveryPendingError();
   if (claim.state === "missing" || claim.state === "stopped")
     throw new InvoiceDeliveryStoppedError();

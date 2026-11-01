@@ -224,11 +224,24 @@ const baseDraftInvoiceSchema = z.object({
     description: "Issue date of the invoice in ISO 8601 format",
     example: "2024-06-01T00:00:00.000Z",
   }),
-  invoiceNumber: z.string().optional().openapi({
-    description:
-      "Invoice number as shown to the customer (auto-generated if not provided)",
-    example: "INV-2024-001",
-  }),
+  invoiceNumber: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine(
+      (value) =>
+        !Array.from(value).some(
+          (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+        ),
+      "Invoice number must not contain control characters",
+    )
+    .optional()
+    .openapi({
+      description:
+        "Invoice number as shown to the customer (auto-generated if not provided)",
+      example: "INV-2024-001",
+    }),
   logoUrl: z.string().optional().nullable().openapi({
     description: "URL of the logo to display on the invoice",
     example: "https://example.com/logo.png",
@@ -832,11 +845,24 @@ export const createInvoiceRequestSchema = z
         "Issue date of the invoice in ISO 8601 format. Defaults to current date if not provided.",
       example: "2024-06-01T00:00:00.000Z",
     }),
-    invoiceNumber: z.string().optional().openapi({
-      description:
-        "Invoice number as shown to the customer (auto-generated if not provided)",
-      example: "INV-2024-001",
-    }),
+    invoiceNumber: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) =>
+          !Array.from(value).some(
+            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+          ),
+        "Invoice number must not contain control characters",
+      )
+      .optional()
+      .openapi({
+        description:
+          "Invoice number as shown to the customer (auto-generated if not provided)",
+        example: "INV-2024-001",
+      }),
     logoUrl: z.string().optional().nullable().openapi({
       description: "URL of the logo to display on the invoice",
       example: "https://example.com/logo.png",
@@ -1274,11 +1300,24 @@ export const invoiceResponseSchema = z
       description: "Issue date of the invoice in ISO 8601 format",
       example: "2024-06-01T00:00:00.000Z",
     }),
-    invoiceNumber: z.string().optional().openapi({
-      description:
-        "Invoice number as shown to the customer (auto-generated if not provided)",
-      example: "INV-2024-001",
-    }),
+    invoiceNumber: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) =>
+          !Array.from(value).some(
+            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+          ),
+        "Invoice number must not contain control characters",
+      )
+      .optional()
+      .openapi({
+        description:
+          "Invoice number as shown to the customer (auto-generated if not provided)",
+        example: "INV-2024-001",
+      }),
     amount: z.number().nullable().openapi({
       description: "Total amount of the invoice, or null if not yet calculated",
       example: 1500.75,

@@ -19,6 +19,7 @@ import * as Sentry from "@sentry/bun";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { secureHeaders } from "hono/secure-headers";
+import { inboxOAuthStartCors } from "./rest/middleware/inbox-oauth-cors";
 import { routers } from "./rest/routers";
 import { wellKnownRouter } from "./rest/routers/well-known";
 import type { Context } from "./rest/types";
@@ -38,38 +39,49 @@ app.use(
   }),
 );
 
-app.use(
-  "*",
-  cors({
-    origin: process.env.ALLOWED_API_ORIGINS?.split(",") ?? [],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allowHeaders: [
-      "Authorization",
-      "Content-Type",
-      "User-Agent",
-      "accept-language",
-      "cf-ray",
-      "trpc-accept",
-      "x-request-id",
-      "x-trpc-source",
-      "x-user-locale",
-      "x-user-timezone",
-      "x-user-country",
-      "x-force-primary",
-      // Slack webhook headers
-      "x-slack-signature",
-      "x-slack-request-timestamp",
-    ],
-    exposeHeaders: [
-      "Content-Length",
-      "Content-Type",
-      "Cache-Control",
-      "Cross-Origin-Resource-Policy",
-      "Server-Timing",
-    ],
-    maxAge: 86400,
-  }),
-);
+// Register before general CORS so these preflights permit the HttpOnly nonce.
+// No other route acquires credentialed CORS from this exception.
+app.use("/apps/gmail/install-url", inboxOAuthStartCors());
+app.use("/apps/outlook/install-url", inboxOAuthStartCors());
+
+const generalApiCors = cors({
+  origin: process.env.ALLOWED_API_ORIGINS?.split(",") ?? [],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowHeaders: [
+    "Authorization",
+    "Content-Type",
+    "User-Agent",
+    "accept-language",
+    "cf-ray",
+    "trpc-accept",
+    "x-request-id",
+    "x-trpc-source",
+    "x-user-locale",
+    "x-user-timezone",
+    "x-user-country",
+    "x-force-primary",
+    // Slack webhook headers
+    "x-slack-signature",
+    "x-slack-request-timestamp",
+  ],
+  exposeHeaders: [
+    "Content-Length",
+    "Content-Type",
+    "Cache-Control",
+    "Cross-Origin-Resource-Policy",
+    "Server-Timing",
+  ],
+  maxAge: 86400,
+});
+app.use("*", (c, next) => {
+  if (
+    c.req.path === "/apps/gmail/install-url" ||
+    c.req.path === "/apps/outlook/install-url"
+  ) {
+    return next();
+  }
+  return generalApiCors(c, next);
+});
 
 // Always emit Server-Timing so the browser Network tab shows server-side duration.
 // When DEBUG_PERF is on, also log structured details to stdout.

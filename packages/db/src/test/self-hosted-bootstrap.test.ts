@@ -79,10 +79,61 @@ describe("self-hosted application baseline (offline)", () => {
       "invoice_payment_reservations",
       "invoice_email_deliveries",
       "team_invite_deliveries",
+      "invoice_number_counters",
+      "notification_dispatches",
+      "inbox_oauth_intents",
+      "financial_job_dispatches",
+      "manual_transaction_operations",
+      "tracker_invoice_allocations",
+      "bank_connection_cleanups",
     ]) {
       expect(projected.tables[`public.${name}`]?.isRLSEnabled).toBe(true);
       delete projected.tables[`public.${name}`];
     }
+    const teamTable = projected.tables["public.teams"]!;
+    expect(teamTable.columns.billing_subscription_id).toMatchObject({
+      type: "text",
+      notNull: false,
+    });
+    expect(teamTable.columns.billing_updated_at).toMatchObject({
+      type: "timestamp with time zone",
+      notNull: false,
+    });
+    expect(teamTable.columns.billing_subscription_created_at).toMatchObject({
+      type: "timestamp with time zone",
+      notNull: false,
+    });
+    delete teamTable.columns.billing_subscription_created_at;
+    delete teamTable.columns.billing_subscription_id;
+    delete teamTable.columns.billing_updated_at;
+    const invoiceTable = projected.tables["public.invoices"]!;
+    const trackerTable = projected.tables["public.tracker_entries"]!;
+    expect(invoiceTable.columns.document_snapshot).toMatchObject({
+      type: "jsonb",
+      notNull: false,
+    });
+    delete invoiceTable.columns.document_snapshot;
+    expect(trackerTable.columns.billing_snapshot_source).toMatchObject({
+      type: "text",
+      notNull: false,
+    });
+    delete trackerTable.columns.billing_snapshot_source;
+    expect(invoiceTable.indexes?.invoices_team_number_key).toMatchObject({
+      name: "invoices_team_number_key",
+      isUnique: true,
+    });
+    delete invoiceTable.indexes!.invoices_team_number_key;
+    expect(
+      invoiceTable.checkConstraints?.invoices_document_snapshot_shape,
+    ).toBeDefined();
+    delete invoiceTable.checkConstraints!.invoices_document_snapshot_shape;
+    expect(
+      trackerTable.indexes?.tracker_entries_one_running_timer,
+    ).toMatchObject({
+      name: "tracker_entries_one_running_timer",
+      isUnique: true,
+    });
+    delete trackerTable.indexes!.tracker_entries_one_running_timer;
     const constraints = projected.tables["public.invoices"]!.uniqueConstraints!;
     expect(constraints.invoices_id_team_id_key).toMatchObject({
       columns: ["id", "team_id"],
@@ -196,9 +247,9 @@ describe("self-hosted application baseline (offline)", () => {
     );
   });
 
-  test("manages 49 baseline and 3 incremental application tables, never platform tables", () => {
+  test("manages 49 baseline and 10 incremental application tables, never platform tables", () => {
     const snapshot = createApplicationSnapshot();
-    expect(Object.keys(snapshot.tables)).toHaveLength(52);
+    expect(Object.keys(snapshot.tables)).toHaveLength(59);
     expect(Object.keys(snapshot.enums)).toHaveLength(33);
     expect(Object.keys(snapshot.views)).toHaveLength(0);
     expect(Object.keys(snapshot.roles)).toHaveLength(0);
@@ -296,7 +347,7 @@ describe("self-hosted application baseline (offline)", () => {
         },
       ]);
     }
-    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(52);
+    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(59);
     expect(sql).toContain("AND NOT r.rolinherit AND NOT r.rolbypassrls");
     expect(sql).toContain("m.member = r.oid");
   });

@@ -23,6 +23,7 @@ type Registration = {
   template: unknown;
 };
 const registrations: Registration[] = [];
+const removals: Array<{ queue: FixtureQueue; id: string }> = [];
 class FixtureQueue {
   name: string;
   constructor(name: string) {
@@ -31,6 +32,10 @@ class FixtureQueue {
   async upsertJobScheduler(id: string, repeat: unknown, template: unknown) {
     registrations.push({ queue: this, id, repeat, template });
     return {};
+  }
+  async removeJobScheduler(id: string) {
+    removals.push({ queue: this, id });
+    return true;
   }
 }
 mock.module("bullmq", () => ({
@@ -53,11 +58,16 @@ mock.module("../utils/db", () => ({ getDb: forbidden }));
 
 const { getAllQueues, queueConfigs } = await import("../queues");
 const { staticSchedulerConfigs } = await import("./index");
-const { getRegisteredStaticSchedulers, registerStaticSchedulers } =
-  await import("./registry");
+const {
+  getRegisteredStaticSchedulers,
+  registerStaticSchedulers,
+  registerDynamicScheduler,
+  unregisterDynamicScheduler,
+} = await import("./registry");
 
 beforeEach(() => {
   registrations.length = 0;
+  removals.length = 0;
 });
 afterAll(() => {
   globalThis.fetch = savedFetch;
@@ -65,6 +75,33 @@ afterAll(() => {
 });
 
 describe("static scheduler queue registration", () => {
+  test("removes a persisted inbox scheduler after a fresh process with no local registration", async () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    await unregisterDynamicScheduler("inbox-sync-scheduler", id);
+    expect(removals).toHaveLength(1);
+    expect(removals[0]?.id).toBe(`scheduler:inbox-sync-${id}`);
+    expect(removals[0]?.queue).toBe(
+      getAllQueues().find((queue) => queue.name === "inbox-provider"),
+    );
+    expect(registrations).toHaveLength(0);
+  });
+  test("repeated setup upserts persisted scheduler state instead of trusting the local map", async () => {
+    const id = "00000000-0000-4000-8000-000000000002";
+    await registerDynamicScheduler({
+      template: "inbox-sync-scheduler",
+      accountId: id,
+      cronPattern: "5 */6 * * *",
+    });
+    await registerDynamicScheduler({
+      template: "inbox-sync-scheduler",
+      accountId: id,
+      cronPattern: "10 */6 * * *",
+    });
+    expect(registrations).toHaveLength(2);
+    expect(registrations[0]?.id).toBe(registrations[1]?.id);
+    expect(registrations[1]?.repeat).toMatchObject({ pattern: "10 */6 * * *" });
+    await unregisterDynamicScheduler("inbox-sync-scheduler", id);
+  });
   test("registers the real invitation recovery scheduler and every other configured scheduler", async () => {
     await registerStaticSchedulers();
     expect(registrations).toHaveLength(staticSchedulerConfigs.length);
@@ -86,6 +123,14 @@ describe("static scheduler queue registration", () => {
       });
       expect(getRegisteredStaticSchedulers()).toContain(config.name);
     }
+    const bankCleanup = registrations.find(
+      (call) => call.id === "scheduler:reconcile-bank-connections",
+    );
+    expect(bankCleanup?.queue.name).toBe("teams");
+    expect(bankCleanup?.template).toMatchObject({
+      name: "reconcile-bank-connections",
+      data: {},
+    });
     const invitation = registrations.find(
       (call) => call.id === "scheduler:reconcile-team-invitations",
     );

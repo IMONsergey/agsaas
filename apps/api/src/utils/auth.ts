@@ -7,6 +7,8 @@ import {
 } from "jose";
 
 export type Session = {
+  /** Trusted assurance claim from the verified Auth JWT, never user metadata. */
+  aal?: "aal1" | "aal2";
   user: {
     id: string;
     email?: string;
@@ -39,6 +41,7 @@ const HS256_SECRET = process.env.SUPABASE_JWT_SECRET
 function extractSession(payload: JWTPayload): Session {
   const p = payload as SupabaseJWTPayload;
   return {
+    aal: payload.aal === "aal2" ? "aal2" : "aal1",
     user: {
       id: p.sub!,
       // User metadata is editable by the account holder. Only the auth

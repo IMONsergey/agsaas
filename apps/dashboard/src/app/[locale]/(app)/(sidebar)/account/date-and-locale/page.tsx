@@ -6,7 +6,7 @@ import { TimeFormatSettings } from "@/components/time-format-settings";
 import { WeekSettings } from "@/components/week-settings";
 
 export const metadata: Metadata = {
-  title: "Date & Locale | Midday",
+  title: "Date & Locale | AGSaaS",
 };
 
 export default async function Page() {

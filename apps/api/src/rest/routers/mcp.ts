@@ -9,12 +9,14 @@ import type { Scope } from "@api/utils/scopes";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { getUserById } from "@midday/db/queries";
+import { getApiUrl } from "@midday/utils/envs";
 import * as Sentry from "@sentry/bun";
+import { bodyLimit } from "hono/body-limit";
 import { rateLimiter } from "hono-rate-limiter";
 
 const app = new OpenAPIHono<Context>();
 
-const apiUrl = process.env.MIDDAY_API_URL || "https://api.midday.ai";
+const apiUrl = getApiUrl().replace(/\/$/, "");
 
 const mcpRateLimitEnv = process.env.MCP_API_RATE_LIMIT;
 const parsedMcpLimit =
@@ -62,6 +64,11 @@ app.use("/*", async (c, next) => {
 
 app.use(
   "/*",
+  bodyLimit({
+    maxSize: 1024 * 1024,
+    onError: (c) =>
+      c.json({ error: "Request body exceeds the MCP limit" }, 413),
+  }),
   rateLimiter({
     windowMs: 10 * 60 * 1000,
     limit: mcpRateLimit,
@@ -79,7 +86,9 @@ app.all("/", async (c) => {
     Sentry.setTag("api.route", "mcp");
   }
 
-  const transport = new StreamableHTTPTransport();
+  const transport = new StreamableHTTPTransport({
+    maxRequestBodySize: 1024 * 1024,
+  });
   const db = c.get("db");
   const teamId = c.get("teamId");
   const session = c.get("session");

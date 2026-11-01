@@ -101,13 +101,15 @@ export async function getTrackerProjects(
       teamId: trackerProjects.teamId,
       createdAt: trackerProjects.createdAt,
       rate: trackerProjects.rate,
+      billable: trackerProjects.billable,
       totalDuration: sql<number>`total_duration(${trackerProjects})`.as(
         "total_duration",
       ),
-      totalAmount:
-        sql<number>`CAST(get_project_total_amount(${trackerProjects}) AS float)`.as(
-          "total_amount",
-        ),
+      totalAmount: sql<number | null>`(
+          SELECT CASE WHEN bool_or(upper(COALESCE(entry.currency, ${trackerProjects.currency}, 'USD')) <> upper(COALESCE(${trackerProjects.currency}, 'USD')))
+          THEN NULL ELSE COALESCE(sum(entry.duration / 3600.0 * COALESCE(entry.rate, ${trackerProjects.rate}, 0)), 0)::float END
+          FROM public.tracker_entries entry WHERE entry.project_id = ${trackerProjects.id} AND entry.team_id = ${trackerProjects.teamId}
+        )`.as("total_amount"),
       customer: {
         id: customers.id,
         name: customers.name,
@@ -441,10 +443,11 @@ export async function getTrackerProjectById(
       totalDuration: sql<number>`total_duration(${trackerProjects})`.as(
         "total_duration",
       ),
-      totalAmount:
-        sql<number>`CAST(get_project_total_amount(${trackerProjects}) AS float)`.as(
-          "total_amount",
-        ),
+      totalAmount: sql<number | null>`(
+          SELECT CASE WHEN bool_or(upper(COALESCE(entry.currency, ${trackerProjects.currency}, 'USD')) <> upper(COALESCE(${trackerProjects.currency}, 'USD')))
+          THEN NULL ELSE COALESCE(sum(entry.duration / 3600.0 * COALESCE(entry.rate, ${trackerProjects.rate}, 0)), 0)::float END
+          FROM public.tracker_entries entry WHERE entry.project_id = ${trackerProjects.id} AND entry.team_id = ${trackerProjects.teamId}
+        )`.as("total_amount"),
       customer: {
         id: customers.id,
         name: customers.name,

@@ -59,6 +59,7 @@ export async function deliverTeamInvitation(
         );
         envelope = JSON.stringify({
           from: config.from,
+          ...(config.replyTo ? { reply_to: config.replyTo } : {}),
           to: [row.recipient],
           subject: t("invite.subject", {
             invitedByName: row.context.invitedByName,

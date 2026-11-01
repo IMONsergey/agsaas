@@ -22,7 +22,7 @@ import { batchPrefetch, HydrateClient, trpc } from "@/trpc/server";
 import { getInitialTableSettings } from "@/utils/columns";
 
 export const metadata: Metadata = {
-  title: "Invoices | Midday",
+  title: "Invoices | AGSaaS",
 };
 
 type Props = {

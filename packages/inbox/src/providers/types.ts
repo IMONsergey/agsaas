@@ -57,6 +57,7 @@ export interface Tokens {
 export interface ExchangeCodeForAccountParams {
   code: string;
   teamId: string;
+  actorUserId: string;
 }
 
 export interface UserInfo {

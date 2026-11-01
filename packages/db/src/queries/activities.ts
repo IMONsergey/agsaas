@@ -11,6 +11,8 @@ import { activities } from "../schema";
 export type Activity = typeof activities.$inferSelect;
 
 type CreateActivityParams = {
+  /** Internal idempotency identity; never accepted from a public payload. */
+  id?: string;
   teamId: string;
   userId?: string;
   type: (typeof activityTypeEnum.enumValues)[number];
@@ -28,6 +30,7 @@ export async function createActivity(
   const [result] = await db
     .insert(activities)
     .values({
+      id: params.id,
       teamId: params.teamId,
       userId: params.userId,
       type: params.type,
@@ -37,6 +40,7 @@ export async function createActivity(
       groupId: params.groupId,
       metadata: params.metadata,
     })
+    .onConflictDoNothing({ target: activities.id })
     .returning();
 
   return result;

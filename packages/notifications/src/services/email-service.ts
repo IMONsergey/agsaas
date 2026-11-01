@@ -1,10 +1,16 @@
 import type { Database } from "@midday/db/client";
 import { shouldSendNotification } from "@midday/db/queries";
+import {
+  getProductEmailConfig,
+  isProductEmailTransportAvailable,
+  requireProductEmailTransport,
+} from "@midday/email/config";
 import InsightsWeeklyEmail from "@midday/email/emails/insights-weekly";
 import InvoiceEmail from "@midday/email/emails/invoice";
 import InvoiceOverdueEmail from "@midday/email/emails/invoice-overdue";
 import InvoicePaidEmail from "@midday/email/emails/invoice-paid";
 import InvoiceReminderEmail from "@midday/email/emails/invoice-reminder";
+import { PaymentIssueEmail } from "@midday/email/emails/payment-issue";
 import TransactionsEmail from "@midday/email/emails/transactions";
 import TransactionsExportedEmail from "@midday/email/emails/transactions-exported";
 import UpcomingInvoicesEmail from "@midday/email/emails/upcoming-invoices";
@@ -45,16 +51,30 @@ function providerRejection(
 
 export class EmailService {
   private client?: Resend;
+  private clientKey?: string;
+  private readonly suppliedClient: boolean;
 
   constructor(
     private db: Database,
     client?: Resend,
   ) {
     this.client = client;
+    this.suppliedClient = client !== undefined;
+  }
+
+  /** Transport-only preflight: frozen bodies must not depend on new identity
+   * settings, and accepted receipts can finalize without any provider. */
+  canSend(): boolean {
+    return this.suppliedClient || isProductEmailTransportAvailable();
   }
 
   #provider(): Resend {
-    this.client ??= new Resend(process.env.RESEND_API_KEY!);
+    if (this.suppliedClient) return this.client!;
+    const key = requireProductEmailTransport();
+    if (!this.client || this.clientKey !== key) {
+      this.client = new Resend(key);
+      this.clientKey = key;
+    }
     return this.client;
   }
 
@@ -92,6 +112,8 @@ export class EmailService {
     envelope: string,
     idempotencyKey: string,
   ): Promise<InvoiceEnvelopeOutcome> {
+    if (!this.canSend())
+      return { kind: "retry", code: "configuration_unavailable" };
     const body: unknown = JSON.parse(envelope);
     try {
       // Public SDK post() preserves this already-rendered wire body. The
@@ -151,7 +173,23 @@ export class EmailService {
     const result = emptyEmailDeliveryResult(
       emails.length - eligibleEmails.length,
     );
+    if (!this.canSend()) {
+      return {
+        ...result,
+        failed: eligibleEmails.length,
+        reason: "configuration_unavailable",
+      };
+    }
     let emailPayloads: CreateEmailOptions[];
+    try {
+      getProductEmailConfig();
+    } catch {
+      return {
+        ...result,
+        failed: eligibleEmails.length,
+        reason: "configuration_unavailable",
+      };
+    }
     try {
       // Render the complete batch before making the first external request.
       emailPayloads = await Promise.all(
@@ -160,7 +198,11 @@ export class EmailService {
     } catch {
       // No request was made. This is a local configuration/template error,
       // not evidence of acceptance and not a transient provider rejection.
-      return { ...result, failed: eligibleEmails.length };
+      return {
+        ...result,
+        failed: eligibleEmails.length,
+        reason: "preparation_failed",
+      };
     }
 
     const hasAttachments = emailPayloads.some(
@@ -262,6 +304,7 @@ export class EmailService {
   }
 
   async #buildEmailPayload(email: EmailInput): Promise<CreateEmailOptions> {
+    const config = getProductEmailConfig();
     let html: string;
     if (email.template) {
       const template = this.#getTemplate(email.template as string);
@@ -278,7 +321,8 @@ export class EmailService {
     const recipients = email.to || [email.user.email];
 
     const payload: CreateEmailOptions = {
-      from: email.from || "Midday <middaybot@midday.ai>",
+      // Per-handler/runtime options cannot impersonate another sending domain.
+      from: config.from,
       to: recipients,
       subject: email.subject,
       html,
@@ -289,7 +333,8 @@ export class EmailService {
     };
 
     // Add optional fields if present
-    if (email.replyTo) payload.replyTo = email.replyTo;
+    if (email.replyTo || config.replyTo)
+      payload.replyTo = email.replyTo || config.replyTo;
     if (email.cc) payload.cc = email.cc;
     if (email.bcc) payload.bcc = email.bcc;
     if (email.attachments) payload.attachments = email.attachments;
@@ -301,6 +346,7 @@ export class EmailService {
 
   #getTemplate(templateName: string) {
     const templates = {
+      "payment-issue": PaymentIssueEmail,
       "invoice-overdue": InvoiceOverdueEmail,
       "invoice-paid": InvoicePaidEmail,
       invoice: InvoiceEmail,

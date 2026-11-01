@@ -4,6 +4,7 @@ import {
   calculateInvoiceAmounts,
   getInvoiceMoneyTemplate,
   hasInvoiceFinancialChanges,
+  InvoiceAmountError,
   InvoiceFinancialStateError,
   validateInvoiceMoney,
 } from "@midday/invoice/calculate";
@@ -38,6 +39,11 @@ import type { SQL } from "drizzle-orm/sql/sql";
 import { v4 as uuidv4 } from "uuid";
 import type { Database, DatabaseOrTransaction } from "../client";
 import {
+  applyInvoiceDocument,
+  captureInvoiceDocument,
+  hasInvoiceIdentityChanges,
+} from "../invoice-document";
+import {
   type activityTypeEnum,
   customers,
   invoicePaymentReservations,
@@ -56,6 +62,8 @@ import {
   TenantResourceNotFoundError,
 } from "../utils/tenant-ownership";
 import { getExchangeRatesBatch } from "./exhange-rates";
+import { isCurrentInvoiceSchedule } from "./invoice-delivery";
+import { releaseDraftTrackerAllocations } from "./tracker-invoices";
 
 export type Template = {
   id?: string; // Reference to invoice_templates table
@@ -327,7 +335,7 @@ export type GetInvoiceByIdParams = {
 };
 
 export async function getInvoiceById(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: GetInvoiceByIdParams,
 ) {
   const { id, teamId } = params;
@@ -335,6 +343,7 @@ export async function getInvoiceById(
   const [result] = await db
     .select({
       id: invoices.id,
+      documentSnapshot: invoices.documentSnapshot,
       dueDate: invoices.dueDate,
       invoiceNumber: invoices.invoiceNumber,
       createdAt: invoices.createdAt,
@@ -416,7 +425,13 @@ export async function getInvoiceById(
       },
     })
     .from(invoices)
-    .leftJoin(customers, eq(invoices.customerId, customers.id))
+    .leftJoin(
+      customers,
+      and(
+        eq(invoices.customerId, customers.id),
+        eq(customers.teamId, invoices.teamId),
+      ),
+    )
     .leftJoin(teams, eq(invoices.teamId, teams.id))
     .leftJoin(users, eq(invoices.userId, users.id))
     .leftJoin(invoiceTemplates, eq(invoices.templateId, invoiceTemplates.id))
@@ -436,9 +451,12 @@ export async function getInvoiceById(
     return null;
   }
 
-  const template = camelcaseKeys(result?.template as Record<string, unknown>, {
-    deep: true,
-  }) as Template;
+  const template = camelcaseKeys(
+    (result?.template ?? {}) as Record<string, unknown>,
+    {
+      deep: true,
+    },
+  ) as Template;
 
   // Populate template metadata from the joined invoice_templates table
   // This ensures correct display even for drafts saved before multi-template feature
@@ -465,6 +483,83 @@ export async function getInvoiceById(
     topBlock: result.topBlock as EditorDoc | null,
     bottomBlock: result.bottomBlock as EditorDoc | null,
   };
+}
+
+/** Read-only document view; draft previews do not publish or freeze an invoice. */
+export async function getInvoiceDocumentById(
+  db: DatabaseOrTransaction,
+  params: GetInvoiceByIdParams,
+) {
+  const invoice = await getInvoiceById(db, params);
+  if (!invoice) return null;
+  const document = applyInvoiceDocument(invoice);
+  const template = camelcaseKeys(
+    (document.template ?? {}) as unknown as Record<string, unknown>,
+    { deep: true },
+  ) as Template;
+  template.paymentEnabled = invoice.template.paymentEnabled;
+  return { ...document, template };
+}
+
+export async function getPublishedInvoiceById(
+  db: DatabaseOrTransaction,
+  params: { id: string },
+) {
+  const invoice = await getInvoiceDocumentById(db, params);
+  if (
+    !invoice ||
+    !["unpaid", "overdue", "paid", "refunded"].includes(invoice.status)
+  )
+    return null;
+  const {
+    internalNote: _internalNote,
+    paymentIntentId: _paymentIntentId,
+    user: _user,
+    scheduledJobId: _scheduledJobId,
+    documentSnapshot: _documentSnapshot,
+    sentTo: _sentTo,
+    ...published
+  } = invoice;
+  return published;
+}
+
+/** Only a publishing worker calls this: capture under the same row lock as invoice edits. */
+export async function prepareInvoiceDocument(
+  db: DatabaseOrTransaction,
+  params: GetInvoiceByIdParams & { expectedScheduledJobId?: string },
+) {
+  return db.transaction(async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.id, params.id),
+          params.teamId ? eq(invoices.teamId, params.teamId) : undefined,
+        ),
+      )
+      .for("update");
+    if (!current) return null;
+    if (
+      params.expectedScheduledJobId !== undefined &&
+      !isCurrentInvoiceSchedule(current, params.expectedScheduledJobId)
+    )
+      return null;
+    if (!current.documentSnapshot) {
+      await tx
+        .update(invoices)
+        .set({
+          documentSnapshot: captureInvoiceDocument(current, "generation"),
+        })
+        .where(
+          and(eq(invoices.id, current.id), eq(invoices.teamId, current.teamId)),
+        );
+    }
+    return getInvoiceDocumentById(tx, {
+      id: current.id,
+      teamId: current.teamId,
+    });
+  });
 }
 
 /**
@@ -655,57 +750,21 @@ export async function getNextInvoiceNumber(
   db: DatabaseOrTransaction,
   teamId: string,
 ): Promise<string> {
-  const PREFIX = "INV-";
-  const PAD_LENGTH = 4;
-
-  // Find the highest invoice number with a numeric suffix for this team
-  // Using raw SQL for the regex extraction since Drizzle doesn't support it natively
-  const maxInvoiceResult = await db
-    .select({ invoiceNumber: invoices.invoiceNumber })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.teamId, teamId),
-        sql`${invoices.invoiceNumber} ~ '[0-9]+$'`,
-      ),
-    )
-    .orderBy(
-      sql`CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER) DESC`,
-    )
-    .limit(1);
-
-  let nextNumber: number;
-
-  if (maxInvoiceResult.length > 0 && maxInvoiceResult[0]?.invoiceNumber) {
-    // Extract the numeric part from the invoice number
-    const match = maxInvoiceResult[0].invoiceNumber.match(/(\d+)$/);
-
-    if (match?.[1]) {
-      // Increment the numeric part
-      nextNumber = Number.parseInt(match[1], 10) + 1;
-    } else {
-      // Fallback: count total invoices + 1
-      const countResult = await db
-        .select({ count: count() })
-        .from(invoices)
-        .where(eq(invoices.teamId, teamId));
-
-      nextNumber = (countResult[0]?.count ?? 0) + 1;
-    }
-  } else {
-    // No invoices with numeric suffix found, count total invoices + 1
-    const countResult = await db
-      .select({ count: count() })
-      .from(invoices)
-      .where(eq(invoices.teamId, teamId));
-
-    nextNumber = (countResult[0]?.count ?? 0) + 1;
-  }
-
-  // Pad with leading zeros
-  const paddedNumber = nextNumber.toString().padStart(PAD_LENGTH, "0");
-
-  return `${PREFIX}${paddedNumber}`;
+  // PostgreSQL serializes conflicts on the team's counter. Numeric avoids int32
+  // overflow for existing/custom suffixes; no JS number conversion loses digits.
+  // Extremely long custom identifiers do not exhaust the 120-character display namespace.
+  const result = await db.execute<{ value: string }>(sql`
+    INSERT INTO public.invoice_number_counters (team_id, last_number)
+    SELECT ${teamId}::uuid, COALESCE(MAX(SUBSTRING(btrim(invoice_number) FROM '[0-9]+$')::numeric), 0) + 1
+    FROM public.invoices WHERE team_id = ${teamId}::uuid AND btrim(invoice_number) ~ '[0-9]+$'
+      AND length(SUBSTRING(btrim(invoice_number) FROM '[0-9]+$')) <= 100
+    ON CONFLICT (team_id) DO UPDATE SET last_number =
+      GREATEST(public.invoice_number_counters.last_number, EXCLUDED.last_number - 1) + 1
+    RETURNING last_number::text AS value
+  `);
+  const value = result.rows[0]?.value;
+  if (!value) throw new Error("Failed to allocate invoice number");
+  return `INV-${value.padStart(4, "0")}`;
 }
 
 export async function isInvoiceNumberUsed(
@@ -825,11 +884,40 @@ export async function draftInvoice(
   } = params;
 
   validateInvoiceMoney({ ...restInput, template });
+  restInput.invoiceNumber = restInput.invoiceNumber.trim();
+  if (
+    !restInput.invoiceNumber ||
+    restInput.invoiceNumber.length > 120 ||
+    Array.from(restInput.invoiceNumber).some(
+      (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+    )
+  ) {
+    throw new InvoiceAmountError(
+      "Invoice number must be 1-120 characters without control characters",
+    );
+  }
   const useToken = token ?? (await generateToken(id));
 
   const { paymentDetails: _, fromDetails: __, ...restTemplate } = template;
 
   return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`invoice-number/${teamId}`}, 0))`,
+    );
+    const [sameNumber] = await tx
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.teamId, teamId),
+          sql`btrim(${invoices.invoiceNumber}) = ${restInput.invoiceNumber}`,
+        ),
+      )
+      .limit(1);
+    if (sameNumber && sameNumber.id !== id)
+      throw new InvoiceAmountError(
+        "Invoice number is already used by another invoice",
+      );
     await assertTeamOwnership(tx, teamId, "customers", [restInput.customerId]);
     await assertTeamOwnership(tx, teamId, "invoiceTemplates", [templateId]);
 
@@ -878,13 +966,29 @@ export async function draftInvoice(
       : [];
     const financialLock =
       existing &&
-      (paymentReservation !== undefined ||
+      (Boolean(existing.documentSnapshot) ||
+        ["unpaid", "overdue"].includes(existing.status) ||
+        paymentReservation !== undefined ||
         existing.paymentIntentId !== null ||
         existing.paidAt !== null ||
         existing.refundedAt !== null ||
         ["paid", "refunded", "canceled"].includes(existing.status));
-    if (financialLock && financialChanges)
-      throw new InvoiceFinancialStateError();
+    if (
+      (financialLock && financialChanges) ||
+      (existing &&
+        (existing.status !== "draft" ||
+          Boolean(existing.documentSnapshot) ||
+          financialLock) &&
+        hasInvoiceIdentityChanges(existing, {
+          ...restInput,
+          customerDetails,
+          fromDetails,
+        }))
+    ) {
+      throw new InvoiceFinancialStateError(
+        "Issued invoice is immutable. Duplicate it to create a corrected invoice.",
+      );
+    }
 
     // Never recalculate an existing issued snapshot merely because its notes or
     // due date were saved. Editable drafts and explicit financial edits use the
@@ -921,7 +1025,10 @@ export async function draftInvoice(
           });
     const values = {
       userId,
-      token: useToken,
+      token:
+        existing && (existing.documentSnapshot || existing.status !== "draft")
+          ? existing.token
+          : useToken,
       templateId,
       ...restInput,
       ...amounts,
@@ -938,6 +1045,11 @@ export async function draftInvoice(
         .update(invoices)
         .set({
           ...values,
+          documentSnapshot:
+            existing.documentSnapshot ??
+            (financialLock
+              ? captureInvoiceDocument(existing, "legacy_current")
+              : null),
           // Preserve the existing overdue -> unpaid due-date correction contract.
           status: sql`CASE
           WHEN ${invoices.status} = 'overdue' AND ${restInput.dueDate}::timestamp >= now()
@@ -1114,15 +1226,17 @@ export async function deleteInvoice(db: Database, params: DeleteInvoiceParams) {
       .where(eq(invoicePaymentReservations.invoiceId, id))
       .limit(1);
     if (
+      invoice.documentSnapshot ||
       invoice.paymentIntentId ||
       invoice.paidAt ||
       invoice.refundedAt ||
       reservation
     ) {
       throw new InvoiceFinancialStateError(
-        "Invoices with payment history or a reserved payment cannot be deleted",
+        "Issued invoices and invoices with payment history or a reserved payment cannot be deleted",
       );
     }
+    await releaseDraftTrackerAllocations(tx, { invoiceId: id, teamId });
     const [result] = await tx
       .delete(invoices)
       .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
@@ -1281,7 +1395,16 @@ export async function updateInvoice(
     }
     const [updated] = await tx
       .update(invoices)
-      .set(rest)
+      .set({
+        ...rest,
+        documentSnapshot:
+          current.documentSnapshot ??
+          (["unpaid", "overdue", "paid", "refunded"].includes(
+            rest.status ?? current.status,
+          )
+            ? captureInvoiceDocument(current, "issued")
+            : null),
+      })
       .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
       .returning();
     return updated;

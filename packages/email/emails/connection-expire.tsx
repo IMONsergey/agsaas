@@ -15,6 +15,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   fullName: string;
@@ -27,7 +28,7 @@ export const ConnectionExpireEmail = ({
   fullName = "",
   expiresAt = addDays(new Date(), 4).toISOString(),
   bankName = "Revolut",
-  teamName = "Midday",
+  teamName = "Your team",
 }: Props) => {
   const firstName = fullName ? fullName.split(" ").at(0) : "";
   const text = `${firstName ? `Hi ${firstName}, ` : ""}We wanted to inform you that our connection to your bank ${bankName} for your team ${teamName} will expire in ${formatDistance(new Date(expiresAt), new Date())}.`;
@@ -75,7 +76,8 @@ export const ConnectionExpireEmail = ({
             <strong>{bankName}</strong> for your team{" "}
             <strong>{teamName}</strong> will expire in{" "}
             {formatDistance(new Date(expiresAt), new Date())}. To ensure that
-            Midday continues to run smoothly, please reconnect your bank.
+            {getProductEmailConfig().productName} continues to run smoothly,
+            please reconnect your bank.
             <br />
             <br />
             The good news? It only takes 60 seconds to get everything back on
@@ -83,7 +85,11 @@ export const ConnectionExpireEmail = ({
           </Text>
 
           <Section className="text-center mt-[50px] mb-[50px]">
-            <Button href="https://go.midday.ai/34Xt7XK">Reconnect</Button>
+            <Button
+              href={`${getProductEmailConfig().appUrl}/settings/accounts`}
+            >
+              Reconnect
+            </Button>
           </Section>
 
           <Text

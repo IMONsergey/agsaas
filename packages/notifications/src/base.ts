@@ -76,6 +76,10 @@ export type EmailInput = {
 export type NotificationOptions = {
   priority?: number;
   sendEmail?: boolean;
+  /** Internal dispatch identity makes in-app activity retries idempotent. */
+  activityOperationKey?: string;
+  /** Internal second phase: activity was already written before email dispatch. */
+  skipActivities?: boolean;
   /** Record a "sent" activity only after every email has been accepted. */
   requireEmailAcceptance?: boolean;
   /** Server-only operation identity. Only invoice send/reminder handlers support it. */

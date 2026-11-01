@@ -33,6 +33,7 @@ import {
   requireTeamMember,
   requireTeamOwner,
 } from "../utils/team-membership";
+import { retainTeamBankConnectionCleanups } from "./bank-connection-cleanups";
 
 export const hasTeamAccess = async (
   db: Database,
@@ -390,38 +391,17 @@ type DeleteTeamParams = {
   userId: string;
 };
 
-type TeamCleanup = {
-  teamId: string;
-  connections: {
-    referenceId: string | null;
-    provider: "teller" | "plaid" | "gocardless" | "enablebanking" | null;
-    accessToken: string | null;
-  }[];
-};
-
-export async function deleteTeam(
-  db: Database,
-  params: DeleteTeamParams,
-  beforeDelete?: (cleanup: TeamCleanup) => Promise<void>,
-) {
+export async function deleteTeam(db: Database, params: DeleteTeamParams) {
   return db.transaction(async (tx) => {
     const members = await lockTeamMembership(tx, params.teamId);
     requireTeamOwner(members, params.userId);
 
-    if (beforeDelete) {
-      const connections = await tx
-        .select({
-          referenceId: bankConnections.referenceId,
-          provider: bankConnections.provider,
-          accessToken: bankConnections.accessToken,
-        })
-        .from(bankConnections)
-        .where(eq(bankConnections.teamId, params.teamId));
-      // Preserve enqueue-before-delete behavior, but keep role changes locked
-      // until authorization, enqueue and deletion have finished. This is NOT
-      // a transactional outbox: cross-system delivery remains a separate gate.
-      await beforeDelete({ teamId: params.teamId, connections });
-    }
+    // Local deletion and encrypted provider cleanup intent commit together.
+    // Recovery cannot observe an intent until the deleting transaction commits.
+    const cleanupPending = await retainTeamBankConnectionCleanups(
+      tx,
+      params.teamId,
+    );
 
     const [result] = await tx
       .delete(teams)
@@ -431,6 +411,7 @@ export async function deleteTeam(
     if (!result) return null;
     return {
       ...result,
+      cleanupPending,
       memberUserIds: [...new Set(members.map((member) => member.userId))],
     };
   });

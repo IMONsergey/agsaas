@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { AccountSettings } from "@/components/account-settings";
 
 export const metadata: Metadata = {
-  title: "Account Settings | Midday",
+  title: "Account Settings | AGSaaS",
 };
 
 export default async function Account() {

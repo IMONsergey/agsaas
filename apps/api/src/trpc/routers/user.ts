@@ -12,7 +12,7 @@ import {
   switchUserTeam,
   updateUser,
 } from "@midday/db/queries";
-import { generateFileKey } from "@midday/encryption";
+import { FILE_KEY_TTL_SECONDS, generateFileKey } from "@midday/encryption";
 import { logger } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -31,7 +31,18 @@ export const userRouter = createTRPCRouter({
 
     return {
       ...result,
-      fileKey: result.teamId ? await generateFileKey(result.teamId) : null,
+      fileKey: result.teamId
+        ? await generateFileKey({
+            teamId: result.teamId,
+            userId: session.user.id,
+            aal: session.aal ?? "aal1",
+          })
+        : null,
+      // Conservative browser deadline prevents reusing cached expired URLs
+      // after a suspended tab wakes up, while user.me refreshes its key.
+      fileKeyExpiresAt: result.teamId
+        ? Date.now() + (FILE_KEY_TTL_SECONDS - 5) * 1000
+        : null,
     };
   }),
 

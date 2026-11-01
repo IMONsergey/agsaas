@@ -154,6 +154,13 @@ export function InvoiceDetails() {
         paymentIntentId={paymentIntentId}
       />
 
+      {data.documentSnapshot && (
+        <p className="mt-4 text-xs text-muted-foreground">
+          The issued document is fixed. Duplicate the invoice to create a
+          correction. Internal notes and payment status remain editable.
+        </p>
+      )}
+
       <div className="h-full p-0 pb-[143px] overflow-y-auto scrollbar-hide">
         {status === "paid" && (
           <div className="mt-8">
@@ -413,39 +420,43 @@ export function InvoiceDetails() {
           </div>
         )}
 
-        {customer && (
-          <div className="mt-6 flex flex-col space-y-2 border-t border-border pt-6">
-            <span className="text-sm text-[#606060]">Invoice link</span>
-            <div className="flex w-full gap-2">
-              <div className="flex-1 min-w-0 relative">
-                <CopyInput value={`${getUrl()}/i/${token}`} className="pr-14" />
+        {customer &&
+          ["unpaid", "overdue", "paid", "refunded"].includes(status) && (
+            <div className="mt-6 flex flex-col space-y-2 border-t border-border pt-6">
+              <span className="text-sm text-[#606060]">Invoice link</span>
+              <div className="flex w-full gap-2">
+                <div className="flex-1 min-w-0 relative">
+                  <CopyInput
+                    value={`${getUrl()}/i/${token}`}
+                    className="pr-14"
+                  />
 
-                <div className="absolute right-10 top-[11px] border-r border-border pr-2">
-                  <OpenURL href={`${getUrl()}/i/${token}`}>
-                    <Icons.OpenInNew />
-                  </OpenURL>
-                </div>
-              </div>
-
-              {status !== "draft" && (
-                <Button
-                  variant="secondary"
-                  className="size-[38px] hover:bg-secondary shrink-0"
-                  onClick={() => {
-                    if (downloadUrl) {
-                      downloadFile(downloadUrl, `${invoiceNumber}.pdf`);
-                    }
-                  }}
-                  disabled={!downloadUrl}
-                >
-                  <div>
-                    <Icons.ArrowCoolDown className="size-4" />
+                  <div className="absolute right-10 top-[11px] border-r border-border pr-2">
+                    <OpenURL href={`${getUrl()}/i/${token}`}>
+                      <Icons.OpenInNew />
+                    </OpenURL>
                   </div>
-                </Button>
-              )}
+                </div>
+
+                {status !== "draft" && (
+                  <Button
+                    variant="secondary"
+                    className="size-[38px] hover:bg-secondary shrink-0"
+                    onClick={() => {
+                      if (downloadUrl) {
+                        downloadFile(downloadUrl, `${invoiceNumber}.pdf`);
+                      }
+                    }}
+                    disabled={!downloadUrl}
+                  >
+                    <div>
+                      <Icons.ArrowCoolDown className="size-4" />
+                    </div>
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         <Accordion
           type="multiple"

@@ -109,9 +109,21 @@ export function useAppOAuth({
       }
 
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+      const isInboxHandshake =
+        installUrlEndpoint === "/apps/gmail/install-url" ||
+        installUrlEndpoint === "/apps/outlook/install-url";
       const response = await fetch(`${apiUrl}${installUrlEndpoint}`, {
+        ...(isInboxHandshake
+          ? {
+              method: "POST",
+              credentials: "include" as const,
+              cache: "no-store" as const,
+              body: JSON.stringify({ source: "apps" }),
+            }
+          : {}),
         headers: {
           Authorization: `Bearer ${session.access_token}`,
+          ...(isInboxHandshake ? { "Content-Type": "application/json" } : {}),
         },
       });
 

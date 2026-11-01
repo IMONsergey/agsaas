@@ -1,6 +1,9 @@
 import "../setup";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
 import {
   mcpTransactionSchema,
   sanitize,
@@ -439,5 +442,54 @@ describe("sanitize", () => {
     expect(
       (clean.tags![0] as Record<string, unknown>).extraField,
     ).toBeUndefined();
+  });
+});
+
+describe("MCP input resource limits", () => {
+  test("rejects a large tool structure before executing a registered callback", async () => {
+    const server = createMcpServer({
+      db: {} as McpContext["db"],
+      teamId: "test-team-id",
+      userId: "test-user-id",
+      userEmail: null,
+      scopes: [],
+      apiUrl: "https://api.agsaas.test",
+      timezone: "UTC",
+      locale: "en",
+      countryCode: "US",
+      dateFormat: null,
+      timeFormat: 24,
+    });
+    const callback = mock(async () => ({
+      content: [{ type: "text" as const, text: "ok" }],
+    }));
+    server.registerTool(
+      "resource_limit_fixture",
+      { inputSchema: { values: z.array(z.string()) } },
+      callback,
+    );
+    const client = new Client({ name: "resource-limit-test", version: "1" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const accepted = await client.callTool({
+        name: "resource_limit_fixture",
+        arguments: { values: ["small"] },
+      });
+      expect(accepted.isError).not.toBe(true);
+      expect(callback).toHaveBeenCalledTimes(1);
+      callback.mockClear();
+      const rejected = await client.callTool({
+        name: "resource_limit_fixture",
+        arguments: { values: Array.from({ length: 10_001 }, () => "value") },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(callback).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

@@ -55,6 +55,18 @@ let user: ReturnType<typeof makeUser> | undefined;
 let apiKey: ReturnType<typeof makeApiKey> | undefined;
 let oauth: ReturnType<typeof makeOAuthToken> | null;
 let memberships = new Set<string>();
+let factors: Array<{ status: "verified" | "unverified" }> = [];
+let factorLookupFails = false;
+const listFactors = mock(async (_params: { userId: string }) => {
+  if (factorLookupFails)
+    throw new Error("private-provider-error-must-not-leak");
+  return { data: { factors }, error: null };
+});
+mock.module("@api/services/supabase", () => ({
+  createAdminClient: async () => ({
+    auth: { admin: { mfa: { listFactors } } },
+  }),
+}));
 const staleUser = makeUser();
 const staleApiKey = makeApiKey(["apis.all"]);
 
@@ -141,6 +153,9 @@ beforeEach(() => {
   apiKey = makeApiKey();
   oauth = makeOAuthToken();
   memberships = new Set([teamId]);
+  factors = [];
+  factorLookupFails = false;
+  listFactors.mockClear();
   for (const fn of [
     getUserById,
     getApiKeyByToken,
@@ -156,6 +171,62 @@ beforeEach(() => {
 });
 
 describe("REST JWT authorization", () => {
+  it("requires the second factor for a genuinely signed AAL1 token", async () => {
+    factors = [{ status: "verified" }];
+    const response = await request(await signAccessToken({ aal: "aal1" }));
+    expect(response.status).toBe(403);
+    expect(listFactors).toHaveBeenCalledWith({ userId: actorId });
+    expect(protectedHandler).not.toHaveBeenCalled();
+  });
+
+  it("preserves AAL2 access while ignoring an editable metadata assurance claim", async () => {
+    factors = [{ status: "verified" }];
+    expect(
+      (
+        await request(
+          await signAccessToken({
+            aal: "aal1",
+            user_metadata: { aal: "aal2" },
+          }),
+        )
+      ).status,
+    ).toBe(403);
+    listFactors.mockClear();
+    expect((await request(await signAccessToken({ aal: "aal2" }))).status).toBe(
+      200,
+    );
+    expect(listFactors).not.toHaveBeenCalled();
+  });
+
+  it("keeps MFA-off and unverified-enrollment owners usable", async () => {
+    expect((await request(await signAccessToken({ aal: "aal1" }))).status).toBe(
+      200,
+    );
+    factors = [{ status: "unverified" }];
+    expect((await request(await signAccessToken({ aal: "aal1" }))).status).toBe(
+      200,
+    );
+  });
+
+  it("rechecks enrollment on later requests and fails closed without exposing provider errors", async () => {
+    const token = await signAccessToken({ aal: "aal1" });
+    expect((await request(token)).status).toBe(200);
+    factors = [{ status: "verified" }];
+    expect((await request(token)).status).toBe(403);
+    factorLookupFails = true;
+    const response = await request(token);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("private-provider-error");
+  });
+
+  it("does not apply interactive MFA availability to scoped API keys and OAuth grants", async () => {
+    factors = [{ status: "verified" }];
+    factorLookupFails = true;
+    expect((await request(apiToken)).status).toBe(200);
+    expect((await request(oauthToken)).status).toBe(200);
+    expect(listFactors).not.toHaveBeenCalled();
+  });
+
   it("allows a signed JWT with current primary membership and preserves scopes/routing", async () => {
     const response = await request(await signAccessToken());
     const result = await readAuthResponse(response);

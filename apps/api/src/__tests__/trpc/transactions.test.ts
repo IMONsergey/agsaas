@@ -173,6 +173,21 @@ describe("tRPC: transactions.create", () => {
       }),
     );
   });
+
+  test("returns a committed creation without an inline Redis handoff and forwards the stable operation ID", async () => {
+    mocks.triggerJob.mockClear();
+    const input = createTransactionInput();
+    const caller = createCaller(createTestContext());
+    expect((await caller.create(input))?.id).toBeDefined();
+    expect(mocks.createTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operationId: input.operationId,
+        teamId: "test-team-id",
+      }),
+    );
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
 });
 
 describe("tRPC: transactions.update", () => {

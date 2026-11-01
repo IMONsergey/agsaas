@@ -29,6 +29,12 @@ export abstract class BaseProcessor<TData = unknown> {
     return null;
   }
 
+  /** A processor handling legacy credential-bearing data can redact telemetry
+   * without mutating the retained Redis payload needed for reconciliation. */
+  protected getDiagnosticPayload(job: Job<TData>): unknown {
+    return job.data;
+  }
+
   /**
    * Process the job
    * Override this method in subclasses
@@ -51,7 +57,7 @@ export abstract class BaseProcessor<TData = unknown> {
         jobId: job.id,
         jobName: job.name,
         error: error instanceof Error ? error.message : "Unknown error",
-        payload: JSON.stringify(job.data),
+        payload: JSON.stringify(this.getDiagnosticPayload(job)),
       });
       throw new NonRetryableError(
         `Invalid job payload: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -201,7 +207,7 @@ export abstract class BaseProcessor<TData = unknown> {
             maxAttempts: job.opts.attempts,
             remainingAttempts,
             duration: `${duration}ms`,
-            payload: JSON.stringify(job.data),
+            payload: JSON.stringify(this.getDiagnosticPayload(job)),
           },
         });
       }

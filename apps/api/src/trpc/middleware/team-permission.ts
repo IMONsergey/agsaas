@@ -1,5 +1,6 @@
 import type { Session } from "@api/utils/auth";
 import { withRetryOnPrimary } from "@api/utils/db-retry";
+import { MfaPolicyError, requireSessionMfa } from "@api/utils/mfa";
 import type { Database, DatabaseWithPrimary } from "@midday/db/client";
 import { createLoggerWithContext } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
@@ -76,6 +77,8 @@ async function resolveTeamPermission(
 
   const teamId = result.teamId;
 
+  await requireTrpcSessionMfa(session!);
+
   if (teamId !== null) {
     const hasAccess = result.usersOnTeams.some(
       (membership) => membership.teamId === teamId,
@@ -105,6 +108,20 @@ async function resolveTeamPermission(
   }
 
   return { teamId };
+}
+
+export async function requireTrpcSessionMfa(session: Session) {
+  try {
+    await requireSessionMfa(session);
+  } catch (error) {
+    if (error instanceof MfaPolicyError) {
+      throw new TRPCError({
+        code: error.reason === "required" ? "FORBIDDEN" : "SERVICE_UNAVAILABLE",
+        message: error.message,
+      });
+    }
+    throw error;
+  }
 }
 
 export const withTeamPermission = async <TReturn>(opts: {

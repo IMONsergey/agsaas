@@ -1,11 +1,15 @@
 import {
-  endOfMonth,
-  endOfWeek,
-  formatISO,
-  startOfMonth,
-  startOfWeek,
-} from "date-fns";
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+  and,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { Database, DatabaseOrTransaction } from "../client";
 import { teams, trackerEntries, trackerProjects } from "../schema";
 import {
@@ -13,7 +17,47 @@ import {
   assertTeamOwnership,
   TenantResourceNotFoundError,
 } from "../utils/tenant-ownership";
+import { clippedTrackerDuration, trackerPeriod } from "../utils/tracker-period";
 import { createActivity } from "./activities";
+import { assertTrackerEntryMutable } from "./tracker-invoices";
+
+async function getBillingSnapshot(
+  db: DatabaseOrTransaction,
+  teamId: string,
+  projectId: string,
+) {
+  const [project] = await db
+    .select({
+      rate: trackerProjects.rate,
+      currency: trackerProjects.currency,
+      billable: trackerProjects.billable,
+      baseCurrency: teams.baseCurrency,
+    })
+    .from(trackerProjects)
+    .innerJoin(teams, eq(trackerProjects.teamId, teams.id))
+    .where(
+      and(
+        eq(trackerProjects.id, projectId),
+        eq(trackerProjects.teamId, teamId),
+      ),
+    );
+  if (!project) throw new TenantResourceNotFoundError();
+  return {
+    rate: project.billable ? Number(project.rate ?? 0) : 0,
+    currency: (project.currency ?? project.baseCurrency ?? "USD").toUpperCase(),
+    billingSnapshotSource: "recorded" as const,
+  };
+}
+
+async function lockUserTimer(
+  db: DatabaseOrTransaction,
+  teamId: string,
+  assignedId: string,
+) {
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tracker-timer/${teamId}/${assignedId}`}, 0))`,
+  );
+}
 
 type GetTrackerRecordsByDateParams = {
   teamId: string;
@@ -52,6 +96,9 @@ export async function getTrackerRecordsByDate(
       duration: true,
       date: true,
       description: true,
+      rate: true,
+      currency: true,
+      billingSnapshotSource: true,
     },
     with: {
       user: true,
@@ -94,21 +141,29 @@ export type GetTrackerRecordsByRangeParams = {
   to: string;
   projectId?: string;
   userId?: string;
+  overlap?: { from: string; to: string };
 };
 
 export async function getTrackerRecordsByRange(
   db: Database,
   params: GetTrackerRecordsByRangeParams,
 ) {
-  const { teamId, from, to, projectId, userId } = params;
+  const { teamId, from, to, projectId, userId, overlap } = params;
 
   const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
   // Build the where conditions array
   const whereConditions = [
     eq(trackerEntries.teamId, teamId),
-    gte(trackerEntries.date, from),
-    lte(trackerEntries.date, to),
+    or(
+      and(gte(trackerEntries.date, from), lte(trackerEntries.date, to)),
+      overlap
+        ? and(
+            lt(trackerEntries.start, overlap.to),
+            gt(trackerEntries.stop, overlap.from),
+          )
+        : undefined,
+    ),
   ];
 
   if (projectId && projectId !== NIL_UUID) {
@@ -172,7 +227,10 @@ export async function getTrackerRecordsByRange(
 
   // Calculate total amount
   const totalAmount = data.reduce((amount, item) => {
-    const rate = item.trackerProject?.rate ?? 0;
+    const rate =
+      item.rate ??
+      (item.trackerProject?.billable ? item.trackerProject.rate : 0) ??
+      0;
     const duration = item.duration ?? 0;
     return amount + (Number(rate) * duration) / 3600;
   }, 0);
@@ -209,6 +267,9 @@ export async function upsertTrackerEntries(
   return db.transaction(async (tx) => {
     await assertTeamOwnership(tx, teamId, "trackerProjects", [rest.projectId]);
     await assertTeamMembers(tx, teamId, [rest.assignedId]);
+    if (id) await assertTrackerEntryMutable(tx, teamId, id);
+
+    const snapshot = await getBillingSnapshot(tx, teamId, rest.projectId);
 
     // Create entries for each date
     const entries = dates.map((date) => ({
@@ -221,6 +282,7 @@ export async function upsertTrackerEntries(
       projectId: rest.projectId,
       description: rest.description,
       duration: rest.duration,
+      ...snapshot,
     }));
 
     // Perform the upsert operation
@@ -237,6 +299,11 @@ export async function upsertTrackerEntries(
           projectId: rest.projectId,
           description: rest.description,
           duration: rest.duration,
+          // Editing duration/description does not reprice existing work. Moving
+          // it to a different project deliberately captures that project's terms.
+          rate: sql`CASE WHEN ${trackerEntries.projectId} IS DISTINCT FROM ${rest.projectId}::uuid THEN ${snapshot.rate} ELSE ${trackerEntries.rate} END`,
+          currency: sql`CASE WHEN ${trackerEntries.projectId} IS DISTINCT FROM ${rest.projectId}::uuid THEN ${snapshot.currency} ELSE ${trackerEntries.currency} END`,
+          billingSnapshotSource: sql`CASE WHEN ${trackerEntries.projectId} IS DISTINCT FROM ${rest.projectId}::uuid THEN 'recorded' ELSE ${trackerEntries.billingSnapshotSource} END`,
         },
       })
       .returning({ id: trackerEntries.id });
@@ -358,10 +425,25 @@ export async function bulkCreateTrackerEntries(
       flatEntries.map((entry) => entry.assignedId),
     );
 
+    const snapshots = new Map<
+      string,
+      Awaited<ReturnType<typeof getBillingSnapshot>>
+    >();
+    for (const projectId of new Set(
+      flatEntries.map((entry) => entry.projectId),
+    )) {
+      snapshots.set(projectId, await getBillingSnapshot(tx, teamId, projectId));
+    }
+
     // Insert all entries in a single database operation
     const insertedEntries = await tx
       .insert(trackerEntries)
-      .values(flatEntries)
+      .values(
+        flatEntries.map((entry) => ({
+          ...entry,
+          ...snapshots.get(entry.projectId)!,
+        })),
+      )
       .returning({
         id: trackerEntries.id,
       });
@@ -411,15 +493,17 @@ export async function deleteTrackerEntry(
   params: DeleteTrackerEntryParams,
 ) {
   const { teamId, id } = params;
+  return db.transaction(async (tx) => {
+    await assertTrackerEntryMutable(tx, teamId, id);
+    const [result] = await tx
+      .delete(trackerEntries)
+      .where(and(eq(trackerEntries.id, id), eq(trackerEntries.teamId, teamId)))
+      .returning({
+        id: trackerEntries.id,
+      });
 
-  const [result] = await db
-    .delete(trackerEntries)
-    .where(and(eq(trackerEntries.id, id), eq(trackerEntries.teamId, teamId)))
-    .returning({
-      id: trackerEntries.id,
-    });
-
-  return result;
+    return result;
+  });
 }
 
 // Timer-related types and functions
@@ -459,6 +543,9 @@ export async function startTimer(db: Database, params: StartTimerParams) {
     await assertTeamOwnership(tx, teamId, "trackerProjects", [projectId]);
     await assertTeamMembers(tx, teamId, [assignedId]);
 
+    if (!assignedId) throw new Error("A timer must have an assignee");
+    await lockUserTimer(tx, teamId, assignedId);
+    const snapshot = await getBillingSnapshot(tx, teamId, projectId);
     const startTime = start || new Date().toISOString();
     const currentDate = new Date(startTime).toISOString().split("T")[0];
 
@@ -477,6 +564,7 @@ export async function startTimer(db: Database, params: StartTimerParams) {
         description,
         start: startTime,
         stop: null,
+        ...snapshot,
         duration: null, // null indicates running
         date: currentDate,
       })
@@ -533,127 +621,134 @@ export async function startTimer(db: Database, params: StartTimerParams) {
 export async function stopTimer(db: Database, params: StopTimerParams) {
   const { teamId, entryId, assignedId, stop } = params;
 
-  const stopTime = stop || new Date().toISOString();
+  return db.transaction(async (tx) => {
+    if (assignedId) await lockUserTimer(tx, teamId, assignedId);
+    const stopTime = stop || new Date().toISOString();
 
-  let targetEntryId = entryId;
+    let targetEntryId = entryId;
 
-  if (!targetEntryId) {
-    // Find the current running timer for the user
-    const runningTimer = await getCurrentRunningTimer(db, {
-      teamId,
-      assignedId,
-    });
+    if (!targetEntryId) {
+      // Find the current running timer for the user
+      const runningTimer = await getCurrentRunningTimer(tx, {
+        teamId,
+        assignedId,
+      });
 
-    if (!runningTimer) {
-      throw new Error("No running timer found to stop");
+      if (!runningTimer) {
+        throw new Error("No running timer found to stop");
+      }
+
+      targetEntryId = runningTimer.id;
     }
 
-    targetEntryId = runningTimer.id;
-  }
+    // Get the entry to calculate duration
+    const whereConditions = [
+      eq(trackerEntries.id, targetEntryId),
+      eq(trackerEntries.teamId, teamId),
+    ];
 
-  // Get the entry to calculate duration
-  const whereConditions = [
-    eq(trackerEntries.id, targetEntryId),
-    eq(trackerEntries.teamId, teamId),
-  ];
+    if (assignedId) {
+      whereConditions.push(eq(trackerEntries.assignedId, assignedId));
+    }
 
-  if (assignedId) {
-    whereConditions.push(eq(trackerEntries.assignedId, assignedId));
-  }
+    const [entry] = await tx
+      .select()
+      .from(trackerEntries)
+      .where(and(...whereConditions))
+      .for("update");
 
-  const entry = await db.query.trackerEntries.findFirst({
-    where: and(...whereConditions),
-  });
+    if (!entry) {
+      throw new Error("Timer entry not found");
+    }
 
-  if (!entry) {
-    throw new Error("Timer entry not found");
-  }
+    if (entry.stop) {
+      throw new Error("Timer is already stopped");
+    }
 
-  if (entry.stop) {
-    throw new Error("Timer is already stopped");
-  }
+    if (!entry.start) {
+      throw new Error("Timer has no start time");
+    }
 
-  if (!entry.start) {
-    throw new Error("Timer has no start time");
-  }
+    // Calculate duration in seconds
+    const startTime = new Date(entry.start).getTime();
+    const stopTime_ms = new Date(stopTime).getTime();
+    const duration = Math.floor((stopTime_ms - startTime) / 1000);
 
-  // Calculate duration in seconds
-  const startTime = new Date(entry.start).getTime();
-  const stopTime_ms = new Date(stopTime).getTime();
-  const duration = Math.floor((stopTime_ms - startTime) / 1000);
+    // Minimum duration threshold (60 seconds)
+    const MIN_DURATION_SECONDS = 60;
 
-  // Minimum duration threshold (60 seconds)
-  const MIN_DURATION_SECONDS = 60;
-
-  // If duration is too short, delete the entry instead of saving
-  if (duration < MIN_DURATION_SECONDS) {
-    // Get project info before deleting for the response
-    const projectInfo = await db.query.trackerProjects.findFirst({
-      where: eq(trackerProjects.id, entry.projectId!),
-      columns: {
-        id: true,
-        name: true,
-      },
-    });
-
-    // Delete the entry
-    await db.delete(trackerEntries).where(eq(trackerEntries.id, targetEntryId));
-
-    return {
-      id: targetEntryId,
-      discarded: true,
-      duration,
-      project: projectInfo,
-      trackerProject: projectInfo,
-      start: entry.start,
-      stop: entry.stop,
-      description: entry.description,
-    };
-  }
-
-  // Update the entry with stop time and duration
-  await db
-    .update(trackerEntries)
-    .set({
-      stop: stopTime,
-      duration,
-    })
-    .where(eq(trackerEntries.id, targetEntryId));
-
-  // Fetch the updated entry with related data
-  const result = await db.query.trackerEntries.findFirst({
-    where: eq(trackerEntries.id, targetEntryId),
-    with: {
-      user: {
+    // If duration is too short, delete the entry instead of saving
+    if (duration < MIN_DURATION_SECONDS) {
+      // Get project info before deleting for the response
+      const projectInfo = await tx.query.trackerProjects.findFirst({
+        where: eq(trackerProjects.id, entry.projectId!),
         columns: {
           id: true,
-          fullName: true,
-          avatarUrl: true,
+          name: true,
         },
-      },
-      trackerProject: {
-        with: {
-          customer: {
-            columns: {
-              id: true,
-              name: true,
-              website: true,
+      });
+
+      // Delete the entry
+      await tx
+        .delete(trackerEntries)
+        .where(eq(trackerEntries.id, targetEntryId));
+
+      return {
+        id: targetEntryId,
+        discarded: true,
+        duration,
+        project: projectInfo,
+        trackerProject: projectInfo,
+        start: entry.start,
+        stop: entry.stop,
+        description: entry.description,
+      };
+    }
+
+    // Update the entry with stop time and duration
+    await tx
+      .update(trackerEntries)
+      .set({
+        stop: stopTime,
+        duration,
+      })
+      .where(eq(trackerEntries.id, targetEntryId));
+
+    // Fetch the updated entry with related data
+    const result = await tx.query.trackerEntries.findFirst({
+      where: eq(trackerEntries.id, targetEntryId),
+      with: {
+        user: {
+          columns: {
+            id: true,
+            fullName: true,
+            avatarUrl: true,
+          },
+        },
+        trackerProject: {
+          with: {
+            customer: {
+              columns: {
+                id: true,
+                name: true,
+                website: true,
+              },
             },
           },
         },
       },
-    },
+    });
+
+    if (!result) {
+      throw new Error("Failed to fetch updated timer entry");
+    }
+
+    return {
+      ...result,
+      discarded: false,
+      project: result.trackerProject,
+    };
   });
-
-  if (!result) {
-    throw new Error("Failed to fetch updated timer entry");
-  }
-
-  return {
-    ...result,
-    discarded: false,
-    project: result.trackerProject,
-  };
 }
 
 /**
@@ -772,9 +867,13 @@ async function getCurrentRunningTimer(
     whereConditions.push(eq(trackerEntries.assignedId, assignedId));
   }
 
-  return db.query.trackerEntries.findFirst({
-    where: and(...whereConditions),
-  });
+  const [entry] = await db
+    .select()
+    .from(trackerEntries)
+    .where(and(...whereConditions))
+    .limit(1)
+    .for("update");
+  return entry;
 }
 
 /**
@@ -859,6 +958,7 @@ export type GetBillableHoursParams = {
   date: string; // ISO date string (YYYY-MM-DD)
   view: "week" | "month";
   weekStartsOnMonday?: boolean;
+  timezone?: string;
 };
 
 export type BillableHoursResult = {
@@ -879,40 +979,19 @@ export async function getBillableHours(
   db: Database,
   params: GetBillableHoursParams,
 ): Promise<BillableHoursResult> {
-  const { teamId, date, view, weekStartsOnMonday = false } = params;
-
-  const currentDate = new Date(date);
-  let from: string;
-  let to: string;
-
-  if (view === "week") {
-    const weekStart = startOfWeek(currentDate, {
-      weekStartsOn: weekStartsOnMonday ? 1 : 0,
-    });
-    const weekEnd = endOfWeek(currentDate, {
-      weekStartsOn: weekStartsOnMonday ? 1 : 0,
-    });
-    from = formatISO(weekStart, { representation: "date" });
-    to = formatISO(weekEnd, { representation: "date" });
-  } else {
-    // Month view: Add 1-day buffer before and after to handle midnight-spanning entries
-    const monthStart = startOfMonth(currentDate);
-    const monthEnd = endOfMonth(currentDate);
-
-    const extendedStart = new Date(monthStart);
-    extendedStart.setDate(extendedStart.getDate() - 1);
-
-    const extendedEnd = new Date(monthEnd);
-    extendedEnd.setDate(extendedEnd.getDate() + 1);
-
-    from = formatISO(extendedStart, { representation: "date" });
-    to = formatISO(extendedEnd, { representation: "date" });
-  }
-
+  const {
+    teamId,
+    date,
+    view,
+    weekStartsOnMonday = false,
+    timezone = "UTC",
+  } = params;
+  const period = trackerPeriod({ date, view, weekStartsOnMonday, timezone });
   const data = await getTrackerRecordsByRange(db, {
     teamId,
-    from,
-    to,
+    from: period.from,
+    to: period.to,
+    overlap: { from: period.start.toISOString(), to: period.end.toISOString() },
   });
 
   // Get the team's base currency
@@ -923,7 +1002,7 @@ export async function getBillableHours(
     },
   });
 
-  const baseCurrency = team?.baseCurrency || "USD";
+  const baseCurrency = (team?.baseCurrency || "USD").toUpperCase();
 
   if (!data?.result) {
     return {
@@ -948,43 +1027,37 @@ export async function getBillableHours(
     }
   > = {};
 
-  // Iterate through all days and entries
   for (const entry of Object.values(data.result).flat()) {
-    // Count ALL durations (matching CalendarHeader)
-    if (entry.duration) {
-      totalDuration += entry.duration;
-    }
-
-    // Only count earnings from billable projects with rates (matching TotalEarnings)
-    if (
-      entry.trackerProject?.billable &&
-      entry.trackerProject?.rate &&
-      entry.duration
-    ) {
-      const projectId = entry.trackerProject.id;
-      const projectName = entry.trackerProject.name;
-      const currency = entry.trackerProject.currency || baseCurrency;
-      const rate = Number(entry.trackerProject.rate);
-      const hours = entry.duration / 3600;
-      const earning = rate * hours;
-
-      // Earnings by currency
-      earningsByCurrency[currency] =
-        (earningsByCurrency[currency] || 0) + earning;
-
-      // Project breakdown
-      if (projects[projectId]) {
-        projects[projectId].duration += entry.duration;
-        projects[projectId].amount += earning;
-      } else {
-        projects[projectId] = {
-          id: projectId,
-          name: projectName,
-          duration: entry.duration,
-          amount: earning,
-          currency,
-        };
-      }
+    const duration = clippedTrackerDuration(entry, period);
+    totalDuration += duration;
+    const rate = Number(
+      entry.rate ??
+        (entry.trackerProject?.billable ? entry.trackerProject.rate : 0) ??
+        0,
+    );
+    if (!entry.trackerProject || rate <= 0 || duration <= 0) continue;
+    const currency = (
+      entry.currency ??
+      entry.trackerProject.currency ??
+      baseCurrency
+    ).toUpperCase();
+    const earning = (rate * duration) / 3600;
+    earningsByCurrency[currency] =
+      (earningsByCurrency[currency] ?? 0) + earning;
+    // A project may contain work in more than one historical currency.
+    const key = `${entry.trackerProject.id}/${currency}`;
+    const project = projects[key];
+    if (project) {
+      project.duration += duration;
+      project.amount += earning;
+    } else {
+      projects[key] = {
+        id: entry.trackerProject.id,
+        name: entry.trackerProject.name,
+        duration,
+        amount: earning,
+        currency,
+      };
     }
   }
 

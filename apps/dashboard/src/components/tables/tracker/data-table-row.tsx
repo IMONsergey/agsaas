@@ -37,16 +37,18 @@ import { getWebsiteLogo } from "@/utils/logos";
 type DataTableCellProps = {
   children: React.ReactNode;
   className?: string;
+  title?: string;
   onClick?: () => void;
 };
 
 export function DataTableCell({
   children,
   className,
+  title,
   onClick,
 }: DataTableCellProps) {
   return (
-    <TableCell className={className} onClick={onClick}>
+    <TableCell className={className} onClick={onClick} title={title}>
       {children}
     </TableCell>
   );
@@ -122,8 +124,16 @@ export function DataTableRow({ row, onDelete }: DataTableRowProps) {
                 : secondsToHoursAndMinutes(row.totalDuration ?? 0)}
             </span>
           </DataTableCell>
-          <DataTableCell onClick={onClick} className="cursor-pointer">
-            {row.currency ? (
+          <DataTableCell
+            onClick={onClick}
+            className="cursor-pointer"
+            title={
+              row.totalAmount === null
+                ? "Historical work spans multiple currencies"
+                : undefined
+            }
+          >
+            {row.currency && row.totalAmount !== null ? (
               <span className="text-sm">
                 {formatAmount({
                   currency: row.currency,

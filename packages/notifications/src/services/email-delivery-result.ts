@@ -16,6 +16,8 @@ export interface EmailDeliveryResult {
   acceptedAt?: string;
   /** Invoice receipt, timestamps and activities already committed atomically. */
   recorded?: boolean;
+  /** A local failure before HTTP is never an uncertain provider acceptance. */
+  reason?: "configuration_unavailable" | "preparation_failed";
 }
 
 export function emptyEmailDeliveryResult(skipped = 0): EmailDeliveryResult {
@@ -50,9 +52,11 @@ export class EmailDeliveryError extends Error {
     const requiresReconciliation =
       phase === "activity" || result.sent > 0 || result.uncertain > 0;
     super(
-      requiresReconciliation
-        ? "Email acceptance needs reconciliation; automatic resend is unsafe"
-        : "Email was not accepted by the provider",
+      result.reason === "configuration_unavailable"
+        ? "Email delivery is unavailable until product email is configured"
+        : requiresReconciliation
+          ? "Email acceptance needs reconciliation; automatic resend is unsafe"
+          : "Email was not accepted by the provider",
     );
     this.name = "EmailDeliveryError";
     this.requiresReconciliation = requiresReconciliation;

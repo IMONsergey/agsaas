@@ -373,38 +373,30 @@ describe("tRPC: team.delete", () => {
     mocks.getBankConnections.mockReset();
     mocks.getBankConnections.mockImplementation(() => Promise.resolve([]));
     mocks.deleteTeam.mockReset();
-    mocks.deleteTeam.mockImplementation(async (_db, _params, cleanup) => {
-      await cleanup({ teamId: deleteTeamId, connections: [] });
+    mocks.deleteTeam.mockImplementation(async () => {
       return {
         id: deleteTeamId,
         memberUserIds: ["test-user-id"],
+        cleanupPending: 1,
       };
     });
     mocks.triggerJob.mockReset();
     mocks.triggerJob.mockImplementation(() => ({ id: "job-del" }));
   });
 
-  test("queues cleanup through the authorized database callback", async () => {
+  test("returns a committed SQL cleanup intent without queuing credentials", async () => {
     const caller = createCaller(createTestContext());
     await caller.delete({ teamId: deleteTeamId });
 
     expect(mocks.hasTeamAccess).not.toHaveBeenCalled();
     expect(mocks.getBankConnections).not.toHaveBeenCalled();
-    expect(mocks.triggerJob).toHaveBeenCalledWith(
-      "delete-team",
-      expect.objectContaining({
-        teamId: deleteTeamId,
-        connections: [],
-      }),
-      "teams",
-    );
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
     expect(mocks.deleteTeam).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         teamId: deleteTeamId,
         userId: "test-user-id",
       }),
-      expect.any(Function),
     );
   });
 
@@ -418,13 +410,15 @@ describe("tRPC: team.delete", () => {
     expect(mocks.triggerJob).not.toHaveBeenCalled();
   });
 
-  test("propagates queue failure instead of reporting a completed deletion", async () => {
+  test("Redis outage cannot lose committed provider cleanup", async () => {
     mocks.triggerJob.mockImplementation(async () => {
       throw new Error("queue unavailable");
     });
-    await expect(
-      createCaller(createTestContext()).delete({ teamId: deleteTeamId }),
-    ).rejects.toThrow("queue unavailable");
+    const result = await createCaller(createTestContext()).delete({
+      teamId: deleteTeamId,
+    });
+    expect(result).toMatchObject({ id: deleteTeamId, cleanupPending: 1 });
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
   });
 });
 

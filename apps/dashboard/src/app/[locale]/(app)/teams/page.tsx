@@ -9,7 +9,7 @@ import { UserMenu } from "@/components/user-menu";
 import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Teams | Midday",
+  title: "Teams | AGSaaS",
 };
 
 export default async function Teams() {

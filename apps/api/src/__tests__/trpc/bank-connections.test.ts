@@ -44,25 +44,29 @@ describe("tRPC: bankConnections.delete", () => {
     mocks.deleteBankConnection.mockImplementation(() =>
       Promise.resolve({
         id: CONN_ID,
-        referenceId: "ref-xyz",
-        provider: "gocardless",
-        accessToken: "token-abc",
+        cleanupId: "cleanup-fixture",
+        cleanupStatus: "pending",
+        accessToken: "must-not-be-returned",
       }),
     );
   });
 
-  test("deletes connection and returns row", async () => {
+  test("returns only durable cleanup identity, never credentials", async () => {
     const caller = createCaller(createTestContext());
     const result = await caller.delete({ id: CONN_ID });
 
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       id: CONN_ID,
-      referenceId: "ref-xyz",
-      provider: "gocardless",
+      cleanupId: "cleanup-fixture",
+      cleanupStatus: "pending",
     });
     expect(mocks.deleteBankConnection).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ id: CONN_ID, teamId: "test-team-id" }),
+      expect.objectContaining({
+        id: CONN_ID,
+        teamId: "test-team-id",
+        actorId: "test-user-id",
+      }),
     );
   });
 
@@ -73,6 +77,18 @@ describe("tRPC: bankConnections.delete", () => {
 
     await expect(caller.delete({ id: CONN_ID })).rejects.toThrow(
       "Bank connection not found",
+    );
+  });
+});
+
+describe("tRPC: bankConnections.cleanupStatus", () => {
+  test("scopes cleanup metadata to the current team", async () => {
+    mocks.listBankConnectionCleanupStatus.mockReset();
+    mocks.listBankConnectionCleanupStatus.mockImplementation(async () => []);
+    expect(await createCaller(createTestContext()).cleanupStatus()).toEqual([]);
+    expect(mocks.listBankConnectionCleanupStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      "test-team-id",
     );
   });
 });

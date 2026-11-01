@@ -13,6 +13,7 @@ import { type AuthProvider, selectSignInOptions } from "@/utils/auth-methods";
 import { getEnabledAuthProviders } from "@/utils/auth-methods.server";
 import { Cookies } from "@/utils/constants";
 import { isBlockedNewUser } from "@/utils/new-user-gate";
+import { getPasswordCapabilities } from "@/utils/password-config.server";
 
 export const metadata: Metadata = {
   title: "Sign in | AGSaaS",
@@ -25,6 +26,7 @@ type Props = {
 export default async function Page({ searchParams }: Props) {
   const { waitlist: waitlistParam } = await searchParams;
   const enabled = getEnabledAuthProviders();
+  const { passwordRecovery } = getPasswordCapabilities();
   const cookieStore = await cookies();
   const preferred = cookieStore.get(Cookies.PreferredSignInProvider)?.value;
   const { primary, alternatives } = selectSignInOptions(enabled, preferred);
@@ -38,7 +40,8 @@ export default async function Page({ searchParams }: Props) {
 
   function signInOption(provider: AuthProvider) {
     if (provider === "email") return <OTPSignIn />;
-    if (provider === "password") return <PasswordSignIn />;
+    if (provider === "password")
+      return <PasswordSignIn recoveryEnabled={passwordRecovery.enabled} />;
     return (
       <OAuthSignIn provider={provider} showLastUsed={preferred === provider} />
     );

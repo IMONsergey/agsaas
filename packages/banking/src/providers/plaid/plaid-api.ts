@@ -3,8 +3,6 @@ import { formatISO, subDays } from "date-fns";
 import {
   Configuration,
   type CountryCode,
-  type ItemPublicTokenExchangeResponse,
-  type LinkTokenCreateResponse,
   PlaidApi as PlaidBaseApi,
   PlaidEnvironments,
   Products,
@@ -202,9 +200,7 @@ export class PlaidApi {
     language = "en",
     accessToken,
     environment = "production",
-  }: LinkTokenCreateRequest): Promise<
-    import("axios").AxiosResponse<LinkTokenCreateResponse>
-  > {
+  }: LinkTokenCreateRequest): ReturnType<PlaidBaseApi["linkTokenCreate"]> {
     return this.#client.linkTokenCreate({
       client_id: this.#clientId,
       secret: this.#clientSecret,
@@ -240,8 +236,8 @@ export class PlaidApi {
 
   async itemPublicTokenExchange({
     publicToken,
-  }: ItemPublicTokenExchangeRequest): Promise<
-    import("axios").AxiosResponse<ItemPublicTokenExchangeResponse>
+  }: ItemPublicTokenExchangeRequest): ReturnType<
+    PlaidBaseApi["itemPublicTokenExchange"]
   > {
     return this.#client.itemPublicTokenExchange({
       public_token: publicToken,
@@ -249,9 +245,12 @@ export class PlaidApi {
   }
 
   async deleteAccounts({ accessToken }: DisconnectAccountRequest) {
-    await this.#client.itemRemove({
-      access_token: accessToken,
-    });
+    await this.#client.itemRemove(
+      {
+        access_token: accessToken,
+      },
+      { timeout: 30_000 },
+    );
   }
 
   async getInstitutions(params?: GetInstitutionsRequest) {

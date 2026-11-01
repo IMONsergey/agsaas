@@ -5,6 +5,8 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./email-service": "./src/services/email-service.ts",
+    "./email-delivery-result": "./src/services/email-delivery-result.ts",
     "./types/*": "./src/types/*.ts",
     "./team-invitation-config": "./src/services/team-invitation-config.ts",
     "./team-invitation-delivery": "./src/services/team-invitation-delivery.ts"

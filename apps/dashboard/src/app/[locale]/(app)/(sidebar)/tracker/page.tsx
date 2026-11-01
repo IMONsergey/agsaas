@@ -16,7 +16,7 @@ import { prefetch, trpc } from "@/trpc/server";
 import { Cookies } from "@/utils/constants";
 
 export const metadata: Metadata = {
-  title: "Tracker | Midday",
+  title: "Tracker | AGSaaS",
 };
 
 type Props = {

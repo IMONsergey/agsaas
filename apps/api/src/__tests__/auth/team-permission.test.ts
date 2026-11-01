@@ -11,6 +11,19 @@ mock.module("@midday/logger", () => ({
   createLoggerWithContext: () => ({ warn() {}, info() {} }),
 }));
 
+let factors: Array<{ status: "verified" | "unverified" }> = [];
+let factorLookupFails = false;
+const listFactors = mock(async () => {
+  if (factorLookupFails)
+    return { data: null, error: new Error("fixture-unavailable") };
+  return { data: { factors }, error: null };
+});
+mock.module("@api/services/supabase", () => ({
+  createAdminClient: async () => ({
+    auth: { admin: { mfa: { listFactors } } },
+  }),
+}));
+
 const { withTeamPermission } = await import(
   "../../trpc/middleware/team-permission"
 );
@@ -51,12 +64,47 @@ function createDatabases(result: UserMemberships | undefined = memberOf()) {
 }
 
 beforeEach(() => {
+  factors = [];
+  factorLookupFails = false;
+  listFactors.mockClear();
   cachedPermission.mockClear();
   cachedPermission.mockResolvedValue(true);
   cacheWrite.mockClear();
 });
 
 describe("tRPC membership authorization", () => {
+  it("denies AAL1 before a protected handler and permits AAL2", async () => {
+    factors = [{ status: "verified" }];
+    const { primary } = createDatabases();
+    const next = mock(async () => "sensitive mutation");
+    await expect(
+      withTeamPermission({
+        ctx: { session: { ...session, aal: "aal1" }, db: primary },
+        next,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(next).not.toHaveBeenCalled();
+    await expect(
+      withTeamPermission({
+        ctx: { session: { ...session, aal: "aal2" }, db: primary },
+        next,
+      }),
+    ).resolves.toBe("sensitive mutation");
+  });
+
+  it("does not promote an unavailable factor lookup into MFA-off", async () => {
+    factorLookupFails = true;
+    const { primary } = createDatabases();
+    const next = mock(async () => "protected data");
+    await expect(
+      withTeamPermission({
+        ctx: { session, db: primary },
+        next,
+      }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("rejects a cached allow when the primary has revoked membership", async () => {
     const { replica, primaryFind, replicaFind } = createDatabases({
       teamId,

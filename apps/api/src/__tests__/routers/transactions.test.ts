@@ -235,6 +235,17 @@ describe("REST: POST /transactions", () => {
     );
   });
 
+  test("rejects a manual creation without a stable operation UUID before touching the database", async () => {
+    const { operationId: _operationId, ...input } = createTransactionInput();
+    const res = await app.request("/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    expect(res.status).toBe(400);
+    expect(mocks.createTransaction).not.toHaveBeenCalled();
+  });
+
   test("creates transaction with valid payload", async () => {
     const res = await app.request("/transactions", {
       method: "POST",

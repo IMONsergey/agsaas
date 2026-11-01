@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   accountingSyncRecords,
   inbox,
@@ -28,7 +28,7 @@ type CreateAttachmentsParams = {
 };
 
 export async function createAttachments(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: CreateAttachmentsParams,
 ) {
   const { attachments, teamId, userId } = params;

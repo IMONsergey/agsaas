@@ -68,25 +68,26 @@ function makeQueue(
       .slice(0, limit)
       .map(({ job }) => job.id!);
   const redis = {
-    zrangebyscore: mock(
-      async (
-        key: string,
-        start: number,
-        end: number,
-        _limit: string,
-        _offset: number,
-        limit: number,
-      ) => range(key, start, end, limit, true),
+    defineCommand: mock(
+      (
+        _name: string,
+        _definition: Parameters<Awaited<Queue["client"]>["defineCommand"]>[1],
+      ) => {},
     ),
-    zrevrangebyscore: mock(
-      async (
-        key: string,
-        end: number,
-        start: number,
-        _limit: string,
-        _offset: number,
-        limit: number,
-      ) => range(key, start, end, limit, false),
+    runCommand: mock(
+      async (_name: string, args: unknown[]): Promise<unknown> => {
+        const [key, start, end, limit, direction] = args;
+        if (
+          typeof key !== "string" ||
+          typeof start !== "number" ||
+          typeof end !== "number" ||
+          typeof limit !== "number" ||
+          (direction !== "asc" && direction !== "desc")
+        ) {
+          throw new Error("Invalid range arguments");
+        }
+        return range(key, start, end, limit, direction === "asc");
+      },
     ),
   };
   const methods = {
@@ -159,19 +160,33 @@ describe("QueueManager Redis access", () => {
 
     expect(activity.totalCompleted).toBe(1);
     expect(
-      fixture.redis.zrevrangebyscore.mock.calls.map((call) => call[0]),
+      fixture.redis.runCommand.mock.calls.map((call) => call[1][0]),
     ).toEqual(["tenant:v1:invoices:completed", "tenant:v1:invoices:failed"]);
+    expect(fixture.redis.defineCommand).toHaveBeenCalledTimes(1);
+    expect(fixture.redis.defineCommand.mock.calls[0]?.[1]).toMatchObject({
+      numberOfKeys: 1,
+      readOnly: true,
+    });
     expect(fixture.methods.getJobs).not.toHaveBeenCalled();
   });
 
   it("falls back to ordinary job reads when the Redis range query fails", async () => {
     const fixture = makeQueue([makeJob("1", Date.now() - 1000, "completed")]);
-    fixture.redis.zrevrangebyscore.mockImplementation(async () => {
+    fixture.redis.runCommand.mockImplementation(async () => {
       throw new Error("range query unavailable");
     });
     const manager = new QueueManager([fixture.queue]);
     expect((await manager.getActivityStats()).totalCompleted).toBe(1);
     expect(fixture.methods.getJobs).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects malformed command responses before reading job IDs", async () => {
+    const fixture = makeQueue([makeJob("1", Date.now() - 1000, "completed")]);
+    fixture.redis.runCommand.mockImplementation(async () => ["1", 42]);
+    const manager = new QueueManager([fixture.queue]);
+    expect((await manager.getActivityStats()).totalCompleted).toBe(1);
+    expect(fixture.methods.getJobs).toHaveBeenCalledTimes(2);
+    expect(fixture.methods.getJob).not.toHaveBeenCalled();
   });
 });
 
@@ -337,6 +352,26 @@ describe("QueueManager pagination and search", () => {
       );
       expect(fixture.methods.getJobs).not.toHaveBeenCalled();
     });
+
+    it(`includes exact score boundaries in ${direction} ranges`, async () => {
+      const fixture = makeQueue(
+        Array.from({ length: 5 }, (_, i) => {
+          const entry = makeJob(String(i), 1000 + i, "completed");
+          entry.job.processedOn = entry.job.finishedOn;
+          return entry;
+        }),
+      );
+      const page = await new QueueManager([fixture.queue]).getAllRuns(
+        10,
+        0,
+        { field: "timestamp", direction },
+        { status: "completed", timeRange: { start: 1001, end: 1003 } },
+      );
+      expect(page.data.map(({ id }) => id)).toEqual(
+        direction === "asc" ? ["1", "2", "3"] : ["3", "2", "1"],
+      );
+      expect(fixture.methods.getJobs).not.toHaveBeenCalled();
+    });
   }
 
   it("preserves ascending order in the Redis-error range fallback", async () => {
@@ -345,7 +380,7 @@ describe("QueueManager pagination and search", () => {
         makeJob(String(i), 1000 - i, "completed"),
       ),
     );
-    fixture.redis.zrangebyscore.mockImplementation(async () => {
+    fixture.redis.runCommand.mockImplementation(async () => {
       throw new Error("range query unavailable");
     });
     const page = await new QueueManager([fixture.queue]).getAllRuns(

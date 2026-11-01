@@ -5,7 +5,7 @@ import { DeleteAccount } from "@/components/delete-account";
 import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
 import { getAccountEntryRedirect } from "@/utils/account-deletion";
 
-export const metadata: Metadata = { title: "Account deletion | Midday" };
+export const metadata: Metadata = { title: "Account deletion | AGSaaS" };
 
 export default async function AccountDeletionPage() {
   const queryClient = getQueryClient();

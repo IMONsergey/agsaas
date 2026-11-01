@@ -5,7 +5,7 @@ import { InboxEmailSettings } from "@/components/inbox/inbox-email-settings";
 import { prefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Inbox Settings | Midday",
+  title: "Inbox Settings | AGSaaS",
 };
 
 export default async function Page() {

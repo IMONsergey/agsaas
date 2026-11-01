@@ -1,5 +1,6 @@
 "use client";
 
+import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { LogEvents } from "@midday/events/events";
 import { Button } from "@midday/ui/button";
 import { cn } from "@midday/ui/cn";
@@ -116,17 +117,20 @@ export function MatchTransaction() {
         );
 
         if (previousInboxItem && selectedTransaction) {
-          queryClient.setQueryData(queryKey, {
-            ...previousInboxItem,
-            transactionId,
-            transaction: {
-              id: selectedTransaction.transaction_id,
-              name: selectedTransaction.name,
-              date: selectedTransaction.transaction_date,
-              amount: selectedTransaction.transaction_amount,
-              currency: selectedTransaction.transaction_currency,
+          queryClient.setQueryData<RouterOutputs["inbox"]["getById"]>(
+            queryKey,
+            {
+              ...previousInboxItem,
+              transactionId,
+              transaction: {
+                id: selectedTransaction.transaction_id,
+                name: selectedTransaction.name,
+                date: selectedTransaction.transaction_date,
+                amount: selectedTransaction.transaction_amount,
+                currency: selectedTransaction.transaction_currency,
+              },
             },
-          });
+          );
         }
 
         return { previousInboxItem };

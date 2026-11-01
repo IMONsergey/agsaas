@@ -61,6 +61,7 @@ export type SlackUploadPayload = z.infer<typeof slackUploadSchema>;
 // Provider schemas
 export const inboxProviderInitialSetupSchema = z.object({
   inboxAccountId: z.string().uuid(),
+  teamId: z.string().uuid().optional(),
 });
 
 export type InboxProviderInitialSetupPayload = z.infer<
@@ -69,6 +70,7 @@ export type InboxProviderInitialSetupPayload = z.infer<
 
 export const inboxProviderSyncAccountSchema = z.object({
   id: z.string().uuid(), // Inbox account ID
+  teamId: z.string().uuid().optional(), // Manual jobs are visible only to this team.
   manualSync: z.boolean().optional(),
 });
 

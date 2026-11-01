@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import type { Database } from "../types";
 import { getAuthCookieOptions } from "./cookie-options";
@@ -8,6 +9,51 @@ type CreateClientOptions = {
   admin?: boolean;
   schema?: "public" | "storage";
 };
+
+/**
+ * Disposable public Auth client for checking a current password. Its AAL1
+ * login is kept in instance-local memory and can never overwrite SSR cookies.
+ */
+export function createPasswordVerificationClient() {
+  const publicUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  getAuthCookieOptions(publicUrl); // Validate the same canonical URL boundary.
+  const transport = createSupabaseFetch(publicUrl);
+  const boundedFetch = Object.assign(
+    (
+      input: Parameters<typeof globalThis.fetch>[0],
+      init?: Parameters<typeof globalThis.fetch>[1],
+    ) =>
+      transport(input, {
+        ...init,
+        signal: init?.signal
+          ? AbortSignal.any([init.signal, AbortSignal.timeout(5000)])
+          : AbortSignal.timeout(5000),
+      }),
+    {
+      preconnect: (
+        url: Parameters<typeof globalThis.fetch.preconnect>[0],
+        options?: Parameters<typeof globalThis.fetch.preconnect>[1],
+      ) => transport.preconnect?.(url, options),
+    },
+  );
+  const client = createSupabaseClient<Database>(
+    publicUrl,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+      global: {
+        fetch: boundedFetch,
+      },
+    },
+  );
+  // Expose only Auth: no database, Storage or inferred schema generics are
+  // needed by this disposable verifier.
+  return { auth: client.auth };
+}
 
 export async function createClient(options?: CreateClientOptions) {
   const { admin = false, ...rest } = options ?? {};

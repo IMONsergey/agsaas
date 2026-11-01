@@ -181,14 +181,21 @@ export async function prepareInvoiceEmailDelivery(
 export type InvoiceEmailClaim =
   | { state: "claimed"; delivery: InvoiceEmailDelivery; leaseToken: string }
   | {
-      state: "accepted" | "completed" | "busy" | "stopped" | "missing";
+      state:
+        | "accepted"
+        | "completed"
+        | "busy"
+        | "stopped"
+        | "missing"
+        | "deferred";
       delivery: InvoiceEmailDelivery | null;
     };
 
 /** Short transaction only; rendering, storage downloads and HTTP happen outside it. */
-export async function claimInvoiceEmailDelivery(
+async function transitionInvoiceEmailDelivery(
   db: DatabaseOrTransaction,
   scope: InvoiceEmailDeliveryScope,
+  mode: "claim" | "defer",
 ): Promise<InvoiceEmailClaim> {
   return db.transaction(async (tx) => {
     const [invoice] = await tx
@@ -281,6 +288,21 @@ export async function claimInvoiceEmailDelivery(
         .returning();
       return { state: "stopped", delivery: stopped ?? row };
     }
+    if (mode === "defer") {
+      // No external request can be made. Retain a previous request's fence so
+      // a late real acceptance can still be recorded; never start/extend its
+      // idempotency window or consume another sending attempt.
+      const [deferred] = await tx
+        .update(invoiceEmailDeliveries)
+        .set({
+          lastError: "configuration_unavailable",
+          nextAttemptAt: sql`clock_timestamp() + interval '5 minutes'`,
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(scopeCondition(scope))
+        .returning();
+      return { state: "deferred", delivery: deferred ?? row };
+    }
     const leaseToken = randomUUID();
     const [claimed] = await tx
       .update(invoiceEmailDeliveries)
@@ -297,6 +319,23 @@ export async function claimInvoiceEmailDelivery(
     if (!claimed) throw new Error("Invoice email claim disappeared");
     return { state: "claimed", delivery: claimed, leaseToken };
   });
+}
+
+export function claimInvoiceEmailDelivery(
+  db: DatabaseOrTransaction,
+  scope: InvoiceEmailDeliveryScope,
+): Promise<InvoiceEmailClaim> {
+  return transitionInvoiceEmailDelivery(db, scope, "claim");
+}
+
+/** Transport outages back off before a lease/attempt is acquired. The same
+ * locked eligibility/clock/replay guards still run: missing credentials must
+ * not hide a paid invoice, expired replay window or unsafe chronology. */
+export function deferInvoiceEmailDelivery(
+  db: DatabaseOrTransaction,
+  scope: InvoiceEmailDeliveryScope,
+): Promise<InvoiceEmailClaim> {
+  return transitionInvoiceEmailDelivery(db, scope, "defer");
 }
 
 export async function recordInvoiceDeliveryOutcome(

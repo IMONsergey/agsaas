@@ -1,9 +1,12 @@
 import type { Context } from "@api/rest/types";
 import { downloadFileSchema, downloadInvoiceSchema } from "@api/schemas/files";
 import { createAdminClient } from "@api/services/supabase";
+import { requireFileAccess } from "@api/utils/file-access";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { getInvoiceById } from "@midday/db/queries";
-import { verifyFileKey } from "@midday/encryption";
+import {
+  getInvoiceDocumentById,
+  getPublishedInvoiceById,
+} from "@midday/db/queries";
 import { PdfTemplate, renderToStream } from "@midday/invoice";
 import { verify } from "@midday/invoice/token";
 import { download } from "@midday/supabase/storage";
@@ -12,7 +15,11 @@ import { publicMiddleware } from "../../middleware";
 import { withDatabase } from "../../middleware/db";
 import { withFileAuth } from "../../middleware/file-auth";
 import { withClientIp } from "../../middleware/ip";
-import { getContentTypeFromFilename, normalizeAndValidatePath } from "./utils";
+import {
+  attachmentDisposition,
+  getContentTypeFromFilename,
+  normalizeAndValidatePath,
+} from "./utils";
 
 const app = new OpenAPIHono<Context>();
 
@@ -109,10 +116,13 @@ app.openapi(
     const headers: Record<string, string> = {
       "Content-Type": contentType,
       "Cross-Origin-Resource-Policy": "cross-origin",
+      "Cache-Control": "private, no-store, max-age=0",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
     };
 
     if (filename) {
-      headers["Content-Disposition"] = `attachment; filename="${filename}"`;
+      headers["Content-Disposition"] = attachmentDisposition(filename);
     }
 
     return new Response(blob, { headers });
@@ -133,26 +143,8 @@ downloadInvoiceApp.use(async (c, next) => {
   const query = c.req.query();
   // If ID is provided, require file key authentication
   if (query.id) {
-    const fk = query.fk;
-
-    if (!fk) {
-      throw new HTTPException(401, {
-        message:
-          "File key (fk) query parameter is required when using invoice ID.",
-      });
-    }
-
-    // Verify file key and extract teamId
-    const tokenTeamId = await verifyFileKey(fk);
-
-    if (!tokenTeamId) {
-      throw new HTTPException(401, {
-        message: "Invalid file key.",
-      });
-    }
-
-    // Set teamId in context for downstream handlers
-    c.set("teamId", tokenTeamId);
+    const access = await requireFileAccess(c, "invoices.read");
+    c.set("teamId", access.teamId);
   }
   // Otherwise, continue without auth requirement (public access via invoice token)
   return next();
@@ -239,7 +231,7 @@ downloadInvoiceApp.openapi(
         });
       }
 
-      invoiceData = await getInvoiceById(db, {
+      invoiceData = await getInvoiceDocumentById(db, {
         id,
         teamId,
       });
@@ -254,7 +246,7 @@ downloadInvoiceApp.openapi(
           throw new HTTPException(404, { message: "Invoice not found" });
         }
 
-        invoiceData = await getInvoiceById(db, {
+        invoiceData = await getPublishedInvoiceById(db, {
           id: invoiceId,
         });
       } catch (error) {
@@ -294,14 +286,16 @@ downloadInvoiceApp.openapi(
 
       const headers: Record<string, string> = {
         "Content-Type": "application/pdf",
-        "Cache-Control": "no-store, max-age=0",
+        "Cache-Control": "private, no-store, max-age=0",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
       };
 
       if (!preview) {
         const filename = isReceipt
           ? `receipt-${invoiceData.invoiceNumber}.pdf`
           : `${invoiceData.invoiceNumber}.pdf`;
-        headers["Content-Disposition"] = `attachment; filename="${filename}"`;
+        headers["Content-Disposition"] = attachmentDisposition(filename);
       }
 
       return new Response(blob, { headers });

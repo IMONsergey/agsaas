@@ -22,6 +22,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
+import { useToast } from "@midday/ui/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useState } from "react";
@@ -38,17 +39,30 @@ type Props = {
 export function DeleteConnection({ connection }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [value, setValue] = useState("");
   const [open, setOpen] = useState(false);
 
   const deleteConnectionMutation = useMutation(
     trpc.bankConnections.delete.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (result) => {
         queryClient.invalidateQueries({
           queryKey: trpc.bankConnections.get.queryKey(),
         });
         queryClient.invalidateQueries({
           queryKey: trpc.overview.summary.queryKey(),
+        });
+        queryClient.invalidateQueries({
+          queryKey: trpc.bankConnections.cleanupStatus.queryKey(),
+        });
+        toast({
+          title: "Connection removed",
+          description:
+            result.cleanupStatus === "completed"
+              ? "Provider cleanup is confirmed."
+              : result.cleanupStatus === "reconciliation"
+                ? "Provider access needs administrator review."
+                : "Provider cleanup is pending.",
         });
 
         setOpen(false);
@@ -98,6 +112,10 @@ export function DeleteConnection({ connection }: Props) {
                 This will permanently remove the connection and all its accounts
                 and transaction history. This cannot be undone.
               </p>
+              <p>
+                Provider access will be removed separately. You can check its
+                confirmation on this page.
+              </p>
               <div className="my-6 px-3 py-3 bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30">
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="size-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
@@ -117,7 +135,7 @@ export function DeleteConnection({ connection }: Props) {
                     <p className="text-amber-700 dark:text-amber-300">
                       {provider
                         ? "Reconnecting later may not restore full history."
-                        : "Connection data is stored only in Midday and cannot be recovered."}
+                        : "Connection data is stored only in this installation and cannot be recovered."}
                     </p>
                   </div>
                 </div>

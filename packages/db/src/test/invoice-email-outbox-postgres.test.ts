@@ -8,6 +8,7 @@ import type {
 } from "../client";
 import {
   claimInvoiceEmailDelivery,
+  deferInvoiceEmailDelivery,
   deferInvoiceEmailFinalization,
   finalizeInvoiceEmailDelivery,
   getInvoiceEmailDelivery,
@@ -119,6 +120,100 @@ describe.skipIf(!isTestDatabaseAvailable())(
         expect(retry?.envelope).toBe(envelope);
         expect(retry?.recipient).toBe("customer@example.test");
         expect(retry?.envelopeHash).toBe(invoiceEmailEnvelopeHash(envelope));
+      });
+    });
+
+    test("configuration deferral never takes a lease or starts/spends the provider replay budget", async () => {
+      await withFixture(async (tx, f) => {
+        const before = await prepareInvoiceEmailDelivery(tx, preparation(f));
+        const deferred = await deferInvoiceEmailDelivery(tx, f);
+        expect(deferred.state).toBe("deferred");
+        expect(deferred.delivery).toMatchObject({
+          status: "pending",
+          attempts: 0,
+          firstAttemptAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastError: "configuration_unavailable",
+          envelope,
+          envelopeHash: before!.envelopeHash,
+        });
+        expect(
+          new Date(deferred.delivery!.nextAttemptAt).getTime(),
+        ).toBeGreaterThan(Date.now());
+        expect((await claimInvoiceEmailDelivery(tx, f)).state).toBe("busy");
+        expect(
+          (await deferInvoiceEmailDelivery(tx, { ...f, teamId: f.otherTeamId }))
+            .state,
+        ).toBe("missing");
+        await tx
+          .update(invoiceEmailDeliveries)
+          .set({ nextAttemptAt: sql`clock_timestamp()` })
+          .where(eq(invoiceEmailDeliveries.id, before!.id));
+        const claim = await claimInvoiceEmailDelivery(tx, f);
+        expect(claim.state).toBe("claimed");
+        expect(claim.delivery!.attempts).toBe(1);
+        expect(claim.delivery!.envelope).toBe(envelope);
+      });
+    });
+
+    test("configuration deferral preserves an expired request fence for a late genuine acceptance", async () => {
+      await withFixture(async (tx, f) => {
+        await prepareInvoiceEmailDelivery(tx, preparation(f));
+        const first = await claimInvoiceEmailDelivery(tx, f);
+        if (first.state !== "claimed") throw new Error("Expected claim");
+        await tx
+          .update(invoiceEmailDeliveries)
+          .set({ leaseExpiresAt: sql`clock_timestamp() - interval '1 second'` })
+          .where(eq(invoiceEmailDeliveries.id, first.delivery.id));
+        const deferred = await deferInvoiceEmailDelivery(tx, f);
+        expect(deferred.state).toBe("deferred");
+        expect(deferred.delivery).toMatchObject({
+          attempts: 1,
+          firstAttemptAt: first.delivery.firstAttemptAt,
+          leaseToken: first.leaseToken,
+          envelope,
+        });
+        await recordInvoiceDeliveryOutcome(
+          tx,
+          { ...f, leaseToken: first.leaseToken },
+          { kind: "accepted", messageId: "late-acceptance" },
+        );
+        expect((await deferInvoiceEmailDelivery(tx, f)).state).toBe("accepted");
+        expect((await finalizeInvoiceEmailDelivery(tx, f))?.status).toBe(
+          "completed",
+        );
+      });
+    });
+
+    test("missing provider cannot bypass invoice cancellation or elapsed replay guards", async () => {
+      await withFixture(async (tx, f) => {
+        const row = await prepareInvoiceEmailDelivery(tx, preparation(f));
+        await tx
+          .update(invoices)
+          .set({ status: "paid" })
+          .where(eq(invoices.id, f.invoiceId));
+        expect((await deferInvoiceEmailDelivery(tx, f)).delivery?.status).toBe(
+          "canceled",
+        );
+        expect((await getInvoiceEmailDelivery(tx, f))?.attempts).toBe(0);
+        expect(row?.firstAttemptAt).toBeNull();
+      });
+      await withFixture(async (tx, f) => {
+        await prepareInvoiceEmailDelivery(tx, preparation(f));
+        await tx
+          .update(invoiceEmailDeliveries)
+          .set({
+            createdAt: sql`clock_timestamp() - interval '25 hours'`,
+            firstAttemptAt: sql`clock_timestamp() - interval '24 hours'`,
+            updatedAt: sql`clock_timestamp() - interval '1 hour'`,
+            attempts: 1,
+          })
+          .where(eq(invoiceEmailDeliveries.invoiceId, f.invoiceId));
+        const stopped = await deferInvoiceEmailDelivery(tx, f);
+        expect(stopped.state).toBe("stopped");
+        expect(stopped.delivery?.lastError).toBe("replay_window_expired");
+        expect(stopped.delivery?.attempts).toBe(1);
       });
     });
 

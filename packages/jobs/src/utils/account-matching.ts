@@ -5,6 +5,7 @@ import {
   type MatchingResult,
 } from "@midday/supabase/account-matching";
 import { createClient } from "@midday/supabase/job";
+import type { Database } from "@midday/supabase/types";
 import { logger } from "@trigger.dev/sdk";
 
 // Re-export types for convenience
@@ -42,7 +43,7 @@ export async function matchAndUpdateAccountIds({
     if (match) {
       matchedDbIds.add(match.id);
 
-      const updates: Record<string, string | null> = {
+      const updates: Database["public"]["Tables"]["bank_accounts"]["Update"] = {
         account_id: apiAccount.id,
       };
       if (apiAccount.resource_id) {

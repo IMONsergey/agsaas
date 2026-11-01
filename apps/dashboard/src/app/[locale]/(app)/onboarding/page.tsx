@@ -6,7 +6,7 @@ import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
 import { getAccountEntryRedirect } from "@/utils/account-deletion";
 
 export const metadata: Metadata = {
-  title: "Onboarding | Midday",
+  title: "Onboarding | AGSaaS",
 };
 
 export default async function Page() {

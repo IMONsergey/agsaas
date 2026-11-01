@@ -333,7 +333,8 @@ export function prepareFreshRuntime(options: PrepareOptions) {
       SUPABASE_PUBLIC_URL: "http://localhost:3800",
       API_EXTERNAL_URL: "http://localhost:3800/auth/v1",
       SITE_URL: "http://localhost:3300",
-      ADDITIONAL_REDIRECT_URLS: "http://localhost:3300/api/auth/callback",
+      ADDITIONAL_REDIRECT_URLS:
+        "http://localhost:3300/api/auth/callback,http://localhost:3300/api/auth/password-recovery",
       API_GW_HTTP_PORT: "127.0.0.1:3800",
       DASHBOARD_USERNAME: "agsaas-admin",
       STUDIO_DEFAULT_ORGANIZATION: "AGSaaS",

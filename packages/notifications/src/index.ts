@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Database } from "@midday/db/client";
 import {
   createActivity,
@@ -72,6 +73,11 @@ const handlers = {
   insight_ready: insightReady,
 } as const;
 
+function eventUuid(value: string): string {
+  const hex = createHash("sha256").update(value).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 export class Notifications {
   #emailService: EmailService;
   #db: Database;
@@ -116,7 +122,7 @@ export class Notifications {
         const activityInput = handler.createActivity(validatedData, user);
 
         // Check if handler supports combining
-        if (handler.combine) {
+        if (handler.combine && !options?.activityOperationKey) {
           try {
             const existingActivity = await handler.combine.findExisting(
               this.#db,
@@ -185,7 +191,16 @@ export class Notifications {
         const validatedActivity = createActivitySchema.parse(activityInput);
 
         // Create activity directly using DB query
-        return createActivity(this.#db, validatedActivity);
+        return createActivity(this.#db, {
+          ...validatedActivity,
+          ...(options?.activityOperationKey
+            ? {
+                id: eventUuid(
+                  `${user.team_id}\0${notificationType}\0${options.activityOperationKey}\0${user.id}`,
+                ),
+              }
+            : {}),
+        });
       }),
     );
 
@@ -214,6 +229,8 @@ export class Notifications {
       sendEmail,
       requireEmailAcceptance,
       invoiceDelivery,
+      activityOperationKey,
+      skipActivities,
       ...resendOptions
     } = options || {};
     if (Object.keys(resendOptions).length > 0) {
@@ -330,6 +347,7 @@ export class Notifications {
             activitySnapshot,
           };
         },
+        () => this.#emailService.canSend(),
       );
     }
     const [teamMembers, teamInfo] = await Promise.all([
@@ -368,6 +386,8 @@ export class Notifications {
       this.#db,
       scope,
       (envelope, key) => this.#emailService.sendInvoiceEnvelope(envelope, key),
+      undefined,
+      () => this.#emailService.canSend(),
     );
   }
 
@@ -391,7 +411,9 @@ export class Notifications {
       const validatedData = handler.schema.parse(data);
 
       // Generate a single group ID for all related activities
-      const groupId = crypto.randomUUID();
+      const groupId = options?.activityOperationKey
+        ? eventUuid(`${teamInfo?.id}\0${type}\0${options.activityOperationKey}`)
+        : crypto.randomUUID();
 
       const createActivities = () =>
         this.#createActivities(
@@ -403,9 +425,10 @@ export class Notifications {
         );
       // A "sent" activity must not precede the provider acknowledgement. Other
       // notifications retain their existing in-app-first behavior by default.
-      let activities = options?.requireEmailAcceptance
-        ? []
-        : await createActivities();
+      let activities =
+        options?.requireEmailAcceptance || options?.skipActivities
+          ? []
+          : await createActivities();
 
       // CONDITIONALLY send emails
       let emails = emptyEmailDeliveryResult(validatedData.users.length);
@@ -511,7 +534,7 @@ export class Notifications {
       if (options?.requireEmailAcceptance) {
         assertEmailAccepted(emails);
         try {
-          activities = await createActivities();
+          activities = options?.skipActivities ? [] : await createActivities();
         } catch {
           // The caller must still record the known acceptance, but must not
           // resend the email merely to retry an activity database write.
@@ -525,7 +548,8 @@ export class Notifications {
         emails,
       };
     } catch (error) {
-      console.error(`Failed to send notification ${type}:`, error);
+      // Raw SQL/SDK errors may contain recipient, rendered body or credentials.
+      console.error(`Notification ${type} could not be completed`);
       throw error;
     }
   }

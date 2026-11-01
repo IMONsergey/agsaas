@@ -46,6 +46,8 @@ services:
       GOTRUE_JWT_KEYS: "${JWT_KEYS:?Generate the matched signing key set}"
       # Missing SMTP must remain visible; never disguise it with auto-confirm.
       GOTRUE_MAILER_AUTOCONFIRM: "false"
+      # Enforce current-password verification at GoTrue, including direct SDK calls.
+      GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_CURRENT_PASSWORD: "true"
 
   rest:
     <<: *stage-runtime

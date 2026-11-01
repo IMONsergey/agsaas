@@ -6,22 +6,24 @@ import {
   reconnectBankConnectionSchema,
 } from "@api/schemas/bank-connections";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { withTeamMembershipErrors } from "@api/utils/team-membership";
 
 import {
   addProviderAccounts,
   createBankConnection,
   deleteBankConnection,
   getBankConnections,
+  listBankConnectionCleanupStatus,
   reconnectBankConnection,
 } from "@midday/db/queries";
-import type {
-  DeleteConnectionPayload,
-  InitialBankSetupPayload,
-} from "@midday/jobs/schema";
+import type { InitialBankSetupPayload } from "@midday/jobs/schema";
 import { tasks } from "@trigger.dev/sdk";
 import { TRPCError } from "@trpc/server";
 
 export const bankConnectionsRouter = createTRPCRouter({
+  cleanupStatus: protectedProcedure.query(({ ctx: { db, teamId } }) =>
+    listBankConnectionCleanupStatus(db, teamId!),
+  ),
   get: protectedProcedure
     .input(getBankConnectionsSchema)
     .query(async ({ ctx: { db, teamId }, input }) => {
@@ -57,23 +59,26 @@ export const bankConnectionsRouter = createTRPCRouter({
 
   delete: protectedProcedure
     .input(deleteBankConnectionSchema)
-    .mutation(async ({ input, ctx: { db, teamId } }) => {
-      const data = await deleteBankConnection(db, {
-        id: input.id,
-        teamId: teamId!,
-      });
+    .mutation(async ({ input, ctx: { db, teamId, session } }) => {
+      const data = await withTeamMembershipErrors(() =>
+        deleteBankConnection(db, {
+          id: input.id,
+          teamId: teamId!,
+          actorId: session.user.id,
+        }),
+      );
 
       if (!data) {
         throw new Error("Bank connection not found");
       }
 
-      await tasks.trigger("delete-connection", {
-        referenceId: data.referenceId,
-        provider: data.provider!,
-        accessToken: data.accessToken,
-      } satisfies DeleteConnectionPayload);
-
-      return data;
+      // SQL already retained the encrypted cleanup intent. The own worker
+      // recovers it independently of this response and Redis availability.
+      return {
+        id: data.id,
+        cleanupId: data.cleanupId,
+        cleanupStatus: data.cleanupStatus,
+      };
     }),
 
   addAccounts: protectedProcedure

@@ -3,7 +3,7 @@ import { updateInboxAccount } from "@midday/db/queries";
 import { encrypt } from "@midday/encryption";
 import { ensureFileExtension } from "@midday/utils";
 import type { Credentials } from "google-auth-library";
-import { type Auth, type gmail_v1, google } from "googleapis";
+import { type gmail_v1, google } from "googleapis";
 import { decodeBase64Url } from "../attachments";
 import { InboxAuthError, InboxSyncError } from "../errors";
 import { generateDeterministicId } from "../generate-id";
@@ -38,7 +38,7 @@ interface GoogleApiError extends Error {
 }
 
 export class GmailProvider implements OAuthProviderInterface {
-  #oauth2Client: Auth.OAuth2Client;
+  #oauth2Client: InstanceType<typeof google.auth.OAuth2>;
   #gmail: gmail_v1.Gmail | null = null;
   #accountId: string | null = null;
   #db: Database;

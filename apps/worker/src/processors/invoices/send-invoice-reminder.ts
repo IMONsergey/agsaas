@@ -2,7 +2,7 @@ import {
   canSendInvoiceReminder,
   deferInvoiceEmailFinalization,
   finalizeInvoiceEmailDelivery,
-  getInvoiceById,
+  getInvoiceDocumentById,
   getInvoiceEmailDelivery,
   recordInvoiceReminderAccepted,
 } from "@midday/db/queries";
@@ -29,7 +29,7 @@ export class SendInvoiceReminderProcessor extends BaseProcessor<SendInvoiceRemin
     });
 
     // Fetch invoice with related data
-    const invoice = await getInvoiceById(db, { id: invoiceId });
+    const invoice = await getInvoiceDocumentById(db, { id: invoiceId });
 
     if (!invoice) {
       this.logger.error("Invoice not found", { invoiceId });

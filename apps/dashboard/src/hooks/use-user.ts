@@ -10,7 +10,11 @@ export function useUserQuery() {
   // pre-fetched by the (sidebar) layout which awaits user.me.
   const result = useQuery({
     ...trpc.user.me.queryOptions(),
-    refetchInterval: 6 * 60 * 60 * 1000,
+    // File capabilities expire after five minutes. Refresh while active and
+    // whenever a suspended tab becomes visible again.
+    refetchInterval: 2 * 60 * 1000,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   });
   return result as typeof result & { data: NonNullable<typeof result.data> };
 }

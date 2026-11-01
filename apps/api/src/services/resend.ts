@@ -1,16 +1,15 @@
+import { requireProductEmailTransport } from "@midday/email/config";
 import { Resend } from "resend";
 
 let client: Resend | undefined;
+let clientKey: string | undefined;
 
 export function getResend(): Resend {
-  if (client) return client;
-
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("RESEND_API_KEY is required for email operations");
-  }
+  const apiKey = requireProductEmailTransport();
+  if (client && clientKey === apiKey) return client;
 
   client = new Resend(apiKey);
+  clientKey = apiKey;
   return client;
 }
 

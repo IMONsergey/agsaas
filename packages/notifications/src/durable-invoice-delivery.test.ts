@@ -26,6 +26,16 @@ const savedFetch = globalThis.fetch;
 const savedConnect = Socket.prototype.connect;
 const savedKey = process.env.RESEND_API_KEY;
 const savedEncryptionKey = process.env.MIDDAY_ENCRYPTION_KEY;
+const identityKeys = [
+  "EMAIL_FROM",
+  "EMAIL_REPLY_TO",
+  "DASHBOARD_URL",
+  "APP_NAME",
+  "TEAM_INVITATION_FROM",
+] as const;
+const savedIdentity = Object.fromEntries(
+  identityKeys.map((key) => [key, process.env[key]]),
+);
 const forbidden = (): never => {
   throw new Error("Live network is forbidden in durable email tests");
 };
@@ -108,6 +118,18 @@ const rowFor = (s: InvoiceEmailDeliveryScope) => {
   return row?.teamId === s.teamId && row.invoiceId === s.invoiceId ? row : null;
 };
 mock.module("@midday/db/queries", () => ({
+  deferInvoiceEmailDelivery: async (
+    _db: unknown,
+    s: InvoiceEmailDeliveryScope,
+  ) => {
+    events.push("defer");
+    const row = rowFor(s);
+    if (!row) return { state: "missing", delivery: null };
+    if (row.status === "accepted" || row.status === "completed")
+      return { state: row.status, delivery: row };
+    row.lastError = "configuration_unavailable";
+    return { state: "deferred", delivery: row };
+  },
   deferInvoiceEmailFinalization: async (
     _db: unknown,
     s: InvoiceEmailDeliveryScope,
@@ -271,7 +293,12 @@ function send(operationKey = scope.operationKey, heading = "Original") {
 }
 
 beforeEach(() => {
+  delete process.env.TEAM_INVITATION_FROM;
   process.env.RESEND_API_KEY = "fixture-resend-key";
+  process.env.EMAIL_FROM = "AGSaaS <accounts@example.test>";
+  process.env.DASHBOARD_URL = "https://app.example.test";
+  process.env.APP_NAME = "AGSaaS";
+  delete process.env.EMAIL_REPLY_TO;
   process.env.MIDDAY_ENCRYPTION_KEY = "a".repeat(64);
   rows.clear();
   receipts.clear();
@@ -299,9 +326,85 @@ afterAll(() => {
   if (savedEncryptionKey === undefined)
     delete process.env.MIDDAY_ENCRYPTION_KEY;
   else process.env.MIDDAY_ENCRYPTION_KEY = savedEncryptionKey;
+  for (const key of identityKeys) {
+    if (savedIdentity[key] === undefined) delete process.env[key];
+    else process.env[key] = savedIdentity[key];
+  }
 });
 
 describe("durable invoice notification and actual SDK transport", () => {
+  test("missing transport prepares intent but never starts the replay window or claims", async () => {
+    delete process.env.RESEND_API_KEY;
+    await expect(send()).rejects.toBeInstanceOf(InvoiceDeliveryPendingError);
+    const row = rows.get(scope.operationKey)!;
+    expect(row).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      firstAttemptAt: null,
+      leaseToken: null,
+      lastError: "configuration_unavailable",
+    });
+    expect(events).toEqual(["persist", "defer"]);
+    expect(requests).toHaveLength(0);
+
+    const frozen = row.envelope;
+    const frozenHash = row.envelopeHash;
+    // Repeated recovery must not require or rebuild the original identity.
+    delete process.env.EMAIL_FROM;
+    delete process.env.DASHBOARD_URL;
+    await expect(
+      notifications().reconcileInvoiceDelivery(scope),
+    ).rejects.toBeInstanceOf(InvoiceDeliveryPendingError);
+    expect(row.envelope).toBe(frozen);
+    expect(row.envelopeHash).toBe(frozenHash);
+    expect(row.attempts).toBe(0);
+    expect(row.firstAttemptAt).toBeNull();
+    expect(events).not.toContain("claim");
+
+    process.env.RESEND_API_KEY = "fixture-restored-key";
+    await notifications().reconcileInvoiceDelivery(scope);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.body).toBe(frozen!);
+    expect(JSON.parse(requests[0]!.body).from).toBe(
+      "AGSaaS <accounts@example.test>",
+    );
+  });
+
+  test("missing transport after an uncertain attempt does not spend another attempt or replace bytes", async () => {
+    firstResponseUncertain = true;
+    await expect(send()).rejects.toBeInstanceOf(InvoiceDeliveryPendingError);
+    const row = rows.get(scope.operationKey)!;
+    const before = {
+      firstAttemptAt: row.firstAttemptAt,
+      attempts: row.attempts,
+      envelope: row.envelope,
+    };
+    delete process.env.RESEND_API_KEY;
+    await expect(
+      notifications().reconcileInvoiceDelivery(scope),
+    ).rejects.toBeInstanceOf(InvoiceDeliveryPendingError);
+    expect(row).toMatchObject(before);
+    expect(row.lastError).toBe("configuration_unavailable");
+    expect(requests).toHaveLength(1);
+    process.env.RESEND_API_KEY = "fixture-restored-key";
+    await notifications().reconcileInvoiceDelivery(scope);
+    expect(actualDeliveries).toBe(1);
+    expect(requests[1]?.body).toBe(requests[0]?.body);
+    expect(requests[1]?.key).toBe(requests[0]?.key);
+  });
+
+  test("accepted receipt finalizes with missing key and missing identity", async () => {
+    failFinalizeOnce = true;
+    await expect(send()).rejects.toBeInstanceOf(InvoiceDeliveryPendingError);
+    delete process.env.RESEND_API_KEY;
+    delete process.env.EMAIL_FROM;
+    delete process.env.DASHBOARD_URL;
+    const recovered = await notifications().reconcileInvoiceDelivery(scope);
+    expect(recovered.emails.recorded).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(activitiesCreated).toBe(1);
+  });
+
   test("durable mode cannot silently override an explicit sendEmail=false", async () => {
     await expect(
       notifications().create(

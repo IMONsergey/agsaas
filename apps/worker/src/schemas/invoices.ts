@@ -54,6 +54,11 @@ export const generateInvoiceSchema = z.object({
   deliveryType: z.enum(["create", "create_and_send"]),
   // Optional for manual/recurring generation; required on a delayed handoff.
   expectedScheduledJobId: z.string().min(1).optional(),
+  // SQL queue intents retain the same delivery identity even after Redis loss.
+  deliveryKey: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
 });
 
 export type GenerateInvoicePayload = z.infer<typeof generateInvoiceSchema>;

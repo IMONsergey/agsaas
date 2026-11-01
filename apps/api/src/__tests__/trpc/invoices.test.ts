@@ -308,6 +308,11 @@ describe("tRPC: invoice.draft", () => {
 
 describe("tRPC: invoice.createFromTracker currency", () => {
   beforeEach(() => {
+    mocks.allocateTrackerEntriesToInvoice.mockReset();
+    mocks.getUnbilledTrackerEntriesForInvoice.mockReset();
+    mocks.getUnbilledTrackerEntriesForInvoice.mockImplementation(async () =>
+      Object.values((await mocks.getTrackerRecordsByRange()).result).flat(),
+    );
     mocks.draftInvoice.mockReset();
     mocks.draftInvoice.mockImplementation(() => ({ id: INVOICE_ID }));
     mocks.getTrackerProjectById.mockReset();
@@ -321,7 +326,7 @@ describe("tRPC: invoice.createFromTracker currency", () => {
     }));
     mocks.getTrackerRecordsByRange.mockReset();
     mocks.getTrackerRecordsByRange.mockImplementation(() => ({
-      result: { "2026-06-01": [{ duration: 7200 }] },
+      result: { "2026-06-01": [{ id: INVOICE_ID, duration: 7200 }] },
     }));
     mocks.getInvoiceTemplate.mockReset();
     mocks.getInvoiceTemplate.mockImplementation(() => ({
@@ -352,6 +357,13 @@ describe("tRPC: invoice.createFromTracker currency", () => {
         ]),
       }),
     );
+    expect(mocks.allocateTrackerEntriesToInvoice).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        teamId: "test-team-id",
+        entryIds: [INVOICE_ID],
+      }),
+    );
   });
 
   test("falls back to team currency, not template currency, when the project has none", async () => {
@@ -375,6 +387,60 @@ describe("tRPC: invoice.createFromTracker currency", () => {
         template: expect.objectContaining({ currency: "USD" }),
       }),
     );
+  });
+  test("historical rate and currency snapshots win over changed project terms", async () => {
+    mocks.getTrackerProjectById.mockImplementation(() => ({
+      id: INVOICE_ID,
+      name: "Work",
+      billable: true,
+      rate: 999,
+      currency: "EUR",
+      customerId: null,
+    }));
+    mocks.getTrackerRecordsByRange.mockImplementation(() => ({
+      result: {
+        "2026-06-01": [
+          { duration: 7200, rate: 100, currency: "USD" },
+          { duration: 3600, rate: 150, currency: "USD" },
+        ],
+      },
+    }));
+    await createCaller(createTestContext()).createFromTracker({
+      projectId: INVOICE_ID,
+      dateFrom: "2026-06-01",
+      dateTo: "2026-06-30",
+    });
+    expect(mocks.draftInvoice).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        currency: "USD",
+        amount: 350,
+        lineItems: expect.arrayContaining([
+          expect.objectContaining({ quantity: 2, price: 100 }),
+          expect.objectContaining({ quantity: 1, price: 150 }),
+        ]),
+      }),
+    );
+  });
+
+  test("mixed historical currencies require separate invoices instead of relabeling amounts", async () => {
+    mocks.getTrackerRecordsByRange.mockImplementation(() => ({
+      result: {
+        "2026-06-01": [
+          { duration: 3600, rate: 100, currency: "USD" },
+          { duration: 3600, rate: 100, currency: "EUR" },
+        ],
+      },
+    }));
+    await expect(
+      createCaller(createTestContext()).createFromTracker({
+        projectId: INVOICE_ID,
+        dateFrom: "2026-06-01",
+        dateTo: "2026-06-30",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.draftInvoice).not.toHaveBeenCalled();
+    expect(mocks.getNextInvoiceNumber).not.toHaveBeenCalled();
   });
 });
 
@@ -684,5 +750,38 @@ describe("tRPC: invoice.newCustomersCount", () => {
     expect(mocks.getNewCustomersCount).toHaveBeenCalledWith(expect.anything(), {
       teamId: "test-team-id",
     });
+  });
+});
+
+describe("tRPC: public invoice publication boundary", () => {
+  beforeEach(() => {
+    mocks.getPublishedInvoiceById.mockReset();
+    mocks.getInvoiceById.mockReset();
+  });
+
+  test("never falls back to the internal invoice query for a valid draft token", async () => {
+    mocks.getPublishedInvoiceById.mockImplementation(() => null);
+    for (const session of [null, createTestContext().session]) {
+      const caller = createCaller({ ...createTestContext(), session });
+      await expect(
+        caller.getInvoiceByToken({ token: "fixture-valid-token" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(mocks.getInvoiceById).not.toHaveBeenCalled();
+  });
+
+  test("public token access uses the publication-filtered reader", async () => {
+    mocks.getPublishedInvoiceById.mockImplementation(() =>
+      createValidInvoiceResponse(),
+    );
+    const caller = createCaller({ ...createTestContext(), session: null });
+    expect(
+      await caller.getInvoiceByToken({ token: "fixture-valid-token" }),
+    ).toBeDefined();
+    expect(mocks.getPublishedInvoiceById).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: "invoice-123" },
+    );
+    expect(mocks.getInvoiceById).not.toHaveBeenCalled();
   });
 });

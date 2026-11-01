@@ -41,6 +41,17 @@ import type {
 // ranks, duplicate jobs, or imply a global sort of the complete Redis archive.
 const SORT_CANDIDATES_PER_STATE = 1000;
 
+// The portable BullMQ client exposes custom commands, but not score-range
+// overloads. Keep this read-only query bounded and scoped to one queue key.
+const FINISHED_RANGE_COMMAND = "workbenchFinishedRangeV1";
+const FINISHED_RANGE_LUA = `
+if ARGV[4] == 'asc' then
+  return redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[2], 'LIMIT', 0, ARGV[3])
+end
+return redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[2], ARGV[1], 'LIMIT', 0, ARGV[3])
+`;
+const rangeCommandClients = new WeakSet<object>();
+
 /**
  * Manages queue operations for the Workbench dashboard
  */
@@ -164,27 +175,31 @@ export class QueueManager {
       // BullMQ exposes a promise, and the queue owns its configured prefix.
       const client = await queue.client;
       const queueKey = queue.toKey(status);
+      if (!rangeCommandClients.has(client)) {
+        client.defineCommand(FINISHED_RANGE_COMMAND, {
+          numberOfKeys: 1,
+          lua: FINISHED_RANGE_LUA,
+          readOnly: true,
+        });
+        rangeCommandClients.add(client);
+      }
       // Select candidates in the requested order before LIMIT. Sorting an
       // ascending, truncated range later cannot recover the newest jobs.
-      const jobIds = ascending
-        ? await client.zrangebyscore(
-            queueKey,
-            startTime,
-            endTime,
-            "LIMIT",
-            0,
-            limit,
-          )
-        : await client.zrevrangebyscore(
-            queueKey,
-            endTime,
-            startTime,
-            "LIMIT",
-            0,
-            limit,
-          );
+      const jobIds: unknown = await client.runCommand(FINISHED_RANGE_COMMAND, [
+        queueKey,
+        startTime,
+        endTime,
+        limit,
+        ascending ? "asc" : "desc",
+      ]);
+      if (
+        !Array.isArray(jobIds) ||
+        !jobIds.every((jobId: unknown) => typeof jobId === "string")
+      ) {
+        throw new Error("Invalid Redis range response");
+      }
 
-      if (!jobIds || jobIds.length === 0) {
+      if (jobIds.length === 0) {
         return [];
       }
 

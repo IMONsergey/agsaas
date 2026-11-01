@@ -12,7 +12,10 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import type { Context } from "hono";
 import superjson from "superjson";
 import { withPrimaryReadAfterWrite } from "./middleware/primary-read-after-write";
-import { withTeamPermission } from "./middleware/team-permission";
+import {
+  requireTrpcSessionMfa,
+  withTeamPermission,
+} from "./middleware/team-permission";
 
 const DEBUG_PERF = process.env.DEBUG_PERF === "true";
 const perfLogger = createLoggerWithContext("perf:trpc");
@@ -179,6 +182,8 @@ export const protectedOrInternalProcedure = t.procedure
     if (!session) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
     }
+
+    await requireTrpcSessionMfa(session);
 
     return opts.next({
       ctx: {

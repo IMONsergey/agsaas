@@ -1,3 +1,4 @@
+import { isOwnPublicAvatarUrl } from "@api/utils/public-avatar-url";
 import { z } from "@hono/zod-openapi";
 
 export const teamResponseSchema = z.object({
@@ -11,7 +12,8 @@ export const teamResponseSchema = z.object({
   }),
   logoUrl: z.string().url().nullable().openapi({
     description: "URL to the team's logo image",
-    example: "https://cdn.midday.ai/logos/acme-corp.png",
+    example:
+      "https://storage.example.com/storage/v1/object/public/avatars/team-id/logo.png",
   }),
   plan: z.enum(["trial", "starter", "pro"]).openapi({
     description: "Current subscription plan of the team",
@@ -69,24 +71,6 @@ export const getTeamByIdSchema = z.object({
     }),
 });
 
-/**
- * Validates that a URL is hosted on a trusted midday.ai domain.
- * Prevents SSRF by checking the hostname, not just URL contents.
- */
-function isValidMiddayUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase();
-    return (
-      hostname === "cdn.midday.ai" ||
-      hostname === "midday.ai" ||
-      hostname.endsWith(".midday.ai")
-    );
-  } catch {
-    return false;
-  }
-}
-
 export const updateTeamByIdSchema = z.object({
   name: z.string().min(2).max(32).optional().openapi({
     description:
@@ -100,14 +84,15 @@ export const updateTeamByIdSchema = z.object({
   logoUrl: z
     .string()
     .url()
-    .refine(isValidMiddayUrl, {
-      message: "logoUrl must be hosted on midday.ai domain",
+    .refine((url) => isOwnPublicAvatarUrl(url), {
+      message: "logoUrl must be a public avatar URL from this installation",
     })
     .optional()
     .openapi({
       description:
-        "URL to the team's logo image. Must be hosted on midday.ai domain",
-      example: "https://cdn.midday.ai/logos/acme-corp.png",
+        "Public logo object URL from this installation's Supabase avatars bucket",
+      example:
+        "https://storage.example.com/storage/v1/object/public/avatars/team-id/logo.png",
     }),
   baseCurrency: z.string().optional().openapi({
     description:
@@ -205,10 +190,19 @@ export const createTeamSchema = z.object({
         "Month when the fiscal year starts (1-12). Null for trailing 12 months. Will default based on country if not specified.",
       example: 4,
     }),
-  logoUrl: z.string().url().optional().openapi({
-    description: "URL to the team's logo image",
-    example: "https://cdn.midday.ai/logos/acme-corp.png",
-  }),
+  logoUrl: z
+    .string()
+    .url()
+    .refine((url) => isOwnPublicAvatarUrl(url), {
+      message: "logoUrl must be a public avatar URL from this installation",
+    })
+    .optional()
+    .openapi({
+      description:
+        "Public logo object URL from this installation's Supabase avatars bucket",
+      example:
+        "https://storage.example.com/storage/v1/object/public/avatars/team-id/logo.png",
+    }),
   companyType: z
     .enum([
       "freelancer",

@@ -16,5 +16,3 @@ export const LocalStorageKeys = {
   McpBannerDismissed: "mcp-banner-dismissed",
   SunsetBannerDismissed: "sunset-banner-dismissed",
 };
-
-export const SUPPORT_EMAIL = "support@midday.ai";

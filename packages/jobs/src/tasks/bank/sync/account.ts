@@ -1,6 +1,7 @@
 import { parseAPIError } from "@jobs/utils/parse-error";
 import { getClassification } from "@jobs/utils/transform";
 import { createClient } from "@midday/supabase/job";
+import type { Database } from "@midday/supabase/types";
 import { trpc } from "@midday/trpc";
 import { logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
@@ -84,13 +85,14 @@ export const syncAccount = schemaTask({
       // Update balance (including zero/negative for overdrafts) and reset errors
       // Only skip update if balance is null (provider didn't return a balance)
       if (balance !== null) {
-        const updatePayload: Record<string, unknown> = {
-          balance,
-          available_balance: balanceData?.available_balance ?? null,
-          credit_limit: balanceData?.credit_limit ?? null,
-          error_details: null,
-          error_retries: null,
-        };
+        const updatePayload: Database["public"]["Tables"]["bank_accounts"]["Update"] =
+          {
+            balance,
+            available_balance: balanceData?.available_balance ?? null,
+            credit_limit: balanceData?.credit_limit ?? null,
+            error_details: null,
+            error_retries: null,
+          };
 
         if (needsCurrencyHeal && balanceCurrencyValid) {
           updatePayload.currency = balanceData.currency;

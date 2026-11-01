@@ -13,6 +13,7 @@ import { format } from "date-fns";
 import { useCallback, useEffect, useRef } from "react";
 import { useFormContext } from "react-hook-form";
 import { SavingBar } from "@/components/saving-bar";
+import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { useTemplateUpdate } from "@/hooks/use-template-update";
 import { useUserQuery } from "@/hooks/use-user";
@@ -149,7 +150,10 @@ export function EmailPreview() {
   const invoiceNoLabel =
     (watch("template.invoiceNoLabel") as string) || "Invoice";
   const includePdf = watch("template.includePdf") as boolean;
-  const token = watch("token") as string | null;
+  const documentId = watch("id") as string | undefined;
+  const { url: pdfUrl } = useFileUrl(
+    documentId ? { type: "invoice", invoiceId: documentId } : null,
+  );
 
   const emailSubject = watch("template.emailSubject") as string | null;
   const emailHeading = watch("template.emailHeading") as string | null;
@@ -328,14 +332,11 @@ export function EmailPreview() {
             <button
               type="button"
               onClick={() => {
-                if (!token) return;
+                if (!pdfUrl) return;
                 const filename = invoiceNumber
                   ? `invoice-${invoiceNumber}.pdf`
                   : "invoice.pdf";
-                downloadFile(
-                  `${process.env.NEXT_PUBLIC_API_URL}/files/download/invoice?token=${token}`,
-                  filename,
-                );
+                downloadFile(pdfUrl, filename);
               }}
               className="mx-6 mb-4 flex items-center gap-2 px-3 py-2 border border-border hover:bg-accent transition-colors cursor-pointer text-left w-auto"
             >

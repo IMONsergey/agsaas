@@ -1,60 +1,46 @@
 import { Card } from "@midday/ui/card";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { ManageSubscription } from "@/components/manage-subscription";
 import { Orders } from "@/components/orders";
+import { SubscriptionOptions } from "@/components/subscription-options";
 import { getQueryClient, prefetch, trpc } from "@/trpc/server";
 
-export const metadata: Metadata = {
-  title: "Billing | Midday",
-};
+export const metadata: Metadata = { title: "Billing | AGSaaS" };
 
 export default async function Billing() {
   const queryClient = getQueryClient();
-  const user = await queryClient.fetchQuery(trpc.user.me.queryOptions());
-
+  const [user, capabilities] = await Promise.all([
+    queryClient.fetchQuery(trpc.user.me.queryOptions()),
+    queryClient.fetchQuery(trpc.apps.capabilities.queryOptions()),
+  ]);
+  if (!capabilities.billing.enabled)
+    return (
+      <div className="space-y-4">
+        <h2 className="text-lg font-medium">Billing</h2>
+        <Card className="p-4 space-y-2">
+          <p className="text-sm font-medium">Self-hosted workspace</p>
+          <p className="text-sm text-muted-foreground">
+            Subscriptions are not enabled for this installation. Billing setup
+            is managed by your workspace administrator.
+          </p>
+        </Card>
+      </div>
+    );
   const team = user?.team;
-
   prefetch(
     trpc.billing.orders.infiniteQueryOptions(
-      {
-        pageSize: 15,
-      },
-      {
-        getNextPageParam: ({ meta }) => meta?.cursor,
-      },
+      { pageSize: 15 },
+      { getNextPageParam: ({ meta }) => meta?.cursor },
     ),
   );
-
   return (
     <div className="space-y-12">
-      {team?.plan !== "trial" && <ManageSubscription />}
-
-      {team?.plan === "trial" && (
-        <div>
-          <h2 className="text-lg font-medium leading-none tracking-tight mb-4">
-            Subscription
-          </h2>
-
-          <Card className="flex flex-col gap-2 p-4">
-            <p className="text-sm font-medium">Midday is joining Ramp</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              We're winding Midday down. Your account stays fully active —
-              there's nothing to subscribe to and you won't be charged. Read
-              more on the{" "}
-              <Link
-                href="https://midday.ai/updates/joining-ramp"
-                className="underline hover:text-foreground transition-colors"
-              >
-                announcement post
-              </Link>
-              .
-            </p>
-          </Card>
-        </div>
+      {team?.plan !== "trial" ? (
+        <ManageSubscription />
+      ) : (
+        <SubscriptionOptions />
       )}
-
-      {(team?.plan !== "trial" || team?.canceledAt !== null) && <Orders />}
+      <Orders />
     </div>
   );
 }

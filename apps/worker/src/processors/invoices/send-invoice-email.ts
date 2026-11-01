@@ -2,7 +2,7 @@ import {
   canSendInvoiceEmail,
   deferInvoiceEmailFinalization,
   finalizeInvoiceEmailDelivery,
-  getInvoiceById,
+  getInvoiceDocumentById,
   getInvoiceEmailDelivery,
   INVOICE_EMAIL_ENVELOPE_MAX_BYTES,
   isCurrentInvoiceSchedule,
@@ -40,7 +40,7 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
     });
 
     // Fetch invoice with related data
-    const invoice = await getInvoiceById(db, { id: invoiceId });
+    const invoice = await getInvoiceDocumentById(db, { id: invoiceId });
 
     if (!invoice) {
       this.logger.error("Invoice not found", { invoiceId });
@@ -138,7 +138,7 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
 
       // Preparing an attachment may take time. Recheck before sending; payments
       // during the subsequent provider call are handled by the atomic write.
-      const current = await getInvoiceById(db, {
+      const current = await getInvoiceDocumentById(db, {
         id: invoiceId,
         teamId: invoice.teamId,
       });

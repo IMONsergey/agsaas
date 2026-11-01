@@ -14,6 +14,7 @@ import { AppConnectionToast } from "@/components/app-connection-toast";
 import { ConnectIMessage } from "@/components/inbox/connect-imessage";
 import { ConnectTelegram } from "@/components/inbox/connect-telegram";
 import { ConnectWhatsApp } from "@/components/inbox/connect-whatsapp";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
 import { isOAuthMessage } from "@/utils/oauth-message";
@@ -23,6 +24,7 @@ export function Apps() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { data: user } = useUserQuery();
+  const { data: capabilities } = useInstanceCapabilities();
   const router = useRouter();
 
   // Global listener for OAuth completion messages
@@ -108,7 +110,17 @@ export function Apps() {
       id: app.id,
       name: app.name,
       category: "category" in app ? app.category : "Integration",
-      active: app.active,
+      active:
+        app.active &&
+        (app.id.endsWith("-mcp") ||
+          capabilities?.integrations[app.id]?.enabled === true),
+      unavailableReason:
+        app.active &&
+        !app.id.endsWith("-mcp") &&
+        !capabilities?.integrations[app.id]?.enabled
+          ? (capabilities?.integrations[app.id]?.reason ??
+            "Configuration status is unavailable")
+          : undefined,
       beta:
         "beta" in app && typeof app.beta === "boolean" ? app.beta : undefined,
       logo: app.logo,

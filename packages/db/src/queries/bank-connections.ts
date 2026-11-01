@@ -2,6 +2,15 @@ import { decrypt, encrypt } from "@midday/encryption";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "../client";
 import { bankAccounts, bankConnections } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireTeamMember,
+} from "../utils/team-membership";
+import {
+  getBankConnectionCleanupStatus,
+  retainBankConnectionCleanup,
+} from "./bank-connection-cleanups";
 
 export type GetBankConnectionsParams = {
   teamId: string;
@@ -64,24 +73,40 @@ export const getBankConnections = async (
 type DeleteBankConnectionParams = {
   id: string;
   teamId: string;
+  actorId: string;
 };
 
 export const deleteBankConnection = async (
   db: Database,
   params: DeleteBankConnectionParams,
 ) => {
-  const { id, teamId } = params;
+  const { id, teamId, actorId } = params;
 
-  const [result] = await db
-    .delete(bankConnections)
-    .where(and(eq(bankConnections.id, id), eq(bankConnections.teamId, teamId)))
-    .returning({
-      referenceId: bankConnections.referenceId,
-      provider: bankConnections.provider,
-      accessToken: bankConnections.accessToken,
-    });
-
-  return result;
+  return db.transaction(async (tx) => {
+    await lockUserMembership(tx, actorId);
+    const members = await lockTeamMembership(tx, teamId);
+    requireTeamMember(members, actorId);
+    const [connection] = await tx
+      .select()
+      .from(bankConnections)
+      .where(
+        and(eq(bankConnections.id, id), eq(bankConnections.teamId, teamId)),
+      )
+      .for("update");
+    if (!connection) {
+      const previous = await getBankConnectionCleanupStatus(tx, id, teamId);
+      return previous
+        ? { id, cleanupId: previous.id, cleanupStatus: previous.status }
+        : null;
+    }
+    const cleanup = await retainBankConnectionCleanup(tx, connection);
+    await tx
+      .delete(bankConnections)
+      .where(
+        and(eq(bankConnections.id, id), eq(bankConnections.teamId, teamId)),
+      );
+    return { id, cleanupId: cleanup.id, cleanupStatus: cleanup.status };
+  });
 };
 
 export type CreateBankConnectionPayload = {

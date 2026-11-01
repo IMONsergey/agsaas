@@ -13,7 +13,7 @@ import { loadInboxParams } from "@/hooks/use-inbox-params";
 import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Inbox | Midday",
+  title: "Inbox | AGSaaS",
 };
 
 type Props = {

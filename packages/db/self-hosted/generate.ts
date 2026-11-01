@@ -34,6 +34,8 @@ type SnapshotTable = {
   policies: Record<string, unknown>;
   isRLSEnabled: boolean;
   uniqueConstraints?: Record<string, unknown>;
+  indexes?: Record<string, unknown>;
+  checkConstraints?: Record<string, unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -90,7 +92,10 @@ function isTable(value: unknown): value is SnapshotTable {
     isRecordOf(value.foreignKeys, isForeignKey) &&
     isRecord(value.policies) &&
     typeof value.isRLSEnabled === "boolean" &&
-    (value.uniqueConstraints === undefined || isRecord(value.uniqueConstraints))
+    (value.uniqueConstraints === undefined ||
+      isRecord(value.uniqueConstraints)) &&
+    (value.indexes === undefined || isRecord(value.indexes)) &&
+    (value.checkConstraints === undefined || isRecord(value.checkConstraints))
   );
 }
 

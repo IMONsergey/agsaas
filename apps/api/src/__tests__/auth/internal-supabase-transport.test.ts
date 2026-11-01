@@ -99,6 +99,7 @@ describe("actual API internal Supabase transport wiring", () => {
     const token = await signToken();
     expect(await verifyAccessToken(token)).toEqual({
       user: { id: userId, email, full_name: "Fixture User" },
+      aal: "aal1",
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe(`${internal}/auth/v1/.well-known/jwks.json`);

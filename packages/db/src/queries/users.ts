@@ -8,8 +8,19 @@ import {
   requireTeamMember,
   requireTeamOwner,
 } from "../utils/team-membership";
+import { retainTeamBankConnectionCleanups } from "./bank-connection-cleanups";
 
-export const getUserById = async (db: Database, id: string) => {
+export const getUserById = async (
+  db: Database,
+  id: string,
+  context?: { teamId: string | null },
+) => {
+  // Scoped credentials must not inherit a different active profile team.
+  // Undefined preserves the dashboard/profile lookup; explicit null selects
+  // no team for an authenticated user still completing onboarding.
+  const selectedTeamId = context
+    ? sql<string | null>`${context.teamId}::uuid`
+    : users.teamId;
   const [result] = await db
     .select({
       id: users.id,
@@ -22,7 +33,7 @@ export const getUserById = async (db: Database, id: string) => {
       weekStartsOnMonday: users.weekStartsOnMonday,
       timezone: users.timezone,
       timezoneAutoSync: users.timezoneAutoSync,
-      teamId: users.teamId,
+      teamId: selectedTeamId,
       deletionStartedAt: users.deletionStartedAt,
       team: {
         id: teams.id,
@@ -39,7 +50,7 @@ export const getUserById = async (db: Database, id: string) => {
       },
     })
     .from(users)
-    .leftJoin(teams, eq(users.teamId, teams.id))
+    .leftJoin(teams, eq(teams.id, selectedTeamId))
     .where(eq(users.id, id));
 
   return result;
@@ -165,6 +176,7 @@ export const deleteUser = async (
     }
 
     for (const teamId of soloTeams) {
+      await retainTeamBankConnectionCleanups(tx, teamId);
       await tx.delete(teams).where(eq(teams.id, teamId));
     }
     await tx.delete(usersOnTeam).where(eq(usersOnTeam.userId, id));

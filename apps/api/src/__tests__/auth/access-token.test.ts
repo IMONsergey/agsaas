@@ -105,6 +105,10 @@ mock.module("@midday/db/queries", () => ({
   getTeamMembersByTeamId: unexpectedOperation,
   getTeamsByUserId: unexpectedOperation,
   getUserById: unexpectedOperation,
+  getUserTeamId: unexpectedOperation,
+  getApiKeyByToken: unexpectedOperation,
+  validateAccessToken: unexpectedOperation,
+  updateApiKeyLastUsedAt: unexpectedOperation,
   hasTeamAccess: unexpectedOperation,
   leaveTeam: unexpectedOperation,
   switchUserTeam: unexpectedOperation,
@@ -128,7 +132,15 @@ mock.module("@midday/cache/replication-cache", () => ({
 }));
 mock.module("@api/services/supabase", () => ({
   createClient: unexpectedOperation,
-  createAdminClient: unexpectedOperation,
+  createAdminClient: async () => ({
+    auth: {
+      admin: {
+        mfa: {
+          listFactors: async () => ({ data: { factors: [] }, error: null }),
+        },
+      },
+    },
+  }),
 }));
 mock.module("@api/services/resend", () => ({
   resend: { contacts: { remove: unexpectedOperation } },
@@ -183,6 +195,7 @@ describe("signed access-token identity", () => {
     );
 
     expect(await verifyAccessToken(token)).toEqual({
+      aal: "aal1",
       user: { id: actorId, email: actorEmail, full_name: "Local User" },
     });
   });

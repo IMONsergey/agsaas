@@ -4,6 +4,11 @@ import { createAdminClient } from "@api/services/supabase";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getTeamByInboxId } from "@midday/db/queries";
 import { getAllowedAttachments } from "@midday/documents";
+import {
+  getProductEmailConfig,
+  isProductEmailSender,
+  requireProductEmailReceipt,
+} from "@midday/email/config";
 import { getInboxIdFromEmail, inboxWebhookPostSchema } from "@midday/inbox";
 import { logger } from "@midday/logger";
 import { basicAuth } from "hono/basic-auth";
@@ -11,7 +16,6 @@ import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
 import {
   ALLOWED_FORWARDING_EMAILS,
-  FORWARD_FROM_EMAIL,
   filterAttachments,
   POSTMARK_IP_RANGE,
   triggerProcessingJobs,
@@ -183,7 +187,7 @@ app.openapi(
     });
 
     // Ignore emails from our own domain to fix infinite loop
-    if (FromFull.Email === FORWARD_FROM_EMAIL) {
+    if (isProductEmailSender(FromFull.Email)) {
       logger.info("Ignoring email from own domain", {
         messageId: MessageID,
         inboxId,
@@ -226,17 +230,21 @@ app.openapi(
           messageId: MessageID,
         });
 
-        await resend.emails.send({
-          from: `${FromFull?.Name} <${FORWARD_FROM_EMAIL}>`,
-          to: teamData.email,
-          subject: Subject ?? FromFull?.Name,
-          text: TextBody,
-          html: HtmlBody,
-          react: null,
-          headers: {
-            "X-Entity-Ref-ID": nanoid(),
-          },
-        });
+        const config = getProductEmailConfig();
+        requireProductEmailReceipt(
+          await resend.emails.send({
+            from: config.from,
+            replyTo: config.replyTo,
+            to: teamData.email,
+            subject: Subject ?? FromFull?.Name,
+            text: TextBody,
+            html: HtmlBody,
+            react: null,
+            headers: {
+              "X-Entity-Ref-ID": nanoid(),
+            },
+          }),
+        );
 
         return c.json({ success: true });
       }

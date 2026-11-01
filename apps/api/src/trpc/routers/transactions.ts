@@ -15,6 +15,7 @@ import {
   updateTransactionsSchema,
 } from "@api/schemas/transactions";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { FinancialOperationConflictError } from "@midday/db/financial-job";
 import {
   createTransaction,
   deleteTransactions,
@@ -130,32 +131,22 @@ export const transactionsRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createTransactionSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
-      const transaction = await createTransaction(db, {
-        ...input,
-        teamId: teamId!,
-      });
+      try {
+        const transaction = await createTransaction(db, {
+          ...input,
+          teamId: teamId!,
+        });
 
-      if (transaction?.id) {
-        await triggerJob(
-          "enrich-transactions",
-          {
-            transactionIds: [transaction.id],
-            teamId: teamId!,
-          },
-          "transactions",
-        );
-
-        await triggerJob(
-          "match-transactions-bidirectional",
-          {
-            teamId: teamId!,
-            newTransactionIds: [transaction.id],
-          },
-          "inbox",
-        );
+        return transaction;
+      } catch (error) {
+        if (error instanceof FinancialOperationConflictError)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: error.message,
+            cause: error,
+          });
+        throw error;
       }
-
-      return transaction;
     }),
 
   export: protectedProcedure

@@ -115,7 +115,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       });
     });
 
-    test("reservation prevents financial edits but allows metadata without changing its stored request", async () => {
+    test("reservation prevents financial and identity edits but allows metadata without changing its stored request", async () => {
       await withInvoice(async (tx, f) => {
         const reservation = await reserveInvoicePayment(tx, f);
         await expect(
@@ -124,11 +124,22 @@ describe.skipIf(!isTestDatabaseAvailable())(
             lineItems: [{ price: 200, quantity: 1 }],
           }),
         ).rejects.toBeInstanceOf(InvoiceFinancialStateError);
+        await expect(
+          draftInvoice(tx, {
+            ...draftInput(f),
+            invoiceNumber: "INV-002",
+          }),
+        ).rejects.toBeInstanceOf(InvoiceFinancialStateError);
         const saved = await draftInvoice(tx, {
           ...draftInput(f),
-          invoiceNumber: "INV-002",
+          dueDate: "2026-12-15T00:00:00.000Z",
+          noteDetails: JSON.stringify({ type: "doc", content: [] }),
         });
         expect(saved.amount).toBe(120.05);
+        expect(saved.invoiceNumber).toBe("INV-001");
+        expect(new Date(saved.dueDate!).toISOString()).toBe(
+          "2026-12-15T00:00:00.000Z",
+        );
         const again = await reserveInvoicePayment(tx, f);
         expect(again.id).toBe(reservation.id);
         expect(again.invoiceNumber).toBe("INV-001");

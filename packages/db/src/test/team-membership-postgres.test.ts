@@ -13,10 +13,16 @@ import {
   updateTeamMember,
 } from "../queries/teams";
 import { acceptTeamInvite, createTeamInvites } from "../queries/user-invites";
-import { deleteUser, switchUserTeam } from "../queries/users";
+import { deleteUser, getUserById, switchUserTeam } from "../queries/users";
 import { withReplicas } from "../replicas";
 import { runtimeSchema } from "../runtime-schema";
-import { teams, userInvites, users, usersOnTeam } from "../schema";
+import {
+  bankConnectionCleanups,
+  teams,
+  userInvites,
+  users,
+  usersOnTeam,
+} from "../schema";
 import {
   closeDatabase,
   getTestDatabase,
@@ -89,6 +95,27 @@ describe.skipIf(!isTestDatabaseAvailable())(
       }
     }
 
+    test("credential-scoped profile resolves its own team without changing the active profile", async () => {
+      await withFixture(async (f) => {
+        await db.insert(usersOnTeam).values({
+          userId: f.owner,
+          teamId: f.otherTeamId,
+          role: "member",
+        });
+        const selected = await getUserById(db, f.owner, {
+          teamId: f.otherTeamId,
+        });
+        expect(selected?.teamId).toBe(f.otherTeamId);
+        expect(selected?.team?.id).toBe(f.otherTeamId);
+        const original = await getUserById(db, f.owner);
+        expect(original?.teamId).toBe(f.teamId);
+        expect(original?.team?.id).toBe(f.teamId);
+        const noTeam = await getUserById(db, f.owner, { teamId: null });
+        expect(noTeam?.teamId).toBeNull();
+        expect(noTeam?.team).toBeNull();
+      });
+    });
+
     async function members(teamId: string) {
       return db
         .select()
@@ -153,11 +180,15 @@ describe.skipIf(!isTestDatabaseAvailable())(
     for (const actor of ["member", "outsider"] as const) {
       test(`${actor} cannot delete a team or queue its cleanup`, async () => {
         await withFixture(async (f) => {
-          const cleanup = mock(async () => {});
           await expect(
-            deleteTeam(db, { teamId: f.teamId, userId: f[actor] }, cleanup),
+            deleteTeam(db, { teamId: f.teamId, userId: f[actor] }),
           ).rejects.toBeInstanceOf(TeamMembershipError);
-          expect(cleanup).not.toHaveBeenCalled();
+          expect(
+            await db
+              .select()
+              .from(bankConnectionCleanups)
+              .where(eq(bankConnectionCleanups.teamId, f.teamId)),
+          ).toHaveLength(0);
           expect(await teamExists(f.teamId)).toBe(true);
           expect(await members(f.teamId)).toHaveLength(3);
         });
@@ -170,30 +201,27 @@ describe.skipIf(!isTestDatabaseAvailable())(
           .update(users)
           .set({ teamId: null })
           .where(eq(users.id, f.owner));
-        const cleanup = mock(async () => {});
-        const result = await deleteTeam(
-          db,
-          { teamId: f.teamId, userId: f.owner },
-          cleanup,
-        );
+        const result = await deleteTeam(db, {
+          teamId: f.teamId,
+          userId: f.owner,
+        });
         expect(result?.memberUserIds.sort()).toEqual(
           [f.owner, f.coOwner, f.member].sort(),
         );
-        expect(cleanup).toHaveBeenCalledTimes(1);
+        expect(result?.cleanupPending).toBe(0);
         expect(await teamExists(f.teamId)).toBe(false);
         expect(await teamExists(f.otherTeamId)).toBe(true);
       });
     });
 
-    test("cleanup enqueue failure rolls back team deletion", async () => {
+    test("a deletion retry cannot reuse authorization for a deleted team", async () => {
       await withFixture(async (f) => {
+        await deleteTeam(db, { teamId: f.teamId, userId: f.owner });
         await expect(
-          deleteTeam(db, { teamId: f.teamId, userId: f.owner }, async () => {
-            throw new Error("queue unavailable");
-          }),
-        ).rejects.toThrow("queue unavailable");
-        expect(await teamExists(f.teamId)).toBe(true);
-        expect(await members(f.teamId)).toHaveLength(3);
+          deleteTeam(db, { teamId: f.teamId, userId: f.owner }),
+        ).rejects.toBeInstanceOf(TeamMembershipError);
+        expect(await teamExists(f.teamId)).toBe(false);
+        expect(await teamExists(f.otherTeamId)).toBe(true);
       });
     });
 

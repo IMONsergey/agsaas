@@ -17,7 +17,9 @@ Source: owner-approved 40-block backlog supplied on 2026-10-31. Starting revisio
 - Verification and deployment evidence, remaining limitations and rollout requirements: [packet 01](agsaas-hardening-packet-01.md).
 - Implemented packet 02: author retention for team financial records, canonical stored invoice amounts, guarded financial editing and explicit delivery outcomes. Evidence: [packet 02](agsaas-hardening-packet-02.md).
 - Implemented packet 03: invoice payment reservations, durable invoice-email envelopes/receipts and team OAuth retention. The isolated matched-Supabase restore and upgrade drill now passes real SMTP OTP, tenant boundaries, empty-account deletion and browser onboarding; all 18 rehearsal services were healthy. Evidence and remaining limits: [packet 03](agsaas-hardening-packet-03.md).
-- The original stage remains at `d95ffa2`. Packets 01-03 are running only on the separate rehearsal copy. Same-host restore of the small snapshot is proven; off-host/PITR, nonempty Storage/financial restore, full provider lifecycle and production rollout remain open.
+- Implemented packet 04: the separate HTTPS preview, ordinary password sign-in and browser-tested customer/project/tracker/invoice workflows. Evidence: [public preview](agsaas-public-preview.md).
+- Implemented packet 05: access boundaries, durable financial and notification handoff, immutable issued documents, tracker allocations, provider cleanup, own instance configuration, password flows and dependency remediation. Detailed behavior and verification: [audit completion](agsaas-audit-completion.md).
+- The original stage remains at `d95ffa2`. The separate public preview and its release evidence are tracked in [PR 1](https://github.com/IMONsergey/agsaas/pull/1). The packet 05 backup drill restores PostgreSQL 17, configuration and nonempty private Storage on the same host; off-host/PITR and full live provider lifecycle remain open.
 - No block below is considered complete merely because one subtask has been implemented.
 
 ## Owner-approved backlog

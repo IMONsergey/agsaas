@@ -112,6 +112,7 @@ let durableRecoveries = 0;
 const queued: Array<{ name: string; payload: unknown }> = [];
 const documentsQueued: Array<{ name: string; payload: unknown }> = [];
 const fileWrites: Array<Record<string, unknown>> = [];
+const uploadedPaths: string[] = [];
 const notificationCalls: Array<{
   type: string;
   teamId: string;
@@ -134,6 +135,20 @@ mock.module("@midday/db/queries", () => ({
   canSendInvoiceReminder,
   isCurrentInvoiceSchedule,
   getInvoiceById: async () => {
+    const snapshot = invoiceMissing ? undefined : structuredClone(invoice);
+    afterRead?.();
+    return snapshot;
+  },
+  prepareInvoiceDocument: async (
+    _db: unknown,
+    params: { expectedScheduledJobId?: string },
+  ) =>
+    invoiceMissing ||
+    (params.expectedScheduledJobId !== undefined &&
+      !isCurrentInvoiceSchedule(invoice, params.expectedScheduledJobId))
+      ? null
+      : structuredClone(invoice),
+  getInvoiceDocumentById: async () => {
     const snapshot = invoiceMissing ? undefined : structuredClone(invoice);
     afterRead?.();
     return snapshot;
@@ -265,7 +280,8 @@ mock.module("@midday/supabase/job", () => ({
             duringAttachment?.();
             return { data: new Blob(["Fixture PDF"]), error: null };
           },
-          upload: async () => {
+          upload: async (path: string) => {
+            uploadedPaths.push(path);
             uploaded += 1;
             duringUpload?.();
             return { error: null };
@@ -386,6 +402,7 @@ beforeEach(() => {
   queued.length = 0;
   documentsQueued.length = 0;
   fileWrites.length = 0;
+  uploadedPaths.length = 0;
   notificationCalls.length = 0;
   writes.length = 0;
   networkAttempts = 0;
@@ -464,6 +481,27 @@ describe("scheduled invoice handoff", () => {
       expect(queued).toHaveLength(0);
     });
   }
+});
+
+describe("canonical invoice PDF identity", () => {
+  test("display numbers cannot select another PDF object, including raw and encoded traversal", async () => {
+    for (const invoiceNumber of [
+      "INV-1",
+      "../../another-team/invoices/INV-1",
+      "%2e%2e/%2e%2e/other",
+    ]) {
+      invoice.invoiceNumber = invoiceNumber;
+      await generateProcessor.handle(
+        generateJob({ invoiceId, deliveryType: "create" }),
+      );
+      expect(uploadedPaths.at(-1)).toBe(`${teamId}/invoices/${invoiceId}.pdf`);
+      expect(fileWrites.at(-1)?.filePath).toEqual([
+        teamId,
+        "invoices",
+        `${invoiceId}.pdf`,
+      ]);
+    }
+  });
 });
 
 describe("versioned scheduled invoice pipeline", () => {

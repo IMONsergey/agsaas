@@ -60,6 +60,23 @@ export function InvoiceActions({
   const { data: user } = useUserQuery();
   const [cancelSeriesOpen, setCancelSeriesOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const duplicateInvoice = useMutation(
+    trpc.invoice.duplicate.mutationOptions({
+      onSuccess: (invoice) => {
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoice.get.infiniteQueryKey(),
+        });
+        if (invoice?.id)
+          setParams({ invoiceId: invoice.id, invoiceType: "edit" });
+      },
+      onError: (error) =>
+        toast({
+          title: "Could not duplicate invoice",
+          description: error.message,
+          variant: "error",
+        }),
+    }),
+  );
 
   const canCancelSeries =
     invoiceRecurringId &&
@@ -454,10 +471,11 @@ export function InvoiceActions({
               size="sm"
               variant="secondary"
               className="flex items-center space-x-2 hover:bg-secondary w-full"
-              onClick={() => setParams({ invoiceId: id, invoiceType: "edit" })}
+              onClick={() => duplicateInvoice.mutate({ id })}
+              disabled={duplicateInvoice.isPending}
             >
               <Icons.Edit className="size-3.5" />
-              <span>Edit</span>
+              <span>Duplicate to correct</span>
             </Button>
 
             <DropdownMenu>

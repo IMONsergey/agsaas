@@ -1,5 +1,6 @@
 import { GenerateInvoiceProcessor } from "./generate-invoice";
 import { InvoiceRecurringSchedulerProcessor } from "./generate-recurring";
+import { ReconcileFinancialJobsProcessor } from "./reconcile-financial-jobs";
 import { ReconcileInvoiceDeliveriesProcessor } from "./reconcile-invoice-deliveries";
 import { ScheduleInvoiceProcessor } from "./schedule-invoice";
 import { SendInvoiceEmailProcessor } from "./send-invoice-email";
@@ -22,6 +23,7 @@ export { InvoiceUpcomingNotificationProcessor } from "./upcoming-notification";
  * Maps job names to processor instances
  */
 export const invoiceProcessors = {
+  "reconcile-financial-jobs": new ReconcileFinancialJobsProcessor(),
   "reconcile-invoice-deliveries": new ReconcileInvoiceDeliveriesProcessor(),
   "invoice-recurring-scheduler": new InvoiceRecurringSchedulerProcessor(),
   "invoice-upcoming-notification": new InvoiceUpcomingNotificationProcessor(),
