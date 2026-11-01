@@ -10,11 +10,14 @@ Source: owner-approved 40-block backlog supplied on 2026-10-31. Starting revisio
 - Existing private staging is not public production. Domain, external SMTP, provider accounts, legal choices, and off-host backup destination are separate release gates.
 - Paused Storage/file-export review remains excluded. No work from that WIP is implicitly included.
 
-## Current implementation packet
+## Current implementation packets
 
 - Implemented packet 01: financial query correctness (1), strict import profiles/precision/deduplication (2), transactional team ownership (3), retry-only account deletion and recovery UI (4), permanent-job retry handling and optional-AI search.
 - Independent membership candidate review found two blockers (late Auth completion and nested-pool starvation); the implementation now uses a durable deletion marker and no DB transaction across HTTP. Both cases have real PostgreSQL regression tests.
 - Verification and deployment evidence, remaining limitations and rollout requirements: [packet 01](agsaas-hardening-packet-01.md).
+- Implemented packet 02: author retention for team financial records, canonical stored invoice amounts, guarded financial editing and explicit delivery outcomes. Evidence: [packet 02](agsaas-hardening-packet-02.md).
+- Implemented packet 03: invoice payment reservations, durable invoice-email envelopes/receipts and team OAuth retention. The isolated matched-Supabase restore and upgrade drill now passes real SMTP OTP, tenant boundaries, empty-account deletion and browser onboarding; all 18 rehearsal services were healthy. Evidence and remaining limits: [packet 03](agsaas-hardening-packet-03.md).
+- The original stage remains at `d95ffa2`. Packets 01-03 are running only on the separate rehearsal copy. Same-host restore of the small snapshot is proven; off-host/PITR, nonempty Storage/financial restore, full provider lifecycle and production rollout remain open.
 - No block below is considered complete merely because one subtask has been implemented.
 
 ## Owner-approved backlog
