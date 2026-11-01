@@ -1,17 +1,27 @@
-import { calculateTotal } from "@midday/invoice/calculate";
-import { useCallback, useEffect } from "react";
+import type { InvoiceMoneyInput } from "@midday/invoice/calculate";
+import { useEffect } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { useTemplateUpdate } from "@/hooks/use-template-update";
+import { useInvoiceEditorStore } from "@/store/invoice-editor";
 import { AnimatedNumber } from "../animated-number";
 import { FormatAmount } from "../format-amount";
 import { AmountInput } from "./amount-input";
 import { LabelInput } from "./label-input";
 import { TaxInput } from "./tax-input";
+import { getInvoiceEditorSummary } from "./utils/summary-values";
 import { VATInput } from "./vat-input";
 
 export function Summary() {
-  const { control, setValue } = useFormContext();
+  const {
+    control,
+    setValue,
+    getValues,
+    formState: { defaultValues },
+  } = useFormContext();
   const { updateTemplate } = useTemplateUpdate();
+  const acknowledged = useInvoiceEditorStore(
+    (state) => state.financialSnapshot,
+  );
 
   const includeDecimals = useWatch({
     control,
@@ -70,56 +80,92 @@ export function Summary() {
     name: "discount",
   });
 
-  const {
-    subTotal,
-    total,
-    vat: totalVAT,
-    tax: totalTax,
-  } = calculateTotal({
+  const loaded = defaultValues as
+    | (InvoiceMoneyInput & {
+        status?: string;
+        id: string;
+        template?: InvoiceMoneyInput["template"] & {
+          includeDiscount?: boolean;
+        };
+      })
+    | undefined;
+  const initial = acknowledged?.id === getValues("id") ? acknowledged : loaded;
+  const summary = getInvoiceEditorSummary(initial, {
+    ...getValues(),
     lineItems,
-    taxRate,
-    vatRate,
-    includeVat,
-    includeTax,
-    includeLineItemTax,
-    discount: discount ?? 0,
+    discount,
+    template: {
+      currency,
+      taxRate,
+      vatRate,
+      includeVat,
+      includeTax,
+      includeLineItemTax,
+    },
   });
-
-  const updateFormValues = useCallback(() => {
-    setValue("amount", total, { shouldValidate: true });
-    setValue("vat", totalVAT, { shouldValidate: true });
-    setValue("tax", totalTax, { shouldValidate: true });
-    setValue("subtotal", subTotal, { shouldValidate: true });
-    setValue("discount", discount ?? 0, { shouldValidate: true });
-  }, [total, totalVAT, totalTax, subTotal, discount]);
-
-  useEffect(() => {
-    updateFormValues();
-  }, [updateFormValues]);
+  const { subTotal, total, vat: totalVAT, tax: totalTax } = summary.display;
+  const {
+    amount: formAmount,
+    subtotal: formSubtotal,
+    vat: formVat,
+    tax: formTax,
+    discount: formDiscount,
+  } = summary.values;
 
   useEffect(() => {
-    if (!includeTax) {
+    const values = {
+      amount: formAmount,
+      subtotal: formSubtotal,
+      vat: formVat,
+      tax: formTax,
+      discount: formDiscount,
+    };
+    for (const [field, value] of Object.entries(values)) {
+      if (getValues(field) !== value)
+        setValue(field, value, { shouldValidate: true });
+    }
+  }, [
+    formAmount,
+    formSubtotal,
+    formVat,
+    formTax,
+    formDiscount,
+    getValues,
+    setValue,
+  ]);
+
+  useEffect(() => {
+    if (!includeTax && !summary.preserveSnapshot) {
       setValue("template.taxRate", 0, {
         shouldValidate: true,
         shouldDirty: true,
       });
     }
-  }, [includeTax]);
+  }, [includeTax, summary.preserveSnapshot, setValue]);
 
   useEffect(() => {
-    if (!includeVat) {
+    if (!includeVat && !summary.preserveSnapshot) {
       setValue("template.vatRate", 0, {
         shouldValidate: true,
         shouldDirty: true,
       });
     }
-  }, [includeVat]);
+  }, [includeVat, summary.preserveSnapshot, setValue]);
 
   useEffect(() => {
-    if (!includeDiscount) {
+    if (
+      !includeDiscount &&
+      (!summary.preserveSnapshot ||
+        initial?.template?.includeDiscount !== includeDiscount)
+    ) {
       setValue("discount", 0, { shouldValidate: true, shouldDirty: true });
     }
-  }, [includeDiscount]);
+  }, [
+    includeDiscount,
+    summary.preserveSnapshot,
+    initial?.template?.includeDiscount,
+    setValue,
+  ]);
 
   return (
     <div className="w-[320px] flex flex-col">

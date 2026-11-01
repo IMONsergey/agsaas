@@ -95,6 +95,33 @@ describe("REST: GET /invoices", () => {
     expect(json.data).toEqual([]);
   });
 
+  test("returns persisted totals and tax even when legacy line items would calculate differently", async () => {
+    mocks.getInvoices.mockImplementation(() => ({
+      data: [
+        {
+          ...createValidInvoiceForRest(),
+          amount: 111,
+          subtotal: 90,
+          vat: 4,
+          tax: 7,
+          discount: 2,
+          template: { includeLineItemTax: true },
+          lineItems: [{ price: 1000, quantity: 1, taxRate: 20 }],
+        },
+      ],
+      meta: { cursor: null, hasNextPage: false, hasPreviousPage: false },
+    }));
+    const res = await app.request("/invoices");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as InvoiceListResponse;
+    expect(json.data[0]).toMatchObject({
+      amount: 111,
+      subtotal: 90,
+      vat: 4,
+      tax: 7,
+    });
+  });
+
   test("handles pagination metadata", async () => {
     mocks.getInvoices.mockImplementation(() => ({
       data: [createValidInvoiceForRest()],
@@ -128,6 +155,55 @@ describe("REST: GET /invoices", () => {
         pageSize: 10,
       }),
     );
+  });
+});
+
+describe("REST: GET /invoices/:id financial snapshot", () => {
+  const app = createApp();
+
+  beforeEach(() => {
+    mocks.getInvoiceById.mockReset();
+  });
+
+  test("detail uses the same stored snapshot as list, PDF and payment", async () => {
+    const invoice = {
+      ...createValidInvoiceForRest(),
+      amount: 111,
+      subtotal: null,
+      tax: 7,
+      vat: 4,
+      discount: 2,
+      template: { includeLineItemTax: true, taxRate: 30 },
+      lineItems: [{ price: 1000, quantity: 1, taxRate: 20 }],
+    };
+    mocks.getInvoiceById.mockImplementation(() => invoice);
+    const res = await app.request(`/invoices/${invoice.id}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      amount: 111,
+      subtotal: 102,
+      tax: 7,
+      vat: 4,
+    });
+  });
+
+  test("amount-only invoices retain totals without needing synthetic line items", async () => {
+    const invoice = {
+      ...createValidInvoiceForRest(),
+      lineItems: [],
+      amount: 200,
+      subtotal: null,
+      tax: 10,
+      vat: 0,
+    };
+    mocks.getInvoiceById.mockImplementation(() => invoice);
+    const res = await app.request(`/invoices/${invoice.id}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      amount: 200,
+      subtotal: 190,
+      tax: 10,
+    });
   });
 });
 

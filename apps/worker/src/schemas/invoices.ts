@@ -52,6 +52,8 @@ export type InvoiceRecurringSchedulerPayload = z.infer<
 export const generateInvoiceSchema = z.object({
   invoiceId: z.string().uuid(),
   deliveryType: z.enum(["create", "create_and_send"]),
+  // Optional for manual/recurring generation; required on a delayed handoff.
+  expectedScheduledJobId: z.string().min(1).optional(),
 });
 
 export type GenerateInvoicePayload = z.infer<typeof generateInvoiceSchema>;
@@ -64,6 +66,7 @@ export const sendInvoiceEmailSchema = z.object({
   invoiceId: z.string().uuid(),
   filename: z.string(),
   fullPath: z.string(),
+  expectedScheduledJobId: z.string().min(1).optional(),
 });
 
 export type SendInvoiceEmailPayload = z.infer<typeof sendInvoiceEmailSchema>;

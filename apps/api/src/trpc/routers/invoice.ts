@@ -22,8 +22,6 @@ import { parseInputValue } from "@api/utils/parse";
 import { UTCDate } from "@date-fns/utc";
 import {
   deleteInvoice,
-  draftInvoice,
-  duplicateInvoice,
   getAverageDaysToPayment,
   getAverageInvoiceSize,
   getCustomerById,
@@ -41,10 +39,16 @@ import {
   getTrackerProjectById,
   getTrackerRecordsByRange,
   getUserById,
+  draftInvoice as persistInvoiceDraft,
+  duplicateInvoice as persistInvoiceDuplicate,
   searchInvoiceNumber,
   updateInvoice,
 } from "@midday/db/queries";
 import { DEFAULT_TEMPLATE } from "@midday/invoice";
+import {
+  InvoiceAmountError,
+  InvoiceFinancialStateError,
+} from "@midday/invoice/calculate";
 import { verify } from "@midday/invoice/token";
 import { transformCustomerToContent } from "@midday/invoice/utils";
 import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
@@ -58,6 +62,38 @@ const logger = createLoggerWithContext("trpc:invoice");
 
 // Use the shared default template from @midday/invoice
 const defaultTemplate = DEFAULT_TEMPLATE;
+
+function invoiceWriteError(error: unknown): never {
+  if (
+    error instanceof InvoiceAmountError ||
+    error instanceof InvoiceFinancialStateError
+  ) {
+    throw new TRPCError({
+      code: error instanceof InvoiceAmountError ? "BAD_REQUEST" : "CONFLICT",
+      message: error.message,
+      cause: error,
+    });
+  }
+  throw error;
+}
+
+async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
+  try {
+    return await persistInvoiceDraft(...args);
+  } catch (error) {
+    return invoiceWriteError(error);
+  }
+}
+
+async function duplicateInvoice(
+  ...args: Parameters<typeof persistInvoiceDuplicate>
+) {
+  try {
+    return await persistInvoiceDuplicate(...args);
+  } catch (error) {
+    return invoiceWriteError(error);
+  }
+}
 
 export const invoiceRouter = createTRPCRouter({
   get: protectedProcedure
@@ -215,7 +251,6 @@ export const invoiceRouter = createTRPCRouter({
       // Create draft invoice with tracker data
       const templateData = {
         ...defaultTemplate,
-        currency: currency.toUpperCase(),
         ...(template
           ? Object.fromEntries(
               Object.entries(template).map(([key, value]) => [
@@ -224,6 +259,9 @@ export const invoiceRouter = createTRPCRouter({
               ]),
             )
           : {}),
+        // Project rates are denominated in the project currency. A default
+        // invoice template must not relabel them as another currency.
+        currency: currency.toUpperCase(),
         size: (template?.size === "a4" || template?.size === "letter"
           ? template.size
           : defaultTemplate.size) as "a4" | "letter",
@@ -611,6 +649,21 @@ export const invoiceRouter = createTRPCRouter({
   remind: protectedProcedure
     .input(remindInvoiceSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
+      const invoice = await getInvoiceById(db, {
+        id: input.id,
+        teamId: teamId!,
+      });
+      if (!invoice)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found",
+        });
+      if (invoice.status !== "unpaid" && invoice.status !== "overdue") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Only unpaid or overdue invoices can receive reminders",
+        });
+      }
       await triggerJob(
         "send-invoice-reminder",
         {
@@ -619,11 +672,9 @@ export const invoiceRouter = createTRPCRouter({
         "invoices",
       );
 
-      return updateInvoice(db, {
-        id: input.id,
-        teamId: teamId!,
-        reminderSentAt: input.date,
-      });
+      // Queue acceptance is not email acceptance. Only the delivery worker
+      // records reminderSentAt, using the provider's accepted timestamp.
+      return invoice;
     }),
 
   duplicate: protectedProcedure

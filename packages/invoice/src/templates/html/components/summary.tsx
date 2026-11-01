@@ -1,7 +1,11 @@
 import type { LineItem } from "../../../types";
-import { calculateTotal } from "../../../utils/calculate";
+import { getInvoiceSnapshotAmounts } from "../../../utils/calculate";
 
 type Props = {
+  amount?: number | null;
+  subtotal?: number | null;
+  vat?: number | null;
+  tax?: number | null;
   includeVat: boolean;
   includeTax: boolean;
   includeDiscount: boolean;
@@ -21,6 +25,10 @@ type Props = {
 };
 
 export function Summary({
+  amount,
+  subtotal,
+  vat,
+  tax,
   includeVat,
   includeTax,
   includeDiscount,
@@ -34,7 +42,6 @@ export function Summary({
   vatLabel,
   taxLabel,
   totalLabel,
-  lineItems,
   includeDecimals,
   subtotalLabel,
 }: Props) {
@@ -45,15 +52,7 @@ export function Summary({
     total,
     vat: totalVAT,
     tax: totalTax,
-  } = calculateTotal({
-    lineItems,
-    taxRate,
-    vatRate,
-    discount: discount ?? 0,
-    includeVat,
-    includeTax,
-    includeLineItemTax,
-  });
+  } = getInvoiceSnapshotAmounts({ amount, subtotal, vat, tax, discount });
 
   return (
     <div className="w-[320px] flex flex-col">

@@ -11,7 +11,21 @@ import {
   getBaselinePath,
   readSnapshotMetadata,
 } from "../../self-hosted/generate";
-import { teams, userInvites, users, usersInAuth } from "../schema";
+import {
+  bankAccounts,
+  invoiceRecurring,
+  teams,
+  userInvites,
+  users,
+  usersInAuth,
+} from "../schema";
+
+const retainedAuthorKeys = [
+  ["apps", "created_by", "apps_created_by_fkey"],
+  ["bank_accounts", "created_by", "bank_accounts_created_by_fkey"],
+  ["invoice_recurring", "user_id", "invoice_recurring_user_id_fkey"],
+  ["invoices", "user_id", "invoices_created_by_fkey"],
+] as const;
 
 describe("self-hosted application baseline (offline)", () => {
   let sql: string;
@@ -20,18 +34,42 @@ describe("self-hosted application baseline (offline)", () => {
     sql = await generateBootstrapSql();
   });
 
-  test("preserves the installed baseline and accounts for the reviewed additive upgrade", async () => {
+  test("preserves the installed baseline and accounts only for reviewed upgrades", async () => {
     expect(getBaselinePath()).toMatch(/\/\d{14}_application_baseline\.sql$/);
     const baseline = readFileSync(getBaselinePath(), "utf8");
     expect(createHash("sha256").update(baseline).digest("hex")).toBe(
       "e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd",
     );
-    // Current schema = immutable baseline + the explicit nullable marker.
-    // Keep exact comparison for every other table/column/policy/function; do
-    // not regenerate an already applied baseline to make schema parity pass.
+    // Project ONLY the reviewed incremental changes back to the installed
+    // baseline. Exact equality still protects every other schema detail.
     const addition = '\t"deletion_started_at" timestamp with time zone,\n';
     expect(sql.split(addition)).toHaveLength(2);
-    expect(sql.replace(addition, "")).toBe(baseline);
+    let projected = sql.replace(addition, "");
+    for (const [table, column, constraint] of retainedAuthorKeys) {
+      const retained = `ALTER TABLE "${table}" ADD CONSTRAINT "${constraint}" FOREIGN KEY ("${column}") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;`;
+      expect(projected.split(retained)).toHaveLength(2);
+      projected = projected.replace(
+        retained,
+        retained.replace("ON DELETE set null", "ON DELETE cascade"),
+      );
+    }
+    for (const [table, column] of [
+      ["bank_accounts", "created_by"],
+      ["invoice_recurring", "user_id"],
+    ]) {
+      const start = projected.indexOf(`CREATE TABLE "${table}" (`);
+      const end = projected.indexOf("\n);", start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const definition = projected.slice(start, end);
+      const nullable = `\t"${column}" uuid,\n`;
+      expect(definition.split(nullable)).toHaveLength(2);
+      projected = projected.replace(
+        definition,
+        definition.replace(nullable, `\t"${column}" uuid NOT NULL,\n`),
+      );
+    }
+    expect(projected).toBe(baseline);
     expect(
       createApplicationSnapshot().tables["public.users"]?.columns
         .deletion_started_at,
@@ -65,6 +103,71 @@ describe("self-hosted application baseline (offline)", () => {
     );
     expect(marker?.notNull).toBe(false);
     expect(marker?.default).toBeUndefined();
+  });
+
+  test("retains team financial rows when their historical author is deleted", () => {
+    const snapshot = createApplicationSnapshot();
+    for (const [table, column, constraint] of retainedAuthorKeys) {
+      expect(
+        snapshot.tables[`public.${table}`]?.foreignKeys[constraint],
+      ).toMatchObject({
+        tableFrom: table,
+        tableTo: "users",
+        columnsFrom: [column],
+        columnsTo: ["id"],
+        onDelete: "set null",
+      });
+    }
+    for (const [table, column] of [
+      [bankAccounts, "created_by"],
+      [invoiceRecurring, "user_id"],
+    ] as const) {
+      expect(
+        getTableConfig(table).columns.find((item) => item.name === column)
+          ?.notNull,
+      ).toBe(false);
+    }
+    // This change must not turn deletion of a company into orphaned business rows.
+    for (const table of [
+      "apps",
+      "bank_accounts",
+      "invoice_recurring",
+      "invoices",
+    ]) {
+      expect(
+        Object.values(snapshot.tables[`public.${table}`]!.foreignKeys).find(
+          (key) => key.tableTo === "teams" && key.columnsFrom[0] === "team_id",
+        )?.onDelete,
+      ).toBe("cascade");
+    }
+  });
+
+  test("the CLI-created retention upgrade guards and changes exactly four author FKs", () => {
+    const upgrade = readFileSync(
+      join(
+        __dirname,
+        "../../self-hosted/upgrades/supabase/migrations/20261101042940_preserve_team_financial_history.sql",
+      ),
+      "utf8",
+    );
+    expect(upgrade).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(upgrade).toContain("SET LOCAL statement_timeout = '30s'");
+    expect(upgrade).toContain(
+      "RAISE EXCEPTION 'Unexpected author FK definition: %.%',",
+    );
+    for (const [table, column, constraint] of retainedAuthorKeys) {
+      expect(upgrade).toContain(
+        `ALTER TABLE public.${table}\n  DROP CONSTRAINT ${constraint},\n  ADD CONSTRAINT ${constraint}\n  FOREIGN KEY (${column}) REFERENCES public.users(id) ON DELETE SET NULL`,
+      );
+    }
+    expect(upgrade.match(/DROP CONSTRAINT /g)).toHaveLength(4);
+    expect(upgrade.match(/DROP NOT NULL/g)).toHaveLength(2);
+    expect(upgrade).not.toMatch(
+      /\b(?:DELETE FROM|TRUNCATE|GRANT|DROP TABLE|DISABLE ROW LEVEL SECURITY)\b/,
+    );
+    expect(upgrade).not.toMatch(
+      /(?:ALTER|CREATE|DROP)\s+(?:TABLE|FUNCTION|POLICY)\s+(?:auth|storage)\./i,
+    );
   });
 
   test("manages all 49 application tables and 33 enums, never platform tables", () => {

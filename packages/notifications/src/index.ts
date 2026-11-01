@@ -13,6 +13,11 @@ import type {
   UserData,
 } from "./base";
 import { createActivitySchema, type NotificationTypes } from "./schemas";
+import {
+  assertEmailAccepted,
+  EmailDeliveryError,
+  emptyEmailDeliveryResult,
+} from "./services/email-delivery-result";
 import { EmailService } from "./services/email-service";
 import { documentProcessed } from "./types/document-processed";
 import { documentUploaded } from "./types/document-uploaded";
@@ -201,7 +206,8 @@ export class Notifications {
 
     // Apply runtime options (highest priority)
     // Extract non-email options first
-    const { priority, sendEmail, ...resendOptions } = options || {};
+    const { priority, sendEmail, requireEmailAcceptance, ...resendOptions } =
+      options || {};
     if (Object.keys(resendOptions).length > 0) {
       Object.assign(baseEmailInput, resendOptions);
     }
@@ -225,10 +231,12 @@ export class Notifications {
     }
 
     if (teamMembers.length === 0) {
+      const emails = emptyEmailDeliveryResult();
+      if (options?.requireEmailAcceptance) assertEmailAccepted(emails);
       return {
         type: type as string,
         activities: 0,
-        emails: { sent: 0, skipped: 0, failed: 0 },
+        emails,
       };
     }
 
@@ -263,21 +271,22 @@ export class Notifications {
       // Generate a single group ID for all related activities
       const groupId = crypto.randomUUID();
 
-      // Create activities for each user
-      const activities = await this.#createActivities(
-        handler,
-        validatedData,
-        groupId,
-        type as string,
-        options,
-      );
+      const createActivities = () =>
+        this.#createActivities(
+          handler,
+          validatedData,
+          groupId,
+          type as string,
+          options,
+        );
+      // A "sent" activity must not precede the provider acknowledgement. Other
+      // notifications retain their existing in-app-first behavior by default.
+      let activities = options?.requireEmailAcceptance
+        ? []
+        : await createActivities();
 
       // CONDITIONALLY send emails
-      let emails = {
-        sent: 0,
-        skipped: validatedData.users.length,
-        failed: 0,
-      };
+      let emails = emptyEmailDeliveryResult(validatedData.users.length);
 
       const sendEmail = options?.sendEmail ?? false;
 
@@ -377,6 +386,17 @@ export class Notifications {
         }
       }
 
+      if (options?.requireEmailAcceptance) {
+        assertEmailAccepted(emails);
+        try {
+          activities = await createActivities();
+        } catch {
+          // The caller must still record the known acceptance, but must not
+          // resend the email merely to retry an activity database write.
+          throw new EmailDeliveryError(emails, "activity");
+        }
+      }
+
       return {
         type: type as string,
         activities: activities.length,
@@ -431,3 +451,10 @@ export {
   transactionsCreatedSchema,
   transactionsExportedSchema,
 } from "./schemas";
+export type { EmailDeliveryResult } from "./services/email-delivery-result";
+export {
+  assertEmailAccepted,
+  EmailDeliveryError,
+  emptyEmailDeliveryResult,
+  isEmailAccepted,
+} from "./services/email-delivery-result";

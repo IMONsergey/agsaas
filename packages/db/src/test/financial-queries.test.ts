@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type QueryConfig } from "pg";
 import { getCustomerById, getCustomers } from "../queries/customers";
+import { getInvoices } from "../queries/invoices";
 import { getTaxSummary } from "../queries/reports";
 import { withReplicas } from "../replicas";
 import { runtimeSchema } from "../runtime-schema";
@@ -34,6 +35,25 @@ function queryRecorder() {
 }
 
 describe("financial queries (real SQL generation, no connections)", () => {
+  test("numeric-prefix invoice numbers are searched as text, never as NaN amounts", async () => {
+    const { db, queries } = queryRecorder();
+    await getInvoices(db, { teamId, q: "2026-001" });
+    expect(queries[0]?.params).toContain("2026-001");
+    expect(queries[0]?.params).not.toContain("NaN");
+    expect(queries[0]?.sql).toContain('"invoices"."invoice_number" ILIKE');
+    expect(queries[0]?.sql).not.toContain("2026-001");
+    expect(queries[0]?.sql).not.toContain('"invoices"."amount" =');
+  });
+
+  test("fully numeric invoice queries match numeric amounts and invoice numbers", async () => {
+    const { db, queries } = queryRecorder();
+    await getInvoices(db, { teamId, q: "123.00" });
+    expect(queries[0]?.params).toContain("123.00");
+    expect(queries[0]?.params.map(String)).toContain("123");
+    expect(queries[0]?.sql).toContain('"invoices"."amount" =');
+    expect(queries[0]?.sql).not.toContain('"invoices"."amount"::text');
+  });
+
   test("numeric-prefix customer search is parameterized instead of ignored", async () => {
     const { db, queries } = queryRecorder();
     await getCustomers(db, { teamId, q: "7701 Example" });

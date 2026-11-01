@@ -782,7 +782,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
       {
         title: "Send Invoice Reminder",
         description:
-          "Send a payment reminder email for an unpaid or overdue invoice. Records the reminder timestamp on the invoice. Cannot remind for draft, paid, or canceled invoices.",
+          "Queue a payment reminder email for an unpaid or overdue invoice. The reminder timestamp is recorded after the email provider accepts delivery. Cannot remind for draft, paid, or canceled invoices.",
         inputSchema: {
           id: z
             .string()
@@ -814,29 +814,20 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          const now = new Date().toISOString();
-
           await triggerJob(
             "send-invoice-reminder",
             { invoiceId: id },
             "invoices",
           );
 
-          await updateInvoice(db, {
-            id,
-            teamId,
-            userId,
-            reminderSentAt: now,
-          });
-
           const previewUrl = existing.token
             ? `${DASHBOARD_URL}/i/${existing.token}`
             : null;
 
           const response = {
-            message: `Payment reminder sent for invoice ${existing.invoiceNumber}${existing.sentTo ? ` to ${existing.sentTo}` : ""}`,
+            message: `Payment reminder queued for invoice ${existing.invoiceNumber}${existing.sentTo ? ` to ${existing.sentTo}` : ""}`,
             invoiceId: id,
-            reminderSentAt: now,
+            reminderSentAt: existing.reminderSentAt,
             previewUrl,
           };
 

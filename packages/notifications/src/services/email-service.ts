@@ -10,23 +10,51 @@ import TransactionsExportedEmail from "@midday/email/emails/transactions-exporte
 import UpcomingInvoicesEmail from "@midday/email/emails/upcoming-invoices";
 import { render } from "@midday/email/render";
 import { nanoid } from "nanoid";
-import { type CreateEmailOptions, Resend } from "resend";
+import { type CreateEmailOptions, type ErrorResponse, Resend } from "resend";
 import type { EmailInput } from "../base";
+import {
+  type EmailDeliveryResult,
+  emptyEmailDeliveryResult,
+} from "./email-delivery-result";
+
+function providerRejection(
+  error: ErrorResponse,
+  count: number,
+): Pick<EmailDeliveryResult, "failed" | "uncertain" | "retryable"> {
+  // Resend 6.x resolves network/JSON failures as application_error with a null
+  // statusCode. Treating every resolved error as a rejection would resend mail
+  // that the provider may already have accepted.
+  const status = error.statusCode;
+  // A timeout or 5xx may originate after acceptance (including from a proxy).
+  // Without a durable, identical idempotent envelope it is not safe to resend.
+  const confirmedRejection =
+    typeof status === "number" &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408;
+  return {
+    failed: count,
+    uncertain: confirmedRejection ? 0 : count,
+    retryable: confirmedRejection && status === 429,
+  };
+}
 
 export class EmailService {
   private client: Resend;
 
-  constructor(private db: Database) {
-    this.client = new Resend(process.env.RESEND_API_KEY!);
+  constructor(
+    private db: Database,
+    client?: Resend,
+  ) {
+    this.client = client ?? new Resend(process.env.RESEND_API_KEY!);
   }
 
-  async sendBulk(emails: EmailInput[], notificationType: string) {
+  async sendBulk(
+    emails: EmailInput[],
+    notificationType: string,
+  ): Promise<EmailDeliveryResult> {
     if (emails.length === 0) {
-      return {
-        sent: 0,
-        skipped: 0,
-        failed: 0,
-      };
+      return emptyEmailDeliveryResult();
     }
 
     const eligibleEmails = await this.#filterEligibleEmails(
@@ -35,66 +63,96 @@ export class EmailService {
     );
 
     if (eligibleEmails.length === 0) {
-      return {
-        sent: 0,
-        skipped: emails.length,
-        failed: 0,
-      };
+      return emptyEmailDeliveryResult(emails.length);
     }
 
+    const result = emptyEmailDeliveryResult(
+      emails.length - eligibleEmails.length,
+    );
+    let emailPayloads: CreateEmailOptions[];
     try {
-      const emailPayloads = await Promise.all(
+      // Render the complete batch before making the first external request.
+      emailPayloads = await Promise.all(
         eligibleEmails.map((email) => this.#buildEmailPayload(email)),
       );
+    } catch {
+      // No request was made. This is a local configuration/template error,
+      // not evidence of acceptance and not a transient provider rejection.
+      return { ...result, failed: eligibleEmails.length };
+    }
 
-      // Check if any emails have attachments - batch send doesn't support attachments
-      const hasAttachments = emailPayloads.some(
-        (payload) => payload.attachments && payload.attachments.length > 0,
-      );
-      let sent = 0;
-      let failed = 0;
+    const hasAttachments = emailPayloads.some(
+      (payload) => payload.attachments && payload.attachments.length > 0,
+    );
+    let allFailuresRetryable = true;
 
-      if (hasAttachments) {
-        // Send emails individually when attachments are present
-        for (const payload of emailPayloads) {
-          try {
-            const response = await this.client.emails.send(payload);
-            if (response.error) {
-              console.error("Failed to send email:", response.error);
-              failed++;
-            } else {
-              sent++;
-            }
-          } catch (error) {
-            console.error("Failed to send email:", error);
-            failed++;
+    if (hasAttachments) {
+      // Keep independent outcomes: one failed recipient must not erase an
+      // earlier acceptance, or cause a blanket retry of accepted envelopes.
+      for (const payload of emailPayloads) {
+        try {
+          const response = await this.client.emails.send(payload);
+          if (response.error) {
+            const rejection = providerRejection(response.error, 1);
+            result.failed += rejection.failed;
+            result.uncertain += rejection.uncertain;
+            allFailuresRetryable &&= rejection.retryable;
+          } else if (response.data?.id?.trim()) {
+            result.sent += 1;
+            result.providerMessageIds.push(response.data.id);
+            result.acceptedAt = new Date().toISOString();
+          } else {
+            result.failed += 1;
+            result.uncertain += 1;
           }
-        }
-      } else {
-        // Use batch send when no attachments
-        const response = await this.client.batch.send(emailPayloads);
-
-        if (response.error) {
-          console.error("Failed to send emails:", response.error);
-          failed = eligibleEmails.length;
-        } else {
-          sent = eligibleEmails.length;
+        } catch {
+          result.failed += 1;
+          result.uncertain += 1;
         }
       }
-
-      return {
-        sent,
-        skipped: emails.length - eligibleEmails.length,
-        failed,
-      };
-    } catch (error) {
-      console.error("Failed to send emails:", error);
-      return {
-        sent: 0,
-        skipped: emails.length - eligibleEmails.length,
-        failed: eligibleEmails.length,
-      };
+    } else {
+      try {
+        const response = await this.client.batch.send(emailPayloads);
+        if (response.error) {
+          const rejection = providerRejection(
+            response.error,
+            eligibleEmails.length,
+          );
+          result.failed = rejection.failed;
+          result.uncertain = rejection.uncertain;
+          allFailuresRetryable = rejection.retryable;
+        } else {
+          const acceptedIds = Array.isArray(response.data?.data)
+            ? response.data.data
+                .map((email) => email?.id)
+                .filter((id) => typeof id === "string" && id.trim().length > 0)
+            : [];
+          const uniqueIds = [...new Set(acceptedIds)];
+          // Strict batch validation is the SDK default. A malformed/partial
+          // acknowledgement is not permission to pretend the rest were sent.
+          if (uniqueIds.length <= eligibleEmails.length) {
+            result.sent = uniqueIds.length;
+            result.providerMessageIds = uniqueIds;
+            if (uniqueIds.length > 0) {
+              result.acceptedAt = new Date().toISOString();
+            }
+          }
+          result.failed = eligibleEmails.length - result.sent;
+          result.uncertain = result.failed;
+        }
+      } catch {
+        result.failed = eligibleEmails.length;
+        result.uncertain = eligibleEmails.length;
+      }
     }
+
+    result.retryable =
+      result.sent === 0 &&
+      result.failed > 0 &&
+      result.uncertain === 0 &&
+      result.skipped === 0 &&
+      allFailuresRetryable;
+    return result;
   }
 
   async #filterEligibleEmails(emails: EmailInput[], notificationType: string) {

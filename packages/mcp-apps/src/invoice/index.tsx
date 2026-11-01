@@ -110,6 +110,10 @@ export function InvoiceTemplate({ data }: Props) {
 
         <div className="mt-10 flex justify-end mb-8">
           <Summary
+            amount={data.amount}
+            subtotal={data.subtotal}
+            vat={data.vat}
+            tax={data.tax}
             includeVat={template.includeVat}
             includeTax={template.includeTax}
             includeLineItemTax={template.includeLineItemTax}

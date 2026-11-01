@@ -32,6 +32,7 @@ export type Invoice = {
   invoiceNumber: string | null;
   createdAt: string;
   amount: number | null;
+  subtotal?: number | null;
   currency: string | null;
   lineItems: LineItem[];
   paymentDetails: EditorDoc | null;

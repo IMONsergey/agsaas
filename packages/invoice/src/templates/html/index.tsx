@@ -30,6 +30,10 @@ export function HtmlTemplate({ data, width, height }: Props) {
     paymentDetails,
     noteDetails,
     currency,
+    amount,
+    subtotal,
+    vat,
+    tax,
     discount,
     customerName,
     topBlock,
@@ -100,6 +104,10 @@ export function HtmlTemplate({ data, width, height }: Props) {
 
         <div className="mt-10 md:mt-12 flex justify-end mb-6 md:mb-8">
           <Summary
+            amount={amount}
+            subtotal={subtotal}
+            vat={vat}
+            tax={tax}
             includeVat={template.includeVat}
             includeTax={template.includeTax}
             includeLineItemTax={template.includeLineItemTax}

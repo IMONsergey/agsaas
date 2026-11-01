@@ -1,5 +1,12 @@
 import { UTCDate } from "@date-fns/utc";
 import { buildSearchQuery } from "@midday/db/utils/search-query";
+import {
+  calculateInvoiceAmounts,
+  getInvoiceMoneyTemplate,
+  hasInvoiceFinancialChanges,
+  InvoiceFinancialStateError,
+  validateInvoiceMoney,
+} from "@midday/invoice/calculate";
 import { generateToken } from "@midday/invoice/token";
 import type { EditorDoc, LineItem } from "@midday/invoice/types";
 import camelcaseKeys from "camelcase-keys";
@@ -169,19 +176,20 @@ export async function getInvoices(db: Database, params: GetInvoicesParams) {
 
   // Apply search query filter
   if (q) {
-    // If the query is a number, search by amount
-    if (!Number.isNaN(Number.parseInt(q, 10))) {
-      whereConditions.push(
-        sql`${invoices.amount}::text = ${Number(q).toString()}`,
-      );
-    } else {
-      const query = buildSearchQuery(q);
-
-      // Search using full-text search, invoiceNumber, or customerName
-      whereConditions.push(
-        sql`(to_tsquery('english', ${query}) @@ ${invoices.fts} OR ${invoices.invoiceNumber} ILIKE '%' || ${q} || '%' OR ${invoices.customerName} ILIKE '%' || ${q} || '%')`,
-      );
+    const searchConditions: SQL[] = [
+      sql`to_tsquery('english', ${buildSearchQuery(q)}) @@ ${invoices.fts}`,
+      sql`${invoices.invoiceNumber} ILIKE '%' || ${q} || '%'`,
+      sql`${invoices.customerName} ILIKE '%' || ${q} || '%'`,
+    ];
+    // Numeric prefixes such as 2026-001 are invoice numbers, not NaN amounts.
+    // Even a fully numeric query can be an invoice number or customer name.
+    if (
+      /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(q.trim()) &&
+      Number.isFinite(Number(q))
+    ) {
+      searchConditions.push(eq(invoices.amount, Number(q)));
     }
+    whereConditions.push(or(...searchConditions)!);
   }
 
   // Start building the query – excludes heavy JSONB blobs not needed for
@@ -757,6 +765,8 @@ type DraftInvoiceTemplateParams = {
   dateFormat?: string;
   includeVat?: boolean;
   includeTax?: boolean;
+  includeLineItemTax?: boolean;
+  lineItemTaxLabel?: string;
   includeDiscount?: boolean;
   includeDecimals?: boolean;
   includeUnits?: boolean;
@@ -792,7 +802,7 @@ type DraftInvoiceParams = {
   lineItems?: DraftInvoiceLineItemParams[];
   token?: string;
   teamId: string;
-  userId: string;
+  userId: string | null;
 };
 
 export async function draftInvoice(
@@ -813,6 +823,7 @@ export async function draftInvoice(
     ...restInput
   } = params;
 
+  validateInvoiceMoney({ ...restInput, template });
   const useToken = token ?? (await generateToken(id));
 
   const { paymentDetails: _, fromDetails: __, ...restTemplate } = template;
@@ -821,47 +832,131 @@ export async function draftInvoice(
     await assertTeamOwnership(tx, teamId, "customers", [restInput.customerId]);
     await assertTeamOwnership(tx, teamId, "invoiceTemplates", [templateId]);
 
-    const [result] = await tx
-      .insert(invoices)
-      .values({
-        id,
-        teamId,
-        userId,
-        token: useToken,
-        templateId,
-        ...restInput,
-        currency: template.currency?.toUpperCase(),
-        template: restTemplate,
-        paymentDetails: paymentDetails,
-        fromDetails: fromDetails,
-        customerDetails: customerDetails,
-        noteDetails: noteDetails,
-      })
-      .onConflictDoUpdate({
-        target: invoices.id,
-        setWhere: eq(invoices.teamId, teamId),
-        set: {
-          userId,
-          token: useToken,
-          templateId,
-          ...restInput,
-          // Revert overdue to unpaid when due date is moved to the future
+    // Lock before inspecting payment state. A webhook/payment update cannot
+    // finalize this row between validation and the financial write. Token
+    // generation and all external work stay outside this short transaction.
+    const [existing] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+      .for("update");
+    const mergedTemplate = getInvoiceMoneyTemplate({
+      ...(existing?.template as DraftInvoiceTemplateParams | null),
+      ...Object.fromEntries(
+        Object.entries(restTemplate).filter(([, value]) => value !== undefined),
+      ),
+    }) as DraftInvoiceTemplateParams;
+    const currency = (
+      template.currency ??
+      existing?.currency ??
+      mergedTemplate.currency
+    )?.toUpperCase();
+    if (currency !== undefined) mergedTemplate.currency = currency;
+
+    const financialChanges = existing
+      ? hasInvoiceFinancialChanges(
+          {
+            ...existing,
+            lineItems: existing.lineItems as
+              | DraftInvoiceLineItemParams[]
+              | null,
+            template: {
+              ...(existing.template as DraftInvoiceTemplateParams | null),
+              currency: existing.currency,
+            },
+          },
+          { ...restInput, template: restTemplate },
+        )
+      : true;
+    const financialLock =
+      existing &&
+      (existing.paymentIntentId !== null ||
+        ["paid", "refunded", "canceled"].includes(existing.status));
+    if (financialLock && financialChanges)
+      throw new InvoiceFinancialStateError();
+
+    // Never recalculate an existing issued snapshot merely because its notes or
+    // due date were saved. Editable drafts and explicit financial edits use the
+    // same server calculation for REST, tRPC, MCP, duplicates and recurring jobs.
+    const amounts =
+      existing &&
+      (financialLock || (existing.status !== "draft" && !financialChanges))
+        ? {
+            amount: existing.amount,
+            subtotal: existing.subtotal,
+            vat: existing.vat,
+            tax: existing.tax,
+            discount: existing.discount,
+          }
+        : calculateInvoiceAmounts({
+            template: mergedTemplate,
+            lineItems:
+              restInput.lineItems ??
+              (existing?.lineItems as DraftInvoiceLineItemParams[] | null),
+            amount:
+              restInput.amount === undefined
+                ? existing?.amount
+                : restInput.amount,
+            subtotal:
+              restInput.subtotal === undefined
+                ? existing?.subtotal
+                : restInput.subtotal,
+            vat: restInput.vat === undefined ? existing?.vat : restInput.vat,
+            tax: restInput.tax === undefined ? existing?.tax : restInput.tax,
+            discount:
+              restInput.discount === undefined
+                ? existing?.discount
+                : restInput.discount,
+          });
+    const values = {
+      userId,
+      token: useToken,
+      templateId,
+      ...restInput,
+      ...amounts,
+      currency,
+      template: camelcaseKeys(mergedTemplate, { deep: true }),
+      paymentDetails,
+      fromDetails,
+      customerDetails,
+      noteDetails,
+    };
+
+    if (existing) {
+      const [result] = await tx
+        .update(invoices)
+        .set({
+          ...values,
+          // Preserve the existing overdue -> unpaid due-date correction contract.
           status: sql`CASE
           WHEN ${invoices.status} = 'overdue' AND ${restInput.dueDate}::timestamp >= now()
           THEN 'unpaid'
           ELSE ${invoices.status}
         END`,
-          currency: template.currency?.toUpperCase(),
-          template: camelcaseKeys(restTemplate, { deep: true }),
-          paymentDetails: paymentDetails,
-          fromDetails: fromDetails,
-          customerDetails: customerDetails,
-          noteDetails: noteDetails,
-        },
-      })
+        })
+        .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)))
+        .returning();
+      if (!result) throw new TenantResourceNotFoundError();
+      return result;
+    }
+
+    const [result] = await tx
+      .insert(invoices)
+      .values({ id, teamId, ...values })
+      // A concurrent insert must not become an unvalidated update, especially
+      // if that invoice has already entered payment or belongs to another team.
+      .onConflictDoNothing({ target: invoices.id })
       .returning();
 
     if (!result) {
+      const [concurrent] = await tx
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, id), eq(invoices.teamId, teamId)));
+      if (concurrent)
+        throw new InvoiceFinancialStateError(
+          "Invoice was created concurrently; reload it before saving again",
+        );
       throw new TenantResourceNotFoundError();
     }
 

@@ -694,7 +694,8 @@ export const bankAccounts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .defaultNow()
       .notNull(),
-    createdBy: uuid("created_by").notNull(),
+    // Provenance only: the team owns the account and its transaction history.
+    createdBy: uuid("created_by"),
     teamId: uuid("team_id").notNull(),
     name: text(),
     currency: text(),
@@ -744,7 +745,7 @@ export const bankAccounts = pgTable(
       columns: [table.createdBy],
       foreignColumns: [users.id],
       name: "bank_accounts_created_by_fkey",
-    }).onDelete("cascade"),
+    }).onDelete("set null"),
     foreignKey({
       columns: [table.teamId],
       foreignColumns: [teams.id],
@@ -786,7 +787,8 @@ export const invoiceRecurring = pgTable(
       mode: "string",
     }).defaultNow(),
     teamId: uuid("team_id").notNull(),
-    userId: uuid("user_id").notNull(),
+    // A recurring series remains team-owned after its creator leaves.
+    userId: uuid("user_id"),
     customerId: uuid("customer_id"),
     // Frequency settings
     frequency: invoiceRecurringFrequencyEnum().notNull(),
@@ -862,7 +864,7 @@ export const invoiceRecurring = pgTable(
       columns: [table.userId],
       foreignColumns: [users.id],
       name: "invoice_recurring_user_id_fkey",
-    }).onDelete("cascade"),
+    }).onDelete("set null"),
     foreignKey({
       columns: [table.customerId],
       foreignColumns: [customers.id],
@@ -985,7 +987,7 @@ export const invoices = pgTable(
       columns: [table.userId],
       foreignColumns: [users.id],
       name: "invoices_created_by_fkey",
-    }).onDelete("cascade"),
+    }).onDelete("set null"),
     foreignKey({
       columns: [table.customerId],
       foreignColumns: [customers.id],
@@ -1855,7 +1857,7 @@ export const apps = pgTable(
       columns: [table.createdBy],
       foreignColumns: [users.id],
       name: "apps_created_by_fkey",
-    }).onDelete("cascade"),
+    }).onDelete("set null"),
     foreignKey({
       columns: [table.teamId],
       foreignColumns: [teams.id],

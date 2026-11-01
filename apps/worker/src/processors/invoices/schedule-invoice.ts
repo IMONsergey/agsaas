@@ -1,4 +1,4 @@
-import { getInvoiceById, updateInvoice } from "@midday/db/queries";
+import { getInvoiceById } from "@midday/db/queries";
 import { decodeJobId } from "@midday/job-client";
 import type { Job } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "../../config/job-options";
@@ -57,51 +57,59 @@ export class ScheduleInvoiceProcessor extends BaseProcessor<ScheduleInvoicePaylo
     // This prevents stale jobs from processing if a reschedule failed to remove the old job
     // Note: scheduledJobId is stored as a composite ID (e.g., "invoices:123")
     // but job.id is the raw BullMQ ID (e.g., "123"), so we need to decode
-    if (invoice.scheduledJobId) {
-      try {
-        const { jobId: expectedRawJobId } = decodeJobId(invoice.scheduledJobId);
-        if (expectedRawJobId !== job.id) {
-          this.logger.info("Stale scheduled job detected, skipping", {
-            invoiceId,
-            currentJobId: job.id,
-            expectedJobId: expectedRawJobId,
-            storedCompositeId: invoice.scheduledJobId,
-          });
-          // Don't throw - this is expected if invoice was rescheduled
-          return;
-        }
-      } catch {
-        // If decoding fails, the stored ID is in an unexpected format
-        // Log and skip to be safe
-        this.logger.warn("Failed to decode scheduledJobId, skipping", {
+    if (!invoice.scheduledJobId) {
+      this.logger.info(
+        "Scheduled invoice has no current job marker, skipping",
+        {
           invoiceId,
-          scheduledJobId: invoice.scheduledJobId,
+        },
+      );
+      return;
+    }
+
+    const expectedScheduledJobId = invoice.scheduledJobId;
+    try {
+      const { queueName, jobId: expectedRawJobId } = decodeJobId(
+        expectedScheduledJobId,
+      );
+      if (
+        queueName !== "invoices" ||
+        !expectedRawJobId ||
+        expectedRawJobId !== job.id
+      ) {
+        this.logger.info("Stale scheduled job detected, skipping", {
+          invoiceId,
           currentJobId: job.id,
+          expectedJobId: expectedRawJobId,
+          storedCompositeId: invoice.scheduledJobId,
         });
+        // Don't throw - this is expected if invoice was rescheduled
         return;
       }
+    } catch {
+      // If decoding fails, the stored ID is in an unexpected format
+      // Log and skip to be safe
+      this.logger.warn("Failed to decode scheduledJobId, skipping", {
+        invoiceId,
+        scheduledJobId: invoice.scheduledJobId,
+        currentJobId: job.id,
+      });
+      return;
     }
 
-    // Update invoice status to unpaid before generating
-    const updated = await updateInvoice(db, {
-      id: invoiceId,
-      teamId: invoice.teamId,
-      status: "unpaid",
-      // Clear the scheduled job id since it has now executed
-      scheduledJobId: null,
-    });
-
-    if (!updated) {
-      this.logger.error("Failed to update invoice status", { invoiceId });
-      throw new Error("Failed to update invoice status");
-    }
-
-    // Queue the generate-invoice job to create PDF and send email
+    // Queueing is not delivery. Keep the schedule/status until the provider
+    // acknowledges the email: a payment/cancellation after the read above must
+    // never be overwritten, and a Redis failure must leave this job retryable.
+    // The downstream email processor rechecks status; its acceptance write is
+    // the only place that transitions a currently scheduled invoice to unpaid.
+    // Propagate this exact version: a later reschedule/cancel must invalidate
+    // both queued generation and queued email, not just this scheduler job.
     await invoicesQueue.add(
       "generate-invoice",
       {
         invoiceId,
         deliveryType: "create_and_send",
+        expectedScheduledJobId,
       },
       DEFAULT_JOB_OPTIONS,
     );

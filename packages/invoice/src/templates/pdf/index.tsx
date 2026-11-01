@@ -74,6 +74,7 @@ export async function PdfTemplate(
     vat,
     tax,
     amount,
+    subtotal,
     topBlock,
     bottomBlock,
     token,
@@ -193,6 +194,7 @@ export async function PdfTemplate(
           <View wrap={false}>
             <Summary
               amount={amount}
+              subtotal={subtotal}
               tax={tax}
               vat={vat}
               currency={currency}

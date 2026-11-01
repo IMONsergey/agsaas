@@ -1235,22 +1235,8 @@ mock.module("@midday/import", () => ({
   buildCsvMappingPrompt: mock(() => "mock-csv-mapping-prompt"),
 }));
 
-// Mock @midday/invoice
-mock.module("@midday/invoice/calculate", () => ({
-  calculateTotal: mock(({ lineItems }: { lineItems: any[] }) => ({
-    subTotal: lineItems.reduce(
-      (sum: number, item: any) => sum + item.price * item.quantity,
-      0,
-    ),
-    total: lineItems.reduce(
-      (sum: number, item: any) => sum + item.price * item.quantity,
-      0,
-    ),
-    vat: 0,
-    tax: 0,
-  })),
-}));
-
+// Keep the pure @midday/invoice/calculate module real: financial snapshot and
+// rounding regressions must not be hidden by a tax-free fake calculator.
 mock.module("@midday/invoice/utils", () => ({
   transformCustomerToContent: mock((customer: any) => ({
     type: "doc",

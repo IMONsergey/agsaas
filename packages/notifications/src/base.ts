@@ -3,6 +3,7 @@ import type { Activity } from "@midday/db/queries";
 import type { CreateEmailOptions } from "resend";
 import { z } from "zod";
 import type { CreateActivityInput } from "./schemas";
+import type { EmailDeliveryResult } from "./services/email-delivery-result";
 
 export interface TeamContext {
   id: string;
@@ -75,16 +76,14 @@ export type EmailInput = {
 export type NotificationOptions = {
   priority?: number;
   sendEmail?: boolean;
+  /** Record a "sent" activity only after every email has been accepted. */
+  requireEmailAcceptance?: boolean;
 } & Partial<CreateEmailOptions>;
 
 export interface NotificationResult {
   type: string;
   activities: number;
-  emails: {
-    sent: number;
-    skipped: number;
-    failed?: number;
-  };
+  emails: EmailDeliveryResult;
 }
 
 // Common schemas

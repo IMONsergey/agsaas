@@ -1,4 +1,4 @@
-import { calculateTotal } from "@midday/invoice/calculate";
+import { getInvoiceSnapshotAmounts } from "@midday/invoice/calculate";
 
 type LineItem = {
   price?: number;
@@ -7,6 +7,10 @@ type LineItem = {
 };
 
 type Props = {
+  amount?: number | null;
+  subtotal?: number | null;
+  vat?: number | null;
+  tax?: number | null;
   includeVat: boolean;
   includeTax: boolean;
   includeDiscount: boolean;
@@ -26,6 +30,10 @@ type Props = {
 };
 
 export function Summary({
+  amount,
+  subtotal,
+  vat,
+  tax,
   includeVat,
   includeTax,
   includeDiscount,
@@ -39,7 +47,6 @@ export function Summary({
   vatLabel,
   taxLabel,
   totalLabel,
-  lineItems,
   includeDecimals,
   subtotalLabel,
 }: Props) {
@@ -50,15 +57,7 @@ export function Summary({
     total,
     vat: totalVAT,
     tax: totalTax,
-  } = calculateTotal({
-    lineItems,
-    taxRate,
-    vatRate,
-    discount: discount ?? 0,
-    includeVat,
-    includeTax,
-    includeLineItemTax,
-  });
+  } = getInvoiceSnapshotAmounts({ amount, subtotal, vat, tax, discount });
 
   const fmt = (amount: number, fractionDigits?: number) =>
     currency

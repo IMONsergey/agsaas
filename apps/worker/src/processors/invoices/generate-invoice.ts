@@ -1,4 +1,8 @@
-import { getInvoiceById, updateInvoice } from "@midday/db/queries";
+import {
+  getInvoiceById,
+  isCurrentInvoiceSchedule,
+  updateInvoice,
+} from "@midday/db/queries";
 import { PdfTemplate, renderToBuffer } from "@midday/invoice";
 import { createClient } from "@midday/supabase/job";
 import type { Job } from "bullmq";
@@ -16,10 +20,8 @@ import { BaseProcessor } from "../base";
  */
 export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePayload> {
   async process(job: Job<GenerateInvoicePayload>): Promise<void> {
-    const { invoiceId, deliveryType } = job.data;
+    const { invoiceId, deliveryType, expectedScheduledJobId } = job.data;
     const db = getDb();
-    // Supabase client is needed for storage operations only
-    const supabase = createClient();
 
     this.logger.info("Starting invoice generation", {
       jobId: job.id,
@@ -35,6 +37,17 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
       throw new Error(`Invoice not found: ${invoiceId}`);
     }
 
+    if (
+      expectedScheduledJobId !== undefined &&
+      !isCurrentInvoiceSchedule(invoiceData, expectedScheduledJobId)
+    ) {
+      this.logger.info(
+        "Skipping generation for a superseded invoice schedule",
+        { invoiceId },
+      );
+      return;
+    }
+
     const { user, ...invoice } = invoiceData;
 
     if (!invoice.template) {
@@ -47,6 +60,23 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     // Generate PDF buffer
     const buffer = await renderToBuffer(await PdfTemplate(invoice));
 
+    if (expectedScheduledJobId !== undefined) {
+      const current = await getInvoiceById(db, {
+        id: invoiceId,
+        teamId: invoiceData.teamId,
+      });
+      if (
+        !current ||
+        !isCurrentInvoiceSchedule(current, expectedScheduledJobId)
+      ) {
+        this.logger.info(
+          "Skipping superseded invoice schedule after PDF generation",
+          { invoiceId },
+        );
+        return;
+      }
+    }
+
     const filename = `${invoiceData.invoiceNumber}.pdf`;
     const fullPath = `${invoiceData.teamId}/invoices/${filename}`;
 
@@ -57,6 +87,7 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     });
 
     // Upload to Supabase storage (storage SDK is still needed)
+    const supabase = createClient();
     const { error: uploadError } = await supabase.storage
       .from("vault")
       .upload(fullPath, buffer, {
@@ -97,6 +128,9 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
           invoiceId,
           filename,
           fullPath,
+          ...(expectedScheduledJobId === undefined
+            ? {}
+            : { expectedScheduledJobId }),
         },
         DEFAULT_JOB_OPTIONS,
       );
