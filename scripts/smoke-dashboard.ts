@@ -234,7 +234,8 @@ export async function smokeDashboard(options: SmokeOptions) {
   let child: Bun.Subprocess | undefined;
   try {
     child = Bun.spawn({
-      cmd: [process.execPath, "--no-env-file", server],
+      // Match the production image's Node CMD even though Bun runs this harness.
+      cmd: ["node", server],
       cwd: options.appDir,
       env: smokeEnvironment(process.env, options.port),
       stdin: "ignore",

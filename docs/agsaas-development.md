@@ -5,7 +5,11 @@ production deployment or configure paid external providers.
 
 ## Runtime and deterministic checks
 
-Use Bun **1.3.11**, matching the package manager, Docker images, and CI.
+Use Bun **1.3.11** for package installation, tests, and the API/worker runtimes.
+The dashboard production build and standalone server use native Node **24.21.0**
+from `node:24.21.0-trixie-slim`. Its image retains Bun for package installation,
+health checks, and the smoke harness; the harness launches the server with Node.
+The dashboard image build verifies both pinned runtime versions before continuing.
 From the repository root:
 
 ```sh

@@ -1,6 +1,5 @@
 "use client";
 
-import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { LogEvents } from "@midday/events/events";
 import { Icons } from "@midday/ui/icons";
 import { useOpenPanel } from "@openpanel/nextjs";
@@ -46,14 +45,13 @@ export function TransactionUnmatchItem() {
         const previousInboxItem = queryClient.getQueryData(queryKey);
 
         if (previousInboxItem) {
-          queryClient.setQueryData<RouterOutputs["inbox"]["getById"]>(
-            queryKey,
-            {
-              ...previousInboxItem,
-              transactionId: null,
-              transaction: null,
-            },
-          );
+          queryClient.setQueryData(queryKey, (current) => {
+            if (!current) return current;
+            const updated = { ...current };
+            updated.transactionId = null;
+            updated.transaction = null;
+            return updated;
+          });
         }
 
         return { previousInboxItem };

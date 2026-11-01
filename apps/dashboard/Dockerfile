@@ -1,5 +1,11 @@
-# Base image with Bun
-FROM oven/bun:1.3.11 AS base
+# Bun remains the package manager and health/test tool; Next runs on native Node.
+FROM oven/bun:1.3.11 AS bun-tools
+FROM node:24.21.0-trixie-slim AS base
+COPY --from=bun-tools /usr/local/bin/bun /usr/local/bin/bun
+ENV BUN_INSTALL_BIN=/usr/local/bin
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx \
+    && node -e 'if (process.versions.bun || process.versions.node !== "24.21.0") throw new Error("Native Node 24.21.0 is required")' \
+    && test "$(bun --version)" = "1.3.11"
 
 # Install turbo CLI globally using Bun
 FROM base AS turbo-cli
@@ -74,7 +80,7 @@ RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     export SENTRY_RELEASE="$GIT_COMMIT_SHA"; \
     bunx turbo run build --filter=@midday/dashboard --only
 
-# Runner stage - clean bun image, no turbo
+# Runner stage - native Node plus Bun health/test tools, no turbo
 FROM base AS runner
 WORKDIR /app
 
@@ -103,4 +109,4 @@ USER nextjs
 EXPOSE 3000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["bun", "apps/dashboard/server.js"]
+CMD ["node", "apps/dashboard/server.js"]
