@@ -30,6 +30,10 @@ import type {
   InvoiceEmailDeliveryKind,
   InvoiceEmailDeliveryState,
 } from "./invoice-email-delivery";
+import type {
+  TeamInviteDeliveryState,
+  TeamInviteEmailContext,
+} from "./team-invite-delivery";
 
 export const tsvector = customType<{
   data: string;
@@ -1553,6 +1557,7 @@ export const userInvites = pgTable(
       name: "user_invites_invited_by_fkey",
     }).onDelete("cascade"),
     unique("unique_team_invite").on(table.teamId, table.email),
+    unique("user_invites_id_team_id_key").on(table.id, table.teamId),
     unique("user_invites_code_key").on(table.code),
     pgPolicy("Enable select for users based on email", {
       as: "permissive",
@@ -1587,6 +1592,83 @@ export const userInvites = pgTable(
     }),
   ],
 );
+
+// One initial email operation per invitation. Browser roles never read envelopes.
+export const teamInviteDeliveries = pgTable(
+  "team_invite_deliveries",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    teamId: uuid("team_id").notNull(),
+    inviteId: uuid("invite_id").notNull(),
+    recipient: text().notNull(),
+    context: jsonb().$type<TeamInviteEmailContext>().notNull(),
+    envelope: text(),
+    envelopeHash: text("envelope_hash"),
+    status: text()
+      .$type<TeamInviteDeliveryState>()
+      .default("pending")
+      .notNull(),
+    attempts: integer().default(0).notNull(),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    firstAttemptAt: timestamp("first_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    acceptedAt: timestamp("accepted_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("team_invite_deliveries_invite_key").on(table.inviteId),
+    index("team_invite_deliveries_recovery_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    check(
+      "team_invite_deliveries_state_check",
+      sql`${table.status} in ('pending','sending','accepted','reconciliation','canceled','rejected')`,
+    ),
+    check("team_invite_deliveries_attempts_check", sql`${table.attempts} >= 0`),
+    check(
+      "team_invite_deliveries_envelope_check",
+      sql`(${table.envelope} is null or (octet_length(${table.envelope}) <= 131072 and ${table.envelopeHash} IS NOT NULL and ${table.envelopeHash} ~ '^[a-f0-9]{64}$')) and (${table.status} <> 'sending' or ${table.envelope} is not null)`,
+    ),
+    check(
+      "team_invite_deliveries_receipt_check",
+      sql`${table.status} <> 'accepted' or (${table.providerMessageId} is not null and length(${table.providerMessageId}) between 1 and 256 and ${table.acceptedAt} is not null and ${table.envelope} is null)`,
+    ),
+    foreignKey({
+      columns: [table.inviteId, table.teamId],
+      foreignColumns: [userInvites.id, userInvites.teamId],
+      name: "team_invite_deliveries_invite_team_fkey",
+    }).onDelete("cascade"),
+    pgPolicy("agsaas_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 export const documentTags = pgTable(
   "document_tags",

@@ -11,9 +11,9 @@ import {
   updateTeamByIdSchema,
   updateTeamMemberSchema,
 } from "@api/schemas/team";
+import { enqueueTeamInvitations } from "@api/services/team-invitation-queue";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
 import { withTeamMembershipErrors } from "@api/utils/team-membership";
-import type { InviteTeamMembersPayload } from "@jobs/schema";
 
 import { teamCache } from "@midday/cache/team-cache";
 import {
@@ -37,7 +37,7 @@ import {
   updateTeamMember,
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
-import { tasks } from "@trigger.dev/sdk";
+import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
 import { TRPCError } from "@trpc/server";
 
 export const teamRouter = createTRPCRouter({
@@ -228,64 +228,59 @@ export const teamRouter = createTRPCRouter({
         });
       }
 
-      const ip = geo.ip ?? "127.0.0.1";
-
+      if (!teamId)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Choose a team before inviting members",
+        });
+      try {
+        getTeamInviteEmailConfig();
+      } catch {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Invitation email is not configured for this installation",
+        });
+      }
       const data = await withTeamMembershipErrors(() =>
         createTeamInvites(db, {
-          teamId: teamId!,
+          teamId,
           actorId: session.user.id,
+          deliveryContext: {
+            invitedByEmail,
+            invitedByName: session.user.full_name ?? "",
+            locale: "en",
+            ...(geo.ip ? { ip: geo.ip } : {}),
+          },
           invites: input.map((invite) => ({
             ...invite,
             invitedBy: session.user.id,
           })),
         }),
       );
-
-      const results = data?.results ?? [];
-      const skippedInvites = data?.skippedInvites ?? [];
-
-      const invites: InviteTeamMembersPayload["invites"] = results.flatMap(
-        (invite) => {
-          if (!invite?.email) {
-            return [];
-          }
-
-          return [
-            {
-              email: invite.email,
-              invitedByName: session.user.full_name ?? "",
-              invitedByEmail,
-              teamName: invite.team?.name ?? "",
-            },
-          ];
-        },
+      await enqueueTeamInvitations(
+        data.results.map((invite) => ({
+          teamId,
+          inviteId: invite.id,
+          deliveryId: invite.deliveryId,
+        })),
       );
-
-      // Only trigger email sending if there are valid invites
-      if (invites.length > 0) {
-        await tasks.trigger("invite-team-members", {
-          teamId: teamId!,
-          invites,
-          ip,
-          locale: "en",
-        } satisfies InviteTeamMembersPayload);
-      }
-
-      // Return information about the invitation process
       return {
-        sent: invites.length,
-        skipped: skippedInvites.length,
-        skippedInvites,
+        queued: data.results.length,
+        skipped: data.skippedInvites.length,
+        skippedInvites: data.skippedInvites,
       };
     }),
 
   deleteInvite: protectedProcedure
     .input(deleteTeamInviteSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
-      return deleteTeamInvite(db, {
-        teamId: teamId!,
-        id: input.id,
-      });
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
+      return withTeamMembershipErrors(() =>
+        deleteTeamInvite(db, {
+          teamId: teamId!,
+          id: input.id,
+          actorId: session.user.id,
+        }),
+      );
     }),
 
   availablePlans: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {

@@ -26,11 +26,21 @@ const session = {
 const cookieValues = new Map<string, unknown>();
 const calls = {
   verifyOtp: [] as unknown[],
+  password: [] as unknown[],
   exchangeCode: [] as string[],
   ambientSession: 0,
   signOut: 0,
   userQuery: 0,
 };
+
+// The setting is runtime-only. Disabled-method fixtures must not reach Auth.
+process.env.AUTH_ENABLED_PROVIDERS =
+  scenario === "otp-disabled"
+    ? "password"
+    : scenario.startsWith("password-") && scenario !== "password-disabled"
+      ? "password"
+      : "email";
+mock.module("server-only", () => ({}));
 
 if (scenario.endsWith("-waitlist")) {
   process.env.NEW_USER_SIGNUP_CUTOFF = "2026-04-20T00:00:00.000Z";
@@ -39,7 +49,7 @@ if (scenario.endsWith("-waitlist")) {
 function authResponse() {
   if (scenario.endsWith("-throw")) throw new Error("private transport details");
   return {
-    data: { session },
+    data: { session: scenario.endsWith("-no-session") ? null : session },
     error: scenario.endsWith("-error") ? new Error("private Auth error") : null,
   };
 }
@@ -49,6 +59,10 @@ mock.module("@midday/supabase/server", () => ({
     auth: {
       verifyOtp: async (input: unknown) => {
         calls.verifyOtp.push(input);
+        return authResponse();
+      },
+      signInWithPassword: async (input: unknown) => {
+        calls.password.push(input);
         return authResponse();
       },
       exchangeCodeForSession: async (code: string) => {
@@ -115,9 +129,14 @@ try {
     const input = {
       email: "fixture@example.test",
       token: "123456",
-      redirectTo: `${origin}/settings/accounts`,
+      redirectTo:
+        scenario === "otp-unsafe-redirect"
+          ? "https://untrusted.example.test/"
+          : scenario === "otp-relative-redirect"
+            ? "settings/accounts"
+            : `${origin}/settings/accounts`,
     };
-    if (scenario === "otp-error" || scenario === "otp-throw") {
+    if (["otp-error", "otp-throw", "otp-disabled"].includes(scenario)) {
       await assert.rejects(verifyOtpAction(input), {
         message:
           "Unable to verify the code. Please try again or request a new code.",
@@ -131,7 +150,9 @@ try {
           error.destination,
           scenario === "otp-waitlist"
             ? `${origin}/login?waitlist=1`
-            : input.redirectTo,
+            : scenario === "otp-unsafe-redirect"
+              ? `${origin}/`
+              : `${origin}/settings/accounts`,
         );
         return true;
       });
@@ -144,9 +165,74 @@ try {
         assert.equal(cookieValues.get(Cookies.ForcePrimary), "true");
       }
     }
-    assert.deepEqual(calls.verifyOtp, [
-      { email: input.email, token: input.token, type: "email" },
-    ]);
+    assert.deepEqual(
+      calls.verifyOtp,
+      scenario === "otp-disabled"
+        ? []
+        : [{ email: input.email, token: input.token, type: "email" }],
+    );
+  } else if (scenario.startsWith("password-")) {
+    const { signInWithPasswordAction } = await import(
+      "../../actions/sign-in-with-password-action"
+    );
+    const input = {
+      email: "fixture@example.test",
+      password: "test-only-password-not-a-real-credential",
+      redirectTo:
+        scenario === "password-unsafe-redirect"
+          ? "https://untrusted.example.test/"
+          : "settings/accounts",
+    };
+    if (
+      [
+        "password-error",
+        "password-throw",
+        "password-no-session",
+        "password-disabled",
+      ].includes(scenario)
+    ) {
+      await assert.rejects(signInWithPasswordAction(input), {
+        message:
+          "Unable to sign in. Check your email and password and try again.",
+      });
+      assert.equal(cookieValues.size, 0);
+      assert.equal(calls.signOut, 0);
+    } else {
+      await assert.rejects(
+        signInWithPasswordAction(input),
+        (error: unknown) => {
+          assert(error instanceof RedirectSignal);
+          assert.equal(
+            error.destination,
+            scenario === "password-waitlist"
+              ? `${origin}/login?waitlist=1`
+              : scenario === "password-unsafe-redirect"
+                ? `${origin}/`
+                : `${origin}/settings/accounts`,
+          );
+          return true;
+        },
+      );
+      if (scenario === "password-waitlist") {
+        assert.equal(calls.signOut, 1);
+        assert.equal(cookieValues.size, 0);
+      } else {
+        assert.equal(
+          cookieValues.get(Cookies.PreferredSignInProvider),
+          "password",
+        );
+        assert.equal(cookieValues.get(Cookies.ForcePrimary), "true");
+        assert.equal(calls.signOut, 0);
+      }
+    }
+    assert.deepEqual(
+      calls.password,
+      scenario === "password-disabled"
+        ? []
+        : [{ email: input.email, password: input.password }],
+    );
+    assert.deepEqual(calls.verifyOtp, []);
+    assert.deepEqual(calls.exchangeCode, []);
   } else {
     const { GET } = await import("../../app/api/auth/callback/route");
     const url = new URL("/api/auth/callback", origin);

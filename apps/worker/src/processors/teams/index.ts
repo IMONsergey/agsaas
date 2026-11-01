@@ -1,7 +1,9 @@
 import { CancellationEmailFollowupProcessor } from "./cancellation-email-followup";
 import { CancellationEmailsProcessor } from "./cancellation-emails";
 import { DeleteTeamProcessor } from "./delete-team";
+import { DeliverTeamInvitationProcessor } from "./deliver-team-invitation";
 import { PaymentIssueProcessor } from "./payment-issue";
+import { ReconcileTeamInvitationsProcessor } from "./reconcile-team-invitations";
 
 /**
  * Export all team processors (for type imports)
@@ -16,6 +18,8 @@ export { PaymentIssueProcessor } from "./payment-issue";
  * Maps job names to processor instances
  */
 export const teamProcessors = {
+  "deliver-team-invitation": new DeliverTeamInvitationProcessor(),
+  "reconcile-team-invitations": new ReconcileTeamInvitationsProcessor(),
   "delete-team": new DeleteTeamProcessor(),
   "cancellation-email-immediate": new CancellationEmailsProcessor(),
   "cancellation-email-followup": new CancellationEmailFollowupProcessor(),

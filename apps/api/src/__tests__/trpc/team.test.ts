@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { TeamMembershipError } from "@midday/db/errors";
 import { getTeamMembersByTeamId, getTeamsByUserId } from "@midday/db/queries";
+import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
 import { createCallerFactory } from "../../trpc/init";
 import { teamRouter } from "../../trpc/routers/team";
 import { createTestContext } from "../helpers/test-context";
@@ -533,11 +534,21 @@ describe("tRPC: team.invitesByEmail", () => {
 
 describe("tRPC: team.invite", () => {
   beforeEach(() => {
+    asMock(getTeamInviteEmailConfig).mockReset();
+    asMock(getTeamInviteEmailConfig).mockReturnValue({
+      from: "AGSaaS <hello@example.test>",
+      appUrl: "https://app.example.test",
+      productName: "AGSaaS",
+    });
+    mocks.triggerJob.mockReset();
+    mocks.triggerJob.mockImplementation(async () => ({ id: "queued-job" }));
     mocks.createTeamInvites.mockReset();
     mocks.createTeamInvites.mockImplementation(() =>
       Promise.resolve({
         results: [
           {
+            id: SAMPLE_UUID,
+            deliveryId: OTHER_USER_ID,
             email: "test@example.com",
             team: { name: "Acme" },
           },
@@ -553,7 +564,8 @@ describe("tRPC: team.invite", () => {
       { email: "test@example.com", role: "member" },
     ]);
 
-    expect(result.sent).toBe(1);
+    expect(result.queued).toBe(1);
+    expect(result).not.toHaveProperty("sent");
     expect(result.skipped).toBe(0);
     expect(mocks.createTeamInvites).toHaveBeenCalledWith(
       expect.anything(),
@@ -567,6 +579,44 @@ describe("tRPC: team.invite", () => {
         ],
       }),
     );
+  });
+
+  test("invalid addresses and empty or oversized batches fail before persistence", async () => {
+    const caller = createCaller(createTestContext());
+    await expect(caller.invite([])).rejects.toThrow();
+    await expect(
+      caller.invite([{ email: "invalid", role: "member" }]),
+    ).rejects.toThrow();
+    await expect(
+      caller.invite(
+        Array.from({ length: 51 }, () => ({
+          email: "person@example.test",
+          role: "member" as const,
+        })),
+      ),
+    ).rejects.toThrow();
+    expect(mocks.createTeamInvites).not.toHaveBeenCalled();
+  });
+  test("missing installation email configuration fails before persistence or queueing", async () => {
+    asMock(getTeamInviteEmailConfig).mockImplementation(() => {
+      throw new Error("Missing fixture configuration");
+    });
+    await expect(
+      createCaller(createTestContext()).invite([
+        { email: "person@example.test", role: "member" },
+      ]),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.createTeamInvites).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("Redis failure still returns the durable queued result", async () => {
+    mocks.triggerJob.mockImplementation(async () => {
+      throw new Error("Redis unavailable");
+    });
+    const result = await createCaller(createTestContext()).invite([
+      { email: "test@example.com", role: "member" },
+    ]);
+    expect(result).toEqual({ queued: 1, skipped: 0, skippedInvites: [] });
   });
 });
 

@@ -70,6 +70,9 @@ services:
       SUPABASE_JWT_SECRET: "${JWT_SECRET:?Use the matching Supabase legacy signing secret}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      APP_NAME: "${APP_NAME:-AGSaaS}"
       ALLOWED_API_ORIGINS: "${AGSAAS_DASHBOARD_URL:?Set the exact dashboard origin}"
     healthcheck:
       test:
@@ -110,6 +113,9 @@ services:
       DATABASE_PRIMARY_POOLER_URL: "${AGSAAS_WORKER_DATABASE_URL:?Set the dedicated role and transaction pooler tenant}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      APP_NAME: "${APP_NAME:-AGSaaS}"
       WORKER_ENV: "${AGSAAS_WORKER_ENV:-staging}"
       INSIGHTS_ENABLED: "${INSIGHTS_ENABLED:-false}"
     healthcheck:
@@ -154,6 +160,7 @@ services:
       NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:?Use the same key as the image build}"
       # Omitted by default: no arbitrary historical signup cutoff for self-hosting.
       NEW_USER_SIGNUP_CUTOFF: "${NEW_USER_SIGNUP_CUTOFF:-}"
+      AUTH_ENABLED_PROVIDERS: "${AUTH_ENABLED_PROVIDERS:-email}"
     healthcheck:
       test:
         - CMD

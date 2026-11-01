@@ -80,7 +80,43 @@ const getAddressDetailsByAddressId = async (
   };
 };
 
-export function SearchAddressInput({
+function AddressSearchFallback({ loading = false }: { loading?: boolean }) {
+  return (
+    <p role="status" className="text-xs text-muted-foreground">
+      {loading
+        ? "Address search is loading. You can enter the address manually below."
+        : "Address search is unavailable. Enter the address manually below."}
+    </p>
+  );
+}
+
+export function SearchAddressInput(props: Props) {
+  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_API_KEY?.trim();
+  if (!apiKey) return <AddressSearchFallback />;
+  return <GoogleAddressLoader {...props} apiKey={apiKey} />;
+}
+
+function GoogleAddressLoader({ apiKey, ...props }: Props & { apiKey: string }) {
+  const { isLoaded, loadError } = useJsApiLoader({
+    googleMapsApiKey: apiKey,
+    libraries,
+  });
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (isLoaded || loadError) return;
+    const timeout = setTimeout(() => setTimedOut(true), 10_000);
+    return () => clearTimeout(timeout);
+  }, [isLoaded, loadError]);
+
+  if (loadError || timedOut) return <AddressSearchFallback />;
+  if (!isLoaded) return <AddressSearchFallback loading />;
+  // Mount Places only after the SDK is ready. initOnMount must not be false
+  // on its first render and then depend on a later loader state change.
+  return <GoogleAddressInput {...props} />;
+}
+
+function GoogleAddressInput({
   onSelect,
   placeholder,
   defaultValue,
@@ -92,23 +128,26 @@ export function SearchAddressInput({
   const [isOpen, setOpen] = useState(false);
   const [selected, setSelected] = useState<Option | null>(null);
   const [inputValue, setInputValue] = useState<string>(defaultValue || "");
-
-  const { isLoaded } = useJsApiLoader({
-    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_API_KEY as string,
-    libraries,
-  });
+  const [lookupFailed, setLookupFailed] = useState(false);
+  const [initializationTimedOut, setInitializationTimedOut] = useState(false);
 
   const {
     ready,
     suggestions: { status, data },
     setValue,
   } = usePlacesAutoComplete({
-    initOnMount: isLoaded,
+    initOnMount: true,
     debounce: 300,
     requestOptions: {
       language: "en",
     },
   });
+
+  useEffect(() => {
+    if (ready) return;
+    const timeout = setTimeout(() => setInitializationTimedOut(true), 10_000);
+    return () => clearTimeout(timeout);
+  }, [ready]);
 
   useEffect(() => {
     if (defaultValue) {
@@ -171,15 +210,27 @@ export function SearchAddressInput({
 
   const handleSelect = async (address: Option) => {
     setValue(address.label, false);
-    const addressDetails = await getAddressDetailsByAddressId(address.value);
-
-    onSelect(addressDetails);
+    try {
+      const addressDetails = await getAddressDetailsByAddressId(address.value);
+      onSelect(addressDetails);
+    } catch {
+      // Keep the customer's existing manual fields intact if Google fails.
+      setLookupFailed(true);
+    }
   };
 
   // @ts-expect-error
   useOnClickOutside(ref, () => {
     setOpen(false);
   });
+
+  if (
+    lookupFailed ||
+    initializationTimedOut ||
+    ["REQUEST_DENIED", "OVER_QUERY_LIMIT", "INVALID_REQUEST"].includes(status)
+  ) {
+    return <AddressSearchFallback />;
+  }
 
   return (
     <div ref={ref} className="relative">

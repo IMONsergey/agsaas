@@ -24,6 +24,7 @@ import { Label } from "@midday/ui/label";
 import { Skeleton } from "@midday/ui/skeleton";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { Textarea } from "@midday/ui/textarea";
+import { useToast } from "@midday/ui/use-toast";
 import { isValidEmailList } from "@midday/utils";
 import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -107,6 +108,7 @@ type Props = {
 
 export function CustomerForm({ data }: Props) {
   const trpc = useTRPC();
+  const { toast } = useToast();
   const queryClient = useQueryClient();
   const { track } = useOpenPanel();
   const isEdit = !!data;
@@ -117,6 +119,12 @@ export function CustomerForm({ data }: Props) {
 
   const upsertCustomerMutation = useMutation(
     trpc.customers.upsert.mutationOptions({
+      onError: () => {
+        toast({
+          title: "Failed to save customer",
+          description: "An unexpected error occurred. Please try again.",
+        });
+      },
       onSuccess: (data) => {
         if (!isEdit) {
           track(LogEvents.CustomerCreated.name);

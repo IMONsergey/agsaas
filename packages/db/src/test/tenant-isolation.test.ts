@@ -19,7 +19,10 @@ import {
 import { draftInvoice } from "../queries/invoices";
 import {
   bulkCreateTrackerEntries,
+  getCurrentTimer,
+  getTimerStatus,
   startTimer,
+  stopTimer,
   upsertTrackerEntries,
 } from "../queries/tracker-entries";
 import {
@@ -107,6 +110,27 @@ function attachmentInput(
     size: 123,
     path: [tenant.teamId, "fixtures", `${randomUUID()}.pdf`],
   };
+}
+
+async function runningTimerFromYesterday(
+  db: Database,
+  tenant: TenantFixtureIds,
+) {
+  const start = new Date();
+  start.setDate(start.getDate() - 1);
+  start.setHours(12, 0, 0, 0);
+  const id = randomUUID();
+  await db.insert(trackerEntries).values({
+    id,
+    teamId: tenant.teamId,
+    projectId: tenant.projectId,
+    assignedId: tenant.userId,
+    start: start.toISOString(),
+    date: start.toISOString().slice(0, 10),
+    stop: null,
+    duration: null,
+  });
+  return { id, start: start.toISOString() };
 }
 
 async function expectNotFound(promise: Promise<unknown>) {
@@ -525,6 +549,116 @@ describe.skipIf(!isTestDatabaseAvailable())(
           })
         )?.stop,
       ).not.toBeNull();
+    });
+
+    test("running timer survives midnight and remains scoped to its team and assignee", async () => {
+      const { own, other } = fixture!;
+      const overnight = await runningTimerFromYesterday(db, own);
+      await runningTimerFromYesterday(db, other);
+
+      expect(
+        await getCurrentTimer(db, {
+          teamId: own.teamId,
+          assignedId: own.userId,
+        }),
+      ).toMatchObject({ id: overnight.id, stop: null });
+      const status = await getTimerStatus(db, {
+        teamId: own.teamId,
+        assignedId: own.userId,
+      });
+      expect(status.isRunning).toBe(true);
+      expect(status.currentEntry?.id).toBe(overnight.id);
+      expect(status.elapsedTime).toBeGreaterThan(60);
+      expect(
+        await getCurrentTimer(db, {
+          teamId: own.teamId,
+          assignedId: other.userId,
+        }),
+      ).toBeNull();
+      expect(
+        await getCurrentTimer(db, {
+          teamId: other.teamId,
+          assignedId: own.userId,
+        }),
+      ).toBeNull();
+    });
+
+    test("stop without an entry ID closes yesterday's timer and preserves the other team", async () => {
+      const { own, other } = fixture!;
+      const overnight = await runningTimerFromYesterday(db, own);
+      const foreign = await runningTimerFromYesterday(db, other);
+      const stop = new Date().toISOString();
+      const expectedDuration = Math.floor(
+        (Date.parse(stop) - Date.parse(overnight.start)) / 1000,
+      );
+
+      const result = await stopTimer(db, {
+        teamId: own.teamId,
+        assignedId: own.userId,
+        stop,
+      });
+      expect(result).toMatchObject({
+        id: overnight.id,
+        duration: expectedDuration,
+      });
+      const saved = await db.query.trackerEntries.findFirst({
+        where: eq(trackerEntries.id, overnight.id),
+      });
+      expect(Date.parse(saved!.stop!)).toBe(Date.parse(stop));
+      expect(saved?.duration).toBe(expectedDuration);
+      expect(
+        await getCurrentTimer(db, {
+          teamId: own.teamId,
+          assignedId: own.userId,
+        }),
+      ).toBeNull();
+      expect(
+        await db.query.trackerEntries.findFirst({
+          where: eq(trackerEntries.id, foreign.id),
+        }),
+      ).toMatchObject({ stop: null, duration: null });
+    });
+
+    test("starting a timer closes yesterday's own timer only, after validating links", async () => {
+      const { own, other } = fixture!;
+      const overnight = await runningTimerFromYesterday(db, own);
+      const foreign = await runningTimerFromYesterday(db, other);
+
+      await expectNotFound(
+        startTimer(db, {
+          teamId: own.teamId,
+          projectId: other.projectId,
+          assignedId: own.userId,
+        }),
+      );
+      expect(
+        await db.query.trackerEntries.findFirst({
+          where: eq(trackerEntries.id, overnight.id),
+        }),
+      ).toMatchObject({ stop: null, duration: null });
+
+      const next = await startTimer(db, {
+        teamId: own.teamId,
+        projectId: own.projectId,
+        assignedId: own.userId,
+      });
+      expect(next?.id).not.toBe(overnight.id);
+      const previous = await db.query.trackerEntries.findFirst({
+        where: eq(trackerEntries.id, overnight.id),
+      });
+      expect(previous?.stop).not.toBeNull();
+      expect(previous?.duration).toBeGreaterThan(60);
+      expect(
+        await getCurrentTimer(db, {
+          teamId: own.teamId,
+          assignedId: own.userId,
+        }),
+      ).toMatchObject({ id: next!.id, stop: null });
+      expect(
+        await db.query.trackerEntries.findFirst({
+          where: eq(trackerEntries.id, foreign.id),
+        }),
+      ).toMatchObject({ stop: null, duration: null });
     });
 
     test("project rejects foreign customer and tags without modifying its row", async () => {

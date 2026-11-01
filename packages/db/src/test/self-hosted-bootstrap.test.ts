@@ -78,6 +78,7 @@ describe("self-hosted application baseline (offline)", () => {
     for (const name of [
       "invoice_payment_reservations",
       "invoice_email_deliveries",
+      "team_invite_deliveries",
     ]) {
       expect(projected.tables[`public.${name}`]?.isRLSEnabled).toBe(true);
       delete projected.tables[`public.${name}`];
@@ -87,6 +88,12 @@ describe("self-hosted application baseline (offline)", () => {
       columns: ["id", "team_id"],
     });
     delete constraints.invoices_id_team_id_key;
+    const inviteConstraints =
+      projected.tables["public.user_invites"]!.uniqueConstraints!;
+    expect(inviteConstraints.user_invites_id_team_id_key).toMatchObject({
+      columns: ["id", "team_id"],
+    });
+    delete inviteConstraints.user_invites_id_team_id_key;
     expect(Object.keys(projected.tables)).toHaveLength(49);
     expect(await generateBootstrapSql(projected)).toBe(baseline);
     expect(
@@ -189,9 +196,9 @@ describe("self-hosted application baseline (offline)", () => {
     );
   });
 
-  test("manages 49 baseline and 2 incremental application tables, never platform tables", () => {
+  test("manages 49 baseline and 3 incremental application tables, never platform tables", () => {
     const snapshot = createApplicationSnapshot();
-    expect(Object.keys(snapshot.tables)).toHaveLength(51);
+    expect(Object.keys(snapshot.tables)).toHaveLength(52);
     expect(Object.keys(snapshot.enums)).toHaveLength(33);
     expect(Object.keys(snapshot.views)).toHaveLength(0);
     expect(Object.keys(snapshot.roles)).toHaveLength(0);
@@ -289,7 +296,7 @@ describe("self-hosted application baseline (offline)", () => {
         },
       ]);
     }
-    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(51);
+    expect(sql.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(52);
     expect(sql).toContain("AND NOT r.rolinherit AND NOT r.rolbypassrls");
     expect(sql).toContain("m.member = r.oid");
   });

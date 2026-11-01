@@ -1199,6 +1199,14 @@ mock.module("@midday/job-client", () => ({
   decodeJobId: mock((id: string) => ({ id, queue: "default" })),
 }));
 
+mock.module("@midday/notifications/team-invitation-config", () => ({
+  getTeamInviteEmailConfig: mock(() => ({
+    from: "AGSaaS <hello@example.test>",
+    appUrl: "https://app.example.test",
+    productName: "AGSaaS",
+  })),
+}));
+
 mock.module("@midday/notifications", () => ({
   Notifications: class {
     create() {

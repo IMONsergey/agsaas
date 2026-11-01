@@ -103,3 +103,16 @@ changing a key or resetting first-attempt timestamps is not a recovery plan.
 
 See [invoice email operations](../../../../docs/agsaas-invoice-email-delivery.md)
 and the [packet 03 report](../../../../docs/agsaas-hardening-packet-03.md).
+
+## Durable team invitations (packet 04)
+
+`20261101080254_durable_team_invitation_delivery.sql` adds the backend-only
+invitation delivery journal and composite invitation/team foreign key. Apply
+it transactionally after packet 03 and before deploying the new invitation
+API and workers. The file was created with Supabase CLI 2.84.6. It deliberately
+does not backfill existing invitations or infer a provider receipt from old
+Trigger.dev jobs. Reconcile pre-switch tasks separately; automatic recovery
+only scans intents explicitly created by the new application transaction.
+
+See [team invitation delivery](../../../../docs/agsaas-team-invitation-delivery.md)
+for configuration, queued/accepted semantics and finite replay boundaries.

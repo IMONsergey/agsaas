@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { AppSunsetBanner } from "@/components/app-sunset-banner";
 import { ExportStatus } from "@/components/export-status";
 import { GlobalTimerProvider } from "@/components/global-timer-provider";
 import { Header } from "@/components/header";
@@ -45,7 +44,6 @@ export default async function Layout({
         <Sidebar />
 
         <div className="md:ml-[70px] pb-4">
-          <AppSunsetBanner />
           <Header />
           <div className="px-4 md:px-8">{children}</div>
         </div>

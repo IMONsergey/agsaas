@@ -665,18 +665,12 @@ export async function getCurrentTimer(
 ) {
   const { teamId, assignedId } = params;
 
-  // Only include timers that started between today (00:00) and tomorrow (00:00) to handle midnight running
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-
+  // An unfinished timer remains active across midnight and timezone changes.
+  // Calendar filtering belongs to reporting, not the running-timer lookup.
   const whereConditions = [
     eq(trackerEntries.teamId, teamId),
     // stop is null means it's running
     isNull(trackerEntries.stop),
-    gte(trackerEntries.start, today.toISOString()),
-    lte(trackerEntries.start, tomorrow.toISOString()),
   ];
 
   if (assignedId) {
@@ -767,17 +761,11 @@ async function getCurrentRunningTimer(
 ) {
   const { teamId, assignedId } = params;
 
-  // Only include timers that started between today (00:00) and tomorrow (00:00) to handle midnight running
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-
+  // An unfinished timer remains active across midnight and timezone changes.
+  // Calendar filtering belongs to reporting, not the running-timer lookup.
   const whereConditions = [
     eq(trackerEntries.teamId, teamId),
     isNull(trackerEntries.stop),
-    gte(trackerEntries.start, today.toISOString()),
-    lte(trackerEntries.start, tomorrow.toISOString()),
   ];
 
   if (assignedId) {

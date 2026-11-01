@@ -81,7 +81,7 @@ export function OTPSignIn({ className }: Props) {
         const result = await verifyOtp.executeAsync({
           token,
           email,
-          redirectTo: `${window.location.origin}/${searchParams.get("return_to") || ""}`,
+          redirectTo: searchParams.get("return_to") || "/",
         });
         return { error: result?.serverError ?? result?.validationErrors };
       },

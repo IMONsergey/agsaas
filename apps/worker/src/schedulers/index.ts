@@ -11,12 +11,14 @@ import { institutionsStaticSchedulers } from "./institutions.config";
 import { invoicesStaticSchedulers } from "./invoices.config";
 import { notificationsStaticSchedulers } from "./notifications.config";
 import { ratesStaticSchedulers } from "./rates.config";
+import { teamsStaticSchedulers } from "./teams.config";
 
 /**
  * All static scheduler configurations
  * Add new static scheduler configs here to automatically register them
  */
 export const staticSchedulerConfigs: StaticSchedulerConfig[] = [
+  ...teamsStaticSchedulers,
   ...inboxStaticSchedulers,
   ...institutionsStaticSchedulers,
   ...invoicesStaticSchedulers,

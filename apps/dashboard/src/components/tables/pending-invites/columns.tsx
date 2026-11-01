@@ -41,6 +41,22 @@ export const columns: ColumnDef<TeamInvite>[] = [
           </Avatar>
           <div className="flex flex-col">
             <span className="font-medium text-sm">Pending Invitation</span>
+            <span className="text-xs text-[#606060]" role="status">
+              {row.original.delivery?.status === "accepted"
+                ? "Email accepted by provider"
+                : row.original.delivery?.status === "reconciliation"
+                  ? "Email delivery needs review"
+                  : row.original.delivery?.status === "rejected"
+                    ? "Email could not be sent"
+                    : row.original.delivery?.status === "canceled"
+                      ? "Email sending canceled"
+                      : row.original.delivery?.errorCode ===
+                          "configuration_unavailable"
+                        ? "Waiting for email configuration"
+                        : row.original.delivery
+                          ? "Email queued"
+                          : "Email delivery not recorded"}
+            </span>
             <span className="text-sm text-[#606060]">{row.original.email}</span>
           </div>
         </div>

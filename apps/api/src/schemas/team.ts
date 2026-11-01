@@ -256,14 +256,14 @@ export const leaveTeamSchema = z.object({
 });
 
 export const acceptTeamInviteSchema = z.object({
-  id: z.string().openapi({
+  id: z.string().uuid().openapi({
     description: "Unique identifier of the team invitation to accept",
     example: "123e4567-e89b-12d3-a456-426614174000",
   }),
 });
 
 export const declineTeamInviteSchema = z.object({
-  id: z.string().openapi({
+  id: z.string().uuid().openapi({
     description: "Unique identifier of the team invitation to decline",
     example: "123e4567-e89b-12d3-a456-426614174000",
   }),
@@ -306,10 +306,16 @@ export const updateTeamMemberSchema = z.object({
 export const inviteTeamMembersSchema = z
   .array(
     z.object({
-      email: z.string().openapi({
-        description: "Email address of the person to invite",
-        example: "john.doe@acme.com",
-      }),
+      email: z
+        .string()
+        .trim()
+        .email()
+        .max(254)
+        .transform((value) => value.toLowerCase())
+        .openapi({
+          description: "Email address of the person to invite",
+          example: "john.doe@acme.com",
+        }),
       role: z.enum(["owner", "member"]).openapi({
         description:
           "Role to assign to the invited member. 'owner' has full permissions, 'member' has limited permissions",
@@ -317,8 +323,10 @@ export const inviteTeamMembersSchema = z
       }),
     }),
   )
+  .min(1)
+  .max(50)
   .openapi({
-    description: "Array of team member invitations to send",
+    description: "Array of team member invitations to queue",
     example: [
       { email: "john.doe@acme.com", role: "member" },
       { email: "jane.smith@acme.com", role: "owner" },
@@ -326,9 +334,9 @@ export const inviteTeamMembersSchema = z
   });
 
 export const deleteTeamInviteSchema = z.object({
-  id: z.string().openapi({
+  id: z.string().uuid().openapi({
     description: "Unique identifier of the team invitation to delete",
-    example: "invite-123abc456def",
+    example: "123e4567-e89b-12d3-a456-426614174000",
   }),
 });
 

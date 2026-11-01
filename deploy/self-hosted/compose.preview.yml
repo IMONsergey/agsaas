@@ -1,0 +1,44 @@
+# Explicit isolated AGSaaS preview. Layer last over the pinned platform and apps.
+name: agsaas-preview-20261101
+services:
+  studio:
+    container_name: agsaas-preview-20261101-studio
+  api-gw:
+    container_name: agsaas-preview-20261101-envoy
+    ports: !override
+      - "127.0.0.1:4000:8000/tcp"
+  auth:
+    container_name: agsaas-preview-20261101-auth
+    environment:
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+  rest:
+    container_name: agsaas-preview-20261101-rest
+  realtime:
+    container_name: realtime-dev.agsaas-preview-20261101-realtime
+  storage:
+    container_name: agsaas-preview-20261101-storage
+  imgproxy:
+    container_name: agsaas-preview-20261101-imgproxy
+  meta:
+    container_name: agsaas-preview-20261101-meta
+  functions:
+    container_name: agsaas-preview-20261101-edge-functions
+  db:
+    container_name: agsaas-preview-20261101-db
+  supavisor:
+    container_name: agsaas-preview-20261101-pooler
+  api:
+    ports: !override
+      - "127.0.0.1:3503:8080/tcp"
+  dashboard:
+    ports: !override
+      - "127.0.0.1:3500:3000/tcp"
+    environment:
+      AUTH_ENABLED_PROVIDERS: "password"
+networks:
+  default:
+    name: agsaas-preview-20261101_default
