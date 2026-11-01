@@ -405,7 +405,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
         await prepareInvoiceEmailDelivery(tx, preparation(f));
         await tx
           .update(invoiceEmailDeliveries)
-          .set({ firstAttemptAt: sql`clock_timestamp()`, attempts: 12 })
+          .set({
+            firstAttemptAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+            attempts: 12,
+          })
           .where(eq(invoiceEmailDeliveries.operationKey, f.operationKey));
         const claim = await claimInvoiceEmailDelivery(tx, f);
         expect(claim.state).toBe("stopped");
