@@ -31,7 +31,14 @@ describe("HTML/PDF persisted financial snapshot parity", () => {
     taxLabel: "Tax",
     subtotalLabel: "Subtotal",
     totalLabel: "Total",
-    lineItems: [{ price: 1000, quantity: 1, taxRate: 20 }],
+    lineItems: [
+      {
+        name: "Snapshot regression fixture",
+        price: 1000,
+        quantity: 1,
+        taxRate: 20,
+      },
+    ],
   };
 
   for (const [name, Summary] of [
