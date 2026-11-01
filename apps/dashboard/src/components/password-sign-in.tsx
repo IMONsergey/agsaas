@@ -15,11 +15,10 @@ import { useToast } from "@midday/ui/use-toast";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useAction } from "next-safe-action/hooks";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod/v3";
 import { signInWithPasswordAction } from "@/actions/sign-in-with-password-action";
-import { runAuthRequest } from "@/utils/auth-flow";
 
 const formSchema = z.object({
   email: z.string().trim().email().max(320),
@@ -31,37 +30,34 @@ export function PasswordSignIn({
 }: {
   recoveryEnabled?: boolean;
 }) {
-  const signIn = useAction(signInWithPasswordAction);
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const [isLoading, setLoading] = useState(false);
   const pending = useRef(false);
+  const signIn = useAction(signInWithPasswordAction, {
+    onError: () => {
+      toast({
+        title: "Unable to sign in",
+        description: "Check your email and password and try again.",
+        variant: "error",
+      });
+    },
+    onSettled: () => {
+      pending.current = false;
+    },
+  });
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: { email: "", password: "" },
   });
 
-  async function onSubmit(values: z.infer<typeof formSchema>) {
-    if (pending.current || signIn.isExecuting) return;
-    await runAuthRequest({
-      request: async () => {
-        const result = await signIn.executeAsync({
-          ...values,
-          redirectTo: searchParams.get("return_to") || "/",
-        });
-        return { error: result?.serverError ?? result?.validationErrors };
-      },
-      setPending: (value) => {
-        pending.current = value;
-        setLoading(value);
-      },
-      onError: () => {
-        toast({
-          title: "Unable to sign in",
-          description: "Check your email and password and try again.",
-          variant: "error",
-        });
-      },
+  function onSubmit(values: z.infer<typeof formSchema>) {
+    if (pending.current || signIn.isPending) return;
+    pending.current = true;
+    // The action redirects on success. Let the hook distinguish navigation
+    // from authentication and transport errors through its callbacks.
+    signIn.execute({
+      ...values,
+      redirectTo: searchParams.get("return_to") || "/",
     });
   }
 
@@ -91,7 +87,7 @@ export function PasswordSignIn({
                     autoCorrect="off"
                     spellCheck={false}
                     placeholder="Enter email address"
-                    disabled={isLoading || signIn.isExecuting}
+                    disabled={signIn.isPending}
                   />
                 </FormControl>
                 <FormMessage />
@@ -112,7 +108,7 @@ export function PasswordSignIn({
                     type="password"
                     autoComplete="current-password"
                     placeholder="Enter password"
-                    disabled={isLoading || signIn.isExecuting}
+                    disabled={signIn.isPending}
                   />
                 </FormControl>
                 <FormMessage />
@@ -122,7 +118,7 @@ export function PasswordSignIn({
           <SubmitButton
             type="submit"
             className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
-            isSubmitting={isLoading || signIn.isExecuting}
+            isSubmitting={signIn.isPending}
           >
             Sign in
           </SubmitButton>
