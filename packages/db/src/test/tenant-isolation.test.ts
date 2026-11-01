@@ -8,9 +8,13 @@ import {
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { upsertApiKey } from "../queries/api-keys";
+import {
+  getCustomerForEnrichment,
+  updateCustomerEnrichment,
+} from "../queries/customer-enrichment";
 import { upsertCustomer } from "../queries/customers";
 import {
   createDocumentTagAssignment,
@@ -67,6 +71,27 @@ import {
   getTestDatabase,
   isTestDatabaseAvailable,
 } from "./helpers/test-database";
+
+const manualCustomerDetails = {
+  addressLine1: "100 Demo Street",
+  city: "New York",
+  state: "NY",
+  country: "United States",
+  countryCode: "US",
+  zip: "10001",
+  vatNumber: "MANUAL-VAT",
+};
+
+const providerEnrichment = {
+  description: "Verified provider profile",
+  industry: "Software",
+  addressLine1: "200 Provider Street",
+  city: "Toronto",
+  state: "ON",
+  country: "Canada",
+  zipCode: "M5V 2T6",
+  vatNumber: "PROVIDER-VAT",
+};
 
 function invoiceInput(
   tenant: TenantFixtureIds,
@@ -357,6 +382,246 @@ describe.skipIf(!isTestDatabaseAvailable())(
         name: "Updated own customer",
         tags: [],
       });
+    });
+
+    test("empty customer enrichment preserves the manually saved address", async () => {
+      const { own } = fixture!;
+      await upsertCustomer(db, {
+        id: own.customerId,
+        teamId: own.teamId,
+        name: "Manual customer",
+        email: "manual@example.test",
+        ...manualCustomerDetails,
+      });
+      await db
+        .update(customers)
+        .set({ description: "Existing profile" })
+        .where(eq(customers.id, own.customerId));
+
+      // Missing provider configuration/no match produces these null fields.
+      await updateCustomerEnrichment(db, {
+        customerId: own.customerId,
+        teamId: own.teamId,
+        data: {
+          description: null,
+          addressLine1: null,
+          city: null,
+          state: null,
+          country: null,
+          zipCode: null,
+          vatNumber: null,
+        },
+      });
+
+      expect(
+        await db.query.customers.findFirst({
+          where: eq(customers.id, own.customerId),
+        }),
+      ).toMatchObject({
+        ...manualCustomerDetails,
+        description: "Existing profile",
+        enrichmentStatus: "completed",
+      });
+    });
+
+    test("customer enrichment preserves manual edits made after the worker read", async () => {
+      const { own } = fixture!;
+      const snapshot = await getCustomerForEnrichment(db, {
+        customerId: own.customerId,
+        teamId: own.teamId,
+      });
+      expect(snapshot).toMatchObject({
+        addressLine1: null,
+        city: null,
+        state: null,
+        country: null,
+        vatNumber: null,
+      });
+
+      // The provider request is in flight while the owner saves an address.
+      await upsertCustomer(db, {
+        id: own.customerId,
+        teamId: own.teamId,
+        name: "Manual customer",
+        email: "manual@example.test",
+        ...manualCustomerDetails,
+      });
+      await updateCustomerEnrichment(db, {
+        customerId: own.customerId,
+        teamId: own.teamId,
+        data: providerEnrichment,
+      });
+
+      expect(
+        await db.query.customers.findFirst({
+          where: eq(customers.id, own.customerId),
+        }),
+      ).toMatchObject({
+        ...manualCustomerDetails,
+        description: providerEnrichment.description,
+        industry: providerEnrichment.industry,
+        enrichmentStatus: "completed",
+      });
+    });
+
+    for (const empty of [null, "", "   "]) {
+      test(`customer enrichment fills ${JSON.stringify(empty)} address fields and maps the provider ZIP`, async () => {
+        const { own } = fixture!;
+        await db
+          .update(customers)
+          .set({
+            addressLine1: empty,
+            city: empty,
+            state: empty,
+            country: empty,
+            zip: empty,
+            vatNumber: empty,
+          })
+          .where(eq(customers.id, own.customerId));
+
+        await updateCustomerEnrichment(db, {
+          customerId: own.customerId,
+          teamId: own.teamId,
+          data: providerEnrichment,
+        });
+
+        expect(
+          await db.query.customers.findFirst({
+            where: eq(customers.id, own.customerId),
+          }),
+        ).toMatchObject({
+          addressLine1: providerEnrichment.addressLine1,
+          city: providerEnrichment.city,
+          state: providerEnrichment.state,
+          country: providerEnrichment.country,
+          zip: providerEnrichment.zipCode,
+          vatNumber: providerEnrichment.vatNumber,
+          description: providerEnrichment.description,
+          industry: providerEnrichment.industry,
+          enrichmentStatus: "completed",
+        });
+      });
+    }
+
+    test("customer enrichment rechecks manual fields after waiting for a row lock", async () => {
+      const { own } = fixture!;
+      const enrichment: {
+        pending?: Promise<{ error: unknown }>;
+        result?: { error: unknown };
+      } = {};
+      try {
+        await db.transaction(async (tx) => {
+          const owner = await tx.execute(sql`select pg_backend_pid() as pid`);
+          const ownerPid = Number(owner.rows[0]?.pid);
+          await tx
+            .update(customers)
+            .set(manualCustomerDetails)
+            .where(eq(customers.id, own.customerId));
+
+          // A second connection sees the old NULL address until this commits.
+          enrichment.pending = updateCustomerEnrichment(db, {
+            customerId: own.customerId,
+            teamId: own.teamId,
+            data: providerEnrichment,
+          }).then(
+            () => ({ error: null }),
+            (error: unknown) => ({ error }),
+          );
+
+          const deadline = Date.now() + 2_000;
+          let waiting = false;
+          while (Date.now() < deadline) {
+            const locks = await db.execute(sql`
+              select exists (
+                select 1 from pg_stat_activity
+                where ${ownerPid} = any(pg_blocking_pids(pid))
+              ) as waiting
+            `);
+            if (locks.rows[0]?.waiting === true) {
+              waiting = true;
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          expect(waiting).toBe(true);
+          // Commit the owner's edit before the enrichment UPDATE can resume.
+        });
+      } finally {
+        // Always release the lock before draining the concurrent query.
+        enrichment.result = await enrichment.pending;
+      }
+      if (enrichment.result && enrichment.result.error !== null) {
+        throw enrichment.result.error;
+      }
+
+      expect(
+        await db.query.customers.findFirst({
+          where: eq(customers.id, own.customerId),
+        }),
+      ).toMatchObject({
+        ...manualCustomerDetails,
+        description: providerEnrichment.description,
+        enrichmentStatus: "completed",
+      });
+    });
+
+    test("customer enrichment ignores row fields outside its explicit mapping", async () => {
+      const { own, other } = fixture!;
+      const before = await db.query.customers.findFirst({
+        where: eq(customers.id, own.customerId),
+      });
+      // Structural typing does not strip extra runtime provider properties.
+      const data = {
+        description: providerEnrichment.description,
+        teamId: other.teamId,
+        name: "Unexpected provider name",
+        email: "unexpected@example.test",
+        countryCode: "CA",
+        addressLine2: "Unexpected suite",
+        zip: "UNMAPPED-ZIP",
+        note: "Unexpected note",
+      };
+      await updateCustomerEnrichment(db, {
+        customerId: own.customerId,
+        teamId: own.teamId,
+        data,
+      });
+
+      expect(
+        await db.query.customers.findFirst({
+          where: eq(customers.id, own.customerId),
+        }),
+      ).toMatchObject({
+        id: own.customerId,
+        teamId: own.teamId,
+        name: before!.name,
+        email: before!.email,
+        countryCode: before!.countryCode,
+        addressLine2: before!.addressLine2,
+        zip: before!.zip,
+        note: before!.note,
+        description: providerEnrichment.description,
+        enrichmentStatus: "completed",
+      });
+    });
+
+    test("customer enrichment cannot write another team's customer", async () => {
+      const { own, other } = fixture!;
+      const before = await db.query.customers.findFirst({
+        where: eq(customers.id, other.customerId),
+      });
+
+      await updateCustomerEnrichment(db, {
+        customerId: other.customerId,
+        teamId: own.teamId,
+        data: providerEnrichment,
+      });
+
+      expect(
+        await db.query.customers.findFirst({
+          where: eq(customers.id, other.customerId),
+        }),
+      ).toEqual(before);
     });
 
     test("customer rejects foreign tags before changing the customer", async () => {
