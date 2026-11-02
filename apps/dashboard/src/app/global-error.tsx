@@ -1,10 +1,8 @@
 "use client";
 
-import { CopyInput } from "@/components/copy-input";
 import "@/styles/globals.css";
 import { Button } from "@midday/ui/button";
 import { useEffect } from "react";
-import { SUPPORT_EMAIL } from "@/utils/constants";
 
 export default function GlobalError({
   error,
@@ -26,12 +24,8 @@ export default function GlobalError({
           <div className="max-w-md w-full text-center px-4">
             <h2 className="font-medium mb-4">Something went wrong</h2>
             <p className="text-sm text-[#878787] mb-6">
-              We've been notified and are looking into it.
-              <br />
-              If this issue persists, please reach out to our support team.
+              Try again. If the issue persists, contact your workspace owner.
             </p>
-
-            <CopyInput value={SUPPORT_EMAIL} />
 
             {error.digest && (
               <p className="text-xs text-[#4a4a4a] mt-4">

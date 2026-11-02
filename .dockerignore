@@ -1,0 +1,22 @@
+# Keep local credentials and dependency/build output out of the Docker context.
+.git
+.github
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/build
+**/coverage
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.template
+**/.npmrc
+**/.netrc
+**/.aws
+**/.ssh
+**/*.pem
+**/*.key
+**/*.log
+**/.DS_Store

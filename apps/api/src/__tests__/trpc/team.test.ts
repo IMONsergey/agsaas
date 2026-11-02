@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { TeamMembershipError } from "@midday/db/errors";
 import { getTeamMembersByTeamId, getTeamsByUserId } from "@midday/db/queries";
+import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
 import { createCallerFactory } from "../../trpc/init";
 import { teamRouter } from "../../trpc/routers/team";
 import { createTestContext } from "../helpers/test-context";
@@ -371,40 +373,24 @@ describe("tRPC: team.delete", () => {
     mocks.getBankConnections.mockReset();
     mocks.getBankConnections.mockImplementation(() => Promise.resolve([]));
     mocks.deleteTeam.mockReset();
-    mocks.deleteTeam.mockImplementation(() =>
-      Promise.resolve({
+    mocks.deleteTeam.mockImplementation(async () => {
+      return {
         id: deleteTeamId,
         memberUserIds: ["test-user-id"],
-      }),
-    );
+        cleanupPending: 1,
+      };
+    });
     mocks.triggerJob.mockReset();
     mocks.triggerJob.mockImplementation(() => ({ id: "job-del" }));
   });
 
-  test("deletes team after access checks and calls deleteTeam", async () => {
+  test("returns a committed SQL cleanup intent without queuing credentials", async () => {
     const caller = createCaller(createTestContext());
     await caller.delete({ teamId: deleteTeamId });
 
-    expect(mocks.hasTeamAccess).toHaveBeenCalledWith(
-      expect.anything(),
-      deleteTeamId,
-      "test-user-id",
-    );
-    expect(mocks.getTeamById).toHaveBeenCalledWith(
-      expect.anything(),
-      deleteTeamId,
-    );
-    expect(mocks.getBankConnections).toHaveBeenCalledWith(expect.anything(), {
-      teamId: deleteTeamId,
-    });
-    expect(mocks.triggerJob).toHaveBeenCalledWith(
-      "delete-team",
-      expect.objectContaining({
-        teamId: deleteTeamId,
-        connections: [],
-      }),
-      "teams",
-    );
+    expect(mocks.hasTeamAccess).not.toHaveBeenCalled();
+    expect(mocks.getBankConnections).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
     expect(mocks.deleteTeam).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -412,6 +398,27 @@ describe("tRPC: team.delete", () => {
         userId: "test-user-id",
       }),
     );
+  });
+
+  test("does not queue cleanup if authoritative owner authorization fails", async () => {
+    mocks.deleteTeam.mockImplementation(async () => {
+      throw new TeamMembershipError("TEAM_OWNER_REQUIRED");
+    });
+    await expect(
+      createCaller(createTestContext()).delete({ teamId: deleteTeamId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+
+  test("Redis outage cannot lose committed provider cleanup", async () => {
+    mocks.triggerJob.mockImplementation(async () => {
+      throw new Error("queue unavailable");
+    });
+    const result = await createCaller(createTestContext()).delete({
+      teamId: deleteTeamId,
+    });
+    expect(result).toMatchObject({ id: deleteTeamId, cleanupPending: 1 });
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
   });
 });
 
@@ -442,6 +449,7 @@ describe("tRPC: team.deleteMember", () => {
       expect.objectContaining({
         teamId: "test-team-id",
         userId: OTHER_USER_ID,
+        actorId: "test-user-id",
       }),
     );
   });
@@ -476,6 +484,7 @@ describe("tRPC: team.updateMember", () => {
         teamId: "test-team-id",
         userId: OTHER_USER_ID,
         role: "member",
+        actorId: "test-user-id",
       }),
     );
   });
@@ -519,11 +528,21 @@ describe("tRPC: team.invitesByEmail", () => {
 
 describe("tRPC: team.invite", () => {
   beforeEach(() => {
+    asMock(getTeamInviteEmailConfig).mockReset();
+    asMock(getTeamInviteEmailConfig).mockReturnValue({
+      from: "AGSaaS <hello@example.test>",
+      appUrl: "https://app.example.test",
+      productName: "AGSaaS",
+    });
+    mocks.triggerJob.mockReset();
+    mocks.triggerJob.mockImplementation(async () => ({ id: "queued-job" }));
     mocks.createTeamInvites.mockReset();
     mocks.createTeamInvites.mockImplementation(() =>
       Promise.resolve({
         results: [
           {
+            id: SAMPLE_UUID,
+            deliveryId: OTHER_USER_ID,
             email: "test@example.com",
             team: { name: "Acme" },
           },
@@ -539,7 +558,8 @@ describe("tRPC: team.invite", () => {
       { email: "test@example.com", role: "member" },
     ]);
 
-    expect(result.sent).toBe(1);
+    expect(result.queued).toBe(1);
+    expect(result).not.toHaveProperty("sent");
     expect(result.skipped).toBe(0);
     expect(mocks.createTeamInvites).toHaveBeenCalledWith(
       expect.anything(),
@@ -553,6 +573,44 @@ describe("tRPC: team.invite", () => {
         ],
       }),
     );
+  });
+
+  test("invalid addresses and empty or oversized batches fail before persistence", async () => {
+    const caller = createCaller(createTestContext());
+    await expect(caller.invite([])).rejects.toThrow();
+    await expect(
+      caller.invite([{ email: "invalid", role: "member" }]),
+    ).rejects.toThrow();
+    await expect(
+      caller.invite(
+        Array.from({ length: 51 }, () => ({
+          email: "person@example.test",
+          role: "member" as const,
+        })),
+      ),
+    ).rejects.toThrow();
+    expect(mocks.createTeamInvites).not.toHaveBeenCalled();
+  });
+  test("missing installation email configuration fails before persistence or queueing", async () => {
+    asMock(getTeamInviteEmailConfig).mockImplementation(() => {
+      throw new Error("Missing fixture configuration");
+    });
+    await expect(
+      createCaller(createTestContext()).invite([
+        { email: "person@example.test", role: "member" },
+      ]),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.createTeamInvites).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("Redis failure still returns the durable queued result", async () => {
+    mocks.triggerJob.mockImplementation(async () => {
+      throw new Error("Redis unavailable");
+    });
+    const result = await createCaller(createTestContext()).invite([
+      { email: "test@example.com", role: "member" },
+    ]);
+    expect(result).toEqual({ queued: 1, skipped: 0, skippedInvites: [] });
   });
 });
 

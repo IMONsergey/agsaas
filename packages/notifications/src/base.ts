@@ -3,6 +3,7 @@ import type { Activity } from "@midday/db/queries";
 import type { CreateEmailOptions } from "resend";
 import { z } from "zod";
 import type { CreateActivityInput } from "./schemas";
+import type { EmailDeliveryResult } from "./services/email-delivery-result";
 
 export interface TeamContext {
   id: string;
@@ -75,16 +76,24 @@ export type EmailInput = {
 export type NotificationOptions = {
   priority?: number;
   sendEmail?: boolean;
+  /** Internal dispatch identity makes in-app activity retries idempotent. */
+  activityOperationKey?: string;
+  /** Internal second phase: activity was already written before email dispatch. */
+  skipActivities?: boolean;
+  /** Record a "sent" activity only after every email has been accepted. */
+  requireEmailAcceptance?: boolean;
+  /** Server-only operation identity. Only invoice send/reminder handlers support it. */
+  invoiceDelivery?: {
+    invoiceId: string;
+    operationKey: string;
+    expectedScheduledJobId?: string;
+  };
 } & Partial<CreateEmailOptions>;
 
 export interface NotificationResult {
   type: string;
   activities: number;
-  emails: {
-    sent: number;
-    skipped: number;
-    failed?: number;
-  };
+  emails: EmailDeliveryResult;
 }
 
 // Common schemas

@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
+import OAuthClient from "intuit-oauth";
 import type { ProviderInitConfig } from "../types";
 import { QUICKBOOKS_SCOPES, QuickBooksProvider } from "./quickbooks";
 
@@ -28,6 +37,7 @@ function createProvider(
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
 let mockFetchFn: ReturnType<typeof mock>;
+let restoreApiCall: (() => void) | undefined;
 
 beforeEach(() => {
   mockFetchFn = mock(() =>
@@ -43,6 +53,8 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  restoreApiCall?.();
+  restoreApiCall = undefined;
 });
 
 describe("QuickBooksProvider", () => {
@@ -237,14 +249,39 @@ describe("QuickBooksProvider", () => {
     test("returns connected when company info is accessible", async () => {
       const provider = createProvider();
 
-      mockFetchFn.mockImplementation(async () => ({
-        ok: true,
-        json: () =>
-          Promise.resolve({ CompanyInfo: { CompanyName: "Test Company" } }),
-      }));
+      // Regular API requests use the OAuth SDK, not global fetch. Stub the
+      // transport actually used so this test never calls the real provider.
+      const apiCall = spyOn(
+        OAuthClient.prototype,
+        "makeApiCall",
+      ).mockResolvedValue({
+        json: { CompanyInfo: { CompanyName: "Test Company" } },
+      } as unknown as Awaited<ReturnType<OAuthClient["makeApiCall"]>>);
+      restoreApiCall = () => apiCall.mockRestore();
 
       const result = await provider.checkConnection();
       expect(result.connected).toBe(true);
+      expect(apiCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://sandbox-quickbooks.api.intuit.com/v3/company/123456789/companyinfo/123456789",
+        }),
+      );
+    });
+
+    test("returns a disconnected result when the SDK request fails", async () => {
+      const provider = createProvider();
+      const apiCall = spyOn(
+        OAuthClient.prototype,
+        "makeApiCall",
+      ).mockRejectedValue(new Error("Company is unavailable"));
+      restoreApiCall = () => apiCall.mockRestore();
+
+      const result = await provider.checkConnection();
+      expect(result).toEqual({
+        connected: false,
+        error: "Company is unavailable",
+      });
     });
   });
 

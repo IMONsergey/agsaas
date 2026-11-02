@@ -3,7 +3,6 @@ import { updateUserSchema, userSchema } from "@api/schemas/users";
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { getUserById, updateUser } from "@midday/db/queries";
-import { generateFileKey } from "@midday/encryption";
 import { withRequiredScope } from "../middleware";
 
 const app = new OpenAPIHono<Context>();
@@ -33,13 +32,16 @@ app.openapi(
     const db = c.get("db");
     const session = c.get("session");
 
-    const result = await getUserById(db, session.user.id);
+    const result = await getUserById(db, session.user.id, {
+      teamId: c.get("teamId") ?? null,
+    });
 
-    // Add fileKey if user has a teamId
+    // A profile scope never grants a team-wide file capability. File endpoints
+    // accept the original Bearer credential and enforce their own read scope.
     const response = result
       ? {
           ...result,
-          fileKey: result.teamId ? await generateFileKey(result.teamId) : null,
+          fileKey: null,
         }
       : null;
 
@@ -88,12 +90,14 @@ app.openapi(
       ...body,
     });
 
-    const result = await getUserById(db, session.user.id);
+    const result = await getUserById(db, session.user.id, {
+      teamId: c.get("teamId") ?? null,
+    });
 
     const response = result
       ? {
           ...result,
-          fileKey: result.teamId ? await generateFileKey(result.teamId) : null,
+          fileKey: null,
         }
       : null;
 

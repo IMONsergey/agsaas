@@ -278,7 +278,7 @@ export const trackerProjectResponseSchema = z
       description: "Total tracked time for the project in seconds",
       example: 43200,
     }),
-    totalAmount: z.number().openapi({
+    totalAmount: z.number().nullable().openapi({
       description: "Total monetary amount earned from the project",
       example: 3600.0,
     }),

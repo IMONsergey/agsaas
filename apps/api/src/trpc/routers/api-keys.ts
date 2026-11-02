@@ -7,6 +7,10 @@ import {
   getApiKeysByTeam,
   upsertApiKey,
 } from "@midday/db/queries";
+import {
+  getProductEmailConfig,
+  requireProductEmailReceipt,
+} from "@midday/email/config";
 import { ApiKeyCreatedEmail } from "@midday/email/emails/api-key-created";
 import { logger } from "@midday/logger";
 
@@ -31,19 +35,24 @@ export const apiKeysRouter = createTRPCRouter({
 
       if (data) {
         try {
-          // We don't need to await this, it will be sent in the background
-          resend.emails.send({
-            from: "Middaybot <middaybot@midday.ai>",
-            to: session.user.email!,
-            subject: "New API Key Created",
-            react: ApiKeyCreatedEmail({
-              fullName: session.user.full_name!,
-              keyName: input.name,
-              createdAt: data.createdAt,
-              email: session.user.email!,
-              ip: geo.ip!,
+          const config = getProductEmailConfig();
+          // Resolve and inspect the acknowledgement; detached promises would
+          // hide rejection or outlive this request without any recovery owner.
+          requireProductEmailReceipt(
+            await resend.emails.send({
+              from: config.from,
+              replyTo: config.replyTo,
+              to: session.user.email!,
+              subject: "New API Key Created",
+              react: ApiKeyCreatedEmail({
+                fullName: session.user.full_name!,
+                keyName: input.name,
+                createdAt: data.createdAt,
+                email: session.user.email!,
+                ip: geo.ip!,
+              }),
             }),
-          });
+          );
         } catch (error) {
           logger.error("Failed to send API key created email", {
             error: error instanceof Error ? error.message : "Unknown error",

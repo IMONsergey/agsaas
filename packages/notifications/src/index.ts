@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import type { Database } from "@midday/db/client";
 import {
   createActivity,
   getTeamById,
   getTeamMembers,
+  type InvoiceEmailActivity,
+  type InvoiceEmailDeliveryScope,
   shouldSendNotification,
   updateActivityMetadata,
 } from "@midday/db/queries";
@@ -13,6 +16,12 @@ import type {
   UserData,
 } from "./base";
 import { createActivitySchema, type NotificationTypes } from "./schemas";
+import { deliverPersistedInvoiceNotification } from "./services/durable-invoice-delivery";
+import {
+  assertEmailAccepted,
+  EmailDeliveryError,
+  emptyEmailDeliveryResult,
+} from "./services/email-delivery-result";
 import { EmailService } from "./services/email-service";
 import { documentProcessed } from "./types/document-processed";
 import { documentUploaded } from "./types/document-uploaded";
@@ -64,6 +73,11 @@ const handlers = {
   insight_ready: insightReady,
 } as const;
 
+function eventUuid(value: string): string {
+  const hex = createHash("sha256").update(value).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 export class Notifications {
   #emailService: EmailService;
   #db: Database;
@@ -108,7 +122,7 @@ export class Notifications {
         const activityInput = handler.createActivity(validatedData, user);
 
         // Check if handler supports combining
-        if (handler.combine) {
+        if (handler.combine && !options?.activityOperationKey) {
           try {
             const existingActivity = await handler.combine.findExisting(
               this.#db,
@@ -177,7 +191,16 @@ export class Notifications {
         const validatedActivity = createActivitySchema.parse(activityInput);
 
         // Create activity directly using DB query
-        return createActivity(this.#db, validatedActivity);
+        return createActivity(this.#db, {
+          ...validatedActivity,
+          ...(options?.activityOperationKey
+            ? {
+                id: eventUuid(
+                  `${user.team_id}\0${notificationType}\0${options.activityOperationKey}\0${user.id}`,
+                ),
+              }
+            : {}),
+        });
       }),
     );
 
@@ -201,7 +224,15 @@ export class Notifications {
 
     // Apply runtime options (highest priority)
     // Extract non-email options first
-    const { priority, sendEmail, ...resendOptions } = options || {};
+    const {
+      priority,
+      sendEmail,
+      requireEmailAcceptance,
+      invoiceDelivery,
+      activityOperationKey,
+      skipActivities,
+      ...resendOptions
+    } = options || {};
     if (Object.keys(resendOptions).length > 0) {
       Object.assign(baseEmailInput, resendOptions);
     }
@@ -215,6 +246,110 @@ export class Notifications {
     payload: Omit<NotificationTypes[T], "users">,
     options?: NotificationOptions,
   ): Promise<NotificationResult> {
+    if (options?.invoiceDelivery) {
+      if (
+        options.sendEmail !== true ||
+        options.requireEmailAcceptance !== true
+      ) {
+        throw new Error(
+          "Durable invoice delivery requires explicit email acceptance mode",
+        );
+      }
+      if (type !== "invoice_sent" && type !== "invoice_reminder_sent")
+        throw new Error(
+          "Durable delivery is restricted to customer invoice emails",
+        );
+      if (
+        options.invoiceDelivery.invoiceId !==
+        (payload as { invoiceId?: string }).invoiceId
+      )
+        throw new Error("Invoice delivery scope mismatch");
+      const scope = {
+        teamId,
+        invoiceId: options.invoiceDelivery.invoiceId,
+        operationKey: options.invoiceDelivery.operationKey,
+      };
+      return deliverPersistedInvoiceNotification(
+        this.#db,
+        scope,
+        (envelope, key) =>
+          this.#emailService.sendInvoiceEnvelope(envelope, key),
+        async () => {
+          const [members, team] = await Promise.all([
+            getTeamMembers(this.#db, teamId),
+            getTeamById(this.#db, teamId),
+          ]);
+          if (!team || members.length === 0)
+            throw new Error("Invoice email requires an active team context");
+          const users = [
+            ...new Map(
+              this.#toUserData(members, teamId, team).map((user) => [
+                user.id,
+                user,
+              ]),
+            ).values(),
+          ];
+          const handler = handlers[type];
+          const data = handler.schema.parse({ ...payload, users });
+          const firstUser = users[0]!;
+          const email = this.#createEmailInput(
+            handler,
+            data,
+            firstUser,
+            {
+              id: team.id,
+              name: team.name || "Team",
+              inboxId: team.inboxId || "",
+            },
+            options,
+          );
+          const recipient = String(
+            (data as { customerEmail?: string }).customerEmail,
+          );
+          const recipients = Array.isArray(email.to) ? email.to : [email.to];
+          if (recipients.length !== 1 || recipients[0] !== recipient)
+            throw new Error(
+              "Durable invoice recipient does not match the customer envelope",
+            );
+          const activitySnapshot: InvoiceEmailActivity[] = [];
+          for (const user of users) {
+            const activity = createActivitySchema.parse(
+              handler.createActivity(data, user),
+            );
+            const inAppEnabled = await shouldSendNotification(
+              this.#db,
+              user.id,
+              teamId,
+              type,
+              "in_app",
+            );
+            const priority =
+              options.priority ??
+              (inAppEnabled
+                ? activity.priority
+                : Math.min(10, Math.max(7, activity.priority + 4)));
+            const validated = createActivitySchema.parse({
+              ...activity,
+              priority,
+            });
+            activitySnapshot.push({
+              userId: user.id,
+              priority: validated.priority,
+              metadata: validated.metadata,
+            });
+          }
+          return {
+            kind: type === "invoice_sent" ? "invoice" : "reminder",
+            expectedScheduledJobId:
+              options.invoiceDelivery?.expectedScheduledJobId,
+            recipient,
+            envelope: await this.#emailService.prepareInvoiceEnvelope(email),
+            activitySnapshot,
+          };
+        },
+        () => this.#emailService.canSend(),
+      );
+    }
     const [teamMembers, teamInfo] = await Promise.all([
       getTeamMembers(this.#db, teamId),
       getTeamById(this.#db, teamId),
@@ -225,10 +360,12 @@ export class Notifications {
     }
 
     if (teamMembers.length === 0) {
+      const emails = emptyEmailDeliveryResult();
+      if (options?.requireEmailAcceptance) assertEmailAccepted(emails);
       return {
         type: type as string,
         activities: 0,
-        emails: { sent: 0, skipped: 0, failed: 0 },
+        emails,
       };
     }
 
@@ -239,6 +376,19 @@ export class Notifications {
     const data = { ...payload, users } as NotificationTypes[T];
 
     return this.#createInternal(type, data, options, teamInfo);
+  }
+
+  /** Recovery reads an already persisted envelope; never rebuilds a new one. */
+  reconcileInvoiceDelivery(
+    scope: InvoiceEmailDeliveryScope,
+  ): Promise<NotificationResult> {
+    return deliverPersistedInvoiceNotification(
+      this.#db,
+      scope,
+      (envelope, key) => this.#emailService.sendInvoiceEnvelope(envelope, key),
+      undefined,
+      () => this.#emailService.canSend(),
+    );
   }
 
   /**
@@ -261,23 +411,27 @@ export class Notifications {
       const validatedData = handler.schema.parse(data);
 
       // Generate a single group ID for all related activities
-      const groupId = crypto.randomUUID();
+      const groupId = options?.activityOperationKey
+        ? eventUuid(`${teamInfo?.id}\0${type}\0${options.activityOperationKey}`)
+        : crypto.randomUUID();
 
-      // Create activities for each user
-      const activities = await this.#createActivities(
-        handler,
-        validatedData,
-        groupId,
-        type as string,
-        options,
-      );
+      const createActivities = () =>
+        this.#createActivities(
+          handler,
+          validatedData,
+          groupId,
+          type as string,
+          options,
+        );
+      // A "sent" activity must not precede the provider acknowledgement. Other
+      // notifications retain their existing in-app-first behavior by default.
+      let activities =
+        options?.requireEmailAcceptance || options?.skipActivities
+          ? []
+          : await createActivities();
 
       // CONDITIONALLY send emails
-      let emails = {
-        sent: 0,
-        skipped: validatedData.users.length,
-        failed: 0,
-      };
+      let emails = emptyEmailDeliveryResult(validatedData.users.length);
 
       const sendEmail = options?.sendEmail ?? false;
 
@@ -377,13 +531,25 @@ export class Notifications {
         }
       }
 
+      if (options?.requireEmailAcceptance) {
+        assertEmailAccepted(emails);
+        try {
+          activities = options?.skipActivities ? [] : await createActivities();
+        } catch {
+          // The caller must still record the known acceptance, but must not
+          // resend the email merely to retry an activity database write.
+          throw new EmailDeliveryError(emails, "activity");
+        }
+      }
+
       return {
         type: type as string,
         activities: activities.length,
         emails,
       };
     } catch (error) {
-      console.error(`Failed to send notification ${type}:`, error);
+      // Raw SQL/SDK errors may contain recipient, rendered body or credentials.
+      console.error(`Notification ${type} could not be completed`);
       throw error;
     }
   }
@@ -431,3 +597,14 @@ export {
   transactionsCreatedSchema,
   transactionsExportedSchema,
 } from "./schemas";
+export {
+  InvoiceDeliveryPendingError,
+  InvoiceDeliveryStoppedError,
+} from "./services/durable-invoice-delivery";
+export type { EmailDeliveryResult } from "./services/email-delivery-result";
+export {
+  assertEmailAccepted,
+  EmailDeliveryError,
+  emptyEmailDeliveryResult,
+  isEmailAccepted,
+} from "./services/email-delivery-result";

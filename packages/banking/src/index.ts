@@ -47,6 +47,11 @@ export class Provider {
     }
   }
 
+  /** Check only the configured provider without constructing unrelated clients. */
+  async getProviderHealthCheck(): Promise<boolean> {
+    return this.#provider.getHealthCheck();
+  }
+
   async getHealthCheck(): Promise<GetHealthCheckResponse> {
     const teller = new TellerProvider();
     const plaid = new PlaidProvider();

@@ -1,6 +1,11 @@
 import { and, eq } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, DatabaseWithPrimary } from "../client";
 import { inboxAccounts } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireTeamMember,
+} from "../utils/team-membership";
 
 export async function getInboxAccounts(db: Database, teamId: string) {
   return db
@@ -101,6 +106,7 @@ export async function updateInboxAccount(
 }
 
 export type UpsertInboxAccountParams = {
+  actorUserId: string;
   teamId: string;
   provider: string;
   accessToken: string;
@@ -115,36 +121,50 @@ export async function upsertInboxAccount(
   db: Database,
   params: UpsertInboxAccountParams,
 ) {
-  const [result] = await db
-    .insert(inboxAccounts)
-    .values({
-      teamId: params.teamId,
-      provider: params.provider as any,
-      accessToken: params.accessToken,
-      refreshToken: params.refreshToken,
-      email: params.email,
-      lastAccessed: params.lastAccessed,
-      externalId: params.externalId,
-      expiryDate: params.expiryDate,
-    })
-    .onConflictDoUpdate({
-      target: inboxAccounts.externalId,
-      set: {
+  const primaryOnly = (db as DatabaseWithPrimary).usePrimaryOnly;
+  const authDb = primaryOnly ? primaryOnly.call(db) : db;
+  return authDb.transaction(async (tx) => {
+    // Provider HTTP calls have already finished. Recheck and serialize this
+    // final write with membership removal/deletion before storing credentials.
+    await lockUserMembership(tx, params.actorUserId);
+    const members = await lockTeamMembership(tx, params.teamId);
+    requireTeamMember(members, params.actorUserId);
+
+    const [result] = await tx
+      .insert(inboxAccounts)
+      .values({
+        teamId: params.teamId,
+        provider: params.provider as any,
         accessToken: params.accessToken,
         refreshToken: params.refreshToken,
+        email: params.email,
         lastAccessed: params.lastAccessed,
+        externalId: params.externalId,
         expiryDate: params.expiryDate,
-        status: "connected",
-        errorMessage: null,
-      },
-    })
-    .returning({
-      id: inboxAccounts.id,
-      provider: inboxAccounts.provider,
-      external_id: inboxAccounts.externalId,
-    });
+      })
+      .onConflictDoUpdate({
+        target: inboxAccounts.externalId,
+        set: {
+          accessToken: params.accessToken,
+          refreshToken: params.refreshToken,
+          lastAccessed: params.lastAccessed,
+          expiryDate: params.expiryDate,
+          status: "connected",
+          errorMessage: null,
+        },
+        setWhere: and(
+          eq(inboxAccounts.teamId, params.teamId),
+          eq(inboxAccounts.provider, params.provider as "gmail" | "outlook"),
+        ),
+      })
+      .returning({
+        id: inboxAccounts.id,
+        provider: inboxAccounts.provider,
+        external_id: inboxAccounts.externalId,
+      });
 
-  return result;
+    return result;
+  });
 }
 
 type GetInboxAccountInfoParams = {
@@ -155,12 +175,16 @@ export async function getInboxAccountInfo(
   db: Database,
   params: GetInboxAccountInfoParams,
 ) {
-  const [result] = await db
+  // Background jobs must observe disconnect/delete immediately, not a replica.
+  const primaryOnly = (db as DatabaseWithPrimary).usePrimaryOnly;
+  const readDb = primaryOnly ? primaryOnly.call(db) : db;
+  const [result] = await readDb
     .select({
       id: inboxAccounts.id,
       provider: inboxAccounts.provider,
       teamId: inboxAccounts.teamId,
       lastAccessed: inboxAccounts.lastAccessed,
+      status: inboxAccounts.status,
     })
     .from(inboxAccounts)
     .where(eq(inboxAccounts.id, params.id))

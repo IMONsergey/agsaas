@@ -1,3 +1,4 @@
+import { parseRedisQueueUrl } from "@midday/job-client";
 import { createLoggerWithContext } from "@midday/logger";
 
 const logger = createLoggerWithContext("worker:config");
@@ -11,24 +12,7 @@ const isProduction =
  * BullMQ will create and manage its own Redis connections
  */
 function parseRedisUrl() {
-  const redisUrl = process.env.REDIS_QUEUE_URL;
-
-  if (!redisUrl) {
-    throw new Error("REDIS_QUEUE_URL environment variable is required");
-  }
-
-  const url = new URL(redisUrl);
-
-  return {
-    host: url.hostname,
-    port: Number(url.port) || 6379,
-    password: url.password || undefined,
-    username: url.username || undefined,
-    // TLS for production (rediss://)
-    ...(url.protocol === "rediss:" && {
-      tls: {},
-    }),
-  };
+  return parseRedisQueueUrl(process.env.REDIS_QUEUE_URL);
 }
 
 /**

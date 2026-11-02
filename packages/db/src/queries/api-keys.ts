@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Database } from "../client";
 import { apiKeys, users } from "../schema";
 import { generateApiKey } from "../utils/api-keys";
+import { TenantResourceNotFoundError } from "../utils/tenant-ownership";
 
 export type ApiKey = {
   id: string;
@@ -47,10 +48,14 @@ export async function upsertApiKey(db: Database, data: UpsertApiKeyData) {
         name: data.name,
         scopes: data.scopes,
       })
-      .where(eq(apiKeys.id, data.id))
+      .where(and(eq(apiKeys.id, data.id), eq(apiKeys.teamId, data.teamId)))
       .returning({
         keyHash: apiKeys.keyHash,
       });
+
+    if (!result) {
+      throw new TenantResourceNotFoundError();
+    }
 
     // On update we don't return the key, but return keyHash for cache invalidation
     return {

@@ -51,6 +51,14 @@ export function ActionsMenu({ row }: Props) {
   const { toast } = useToast();
   const [, copy] = useCopyToClipboard();
   const [cancelSeriesOpen, setCancelSeriesOpen] = useState(false);
+  const isPublished = ["unpaid", "overdue", "paid", "refunded"].includes(
+    row.status,
+  );
+  const { url: privatePreviewUrl } = useFileUrl({
+    type: "invoice",
+    invoiceId: row.id,
+    preview: true,
+  });
 
   const canDownloadReceipt = row.status === "paid";
   const { url: receiptUrl } = useFileUrl(
@@ -256,7 +264,7 @@ export function ActionsMenu({ row }: Props) {
         </DropdownMenuTrigger>
 
         <DropdownMenuContent align="end">
-          {row.status !== "paid" && row.status !== "canceled" && (
+          {(row.status === "draft" || row.status === "scheduled") && (
             <DropdownMenuItem
               onClick={() =>
                 setParams({
@@ -269,11 +277,19 @@ export function ActionsMenu({ row }: Props) {
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuItem>
-            <OpenURL href={`${getUrl()}/i/${row.token}`}>Open invoice</OpenURL>
+          <DropdownMenuItem disabled={!isPublished && !privatePreviewUrl}>
+            <OpenURL
+              href={
+                isPublished
+                  ? `${getUrl()}/i/${row.token}`
+                  : privatePreviewUrl || "#"
+              }
+            >
+              Open invoice
+            </OpenURL>
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={handleCopyLink}>
+          <DropdownMenuItem onClick={handleCopyLink} disabled={!isPublished}>
             Copy link
           </DropdownMenuItem>
 

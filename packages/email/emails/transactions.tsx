@@ -1,5 +1,4 @@
 import { cn } from "@midday/ui/cn";
-import { getAppUrl } from "@midday/utils/envs";
 import {
   Body,
   Container,
@@ -18,6 +17,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 import { getI18n } from "../locales";
 
 type Transaction = {
@@ -145,8 +145,6 @@ const defaultTransactions = [
   },
 ];
 
-const baseAppUrl = getAppUrl();
-
 export const TransactionsEmail = ({
   fullName = "",
   transactions = defaultTransactions,
@@ -262,7 +260,7 @@ export const TransactionsEmail = ({
                   </td>
                   <td align="left" style={{ width: "50%" }}>
                     <Link
-                      href={`${baseAppUrl}/transactions?id=${transaction.id}`}
+                      href={`${getProductEmailConfig().appUrl}/transactions?id=${transaction.id}`}
                       className={cn(
                         transaction.amount > 0
                           ? "text-[#00C969]"
@@ -319,7 +317,7 @@ export const TransactionsEmail = ({
 
           <Section className="text-center mt-[32px] mb-[32px]">
             <Button
-              href={`${baseAppUrl}/transactions?start=${transactions[transactions.length - 1]?.date}&end=${transactions.at(0)?.date}`}
+              href={`${getProductEmailConfig().appUrl}/transactions?start=${transactions[transactions.length - 1]?.date}&end=${transactions.at(0)?.date}`}
             >
               {t("transactions.button")}
             </Button>

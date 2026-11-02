@@ -2,7 +2,6 @@ import {
   Body,
   Container,
   Heading,
-  Link,
   Preview,
   Section,
   Text,
@@ -15,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   fullName: string;
@@ -22,7 +22,7 @@ interface Props {
 
 export const WelcomeEmail = ({ fullName = "" }: Props) => {
   const firstName = fullName ? fullName.split(" ").at(0) : "";
-  const text = `${firstName ? `Hi ${firstName}, welcome` : "Welcome"} to Midday — built for founders like you.`;
+  const text = `${firstName ? `Hi ${firstName}, welcome` : "Welcome"} to ${getProductEmailConfig().productName}.`;
   const themeClasses = getEmailThemeClasses();
   const lightStyles = getEmailInlineStyles("light");
 
@@ -45,7 +45,7 @@ export const WelcomeEmail = ({ fullName = "" }: Props) => {
             className={`font-serif text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
             style={{ color: lightStyles.text.color }}
           >
-            Welcome to Midday
+            Welcome to {getProductEmailConfig().productName}
           </Heading>
 
           <br />
@@ -60,35 +60,20 @@ export const WelcomeEmail = ({ fullName = "" }: Props) => {
             className={themeClasses.text}
             style={{ color: lightStyles.text.color }}
           >
-            I'm Pontus, one of the founders of Midday.
-            <br />
-            <br />
-            We started Midday after years of running our own companies — tired
-            of juggling tools just to know where things stand. If that sounds
-            familiar, you're in the right place.
-            <br />
-            <br />
-            The best way to get started: connect your bank account. Everything
-            else follows from there.
+            Your workspace is ready. Start by adding your customers, tracking
+            work, and preparing your first invoice.
           </Text>
 
           <Section className="text-center mt-[32px] mb-[32px]">
-            <Button href="https://app.midday.ai">Get started</Button>
+            <Button href={getProductEmailConfig().appUrl}>Get started</Button>
           </Section>
 
           <Text
             className={`text-[14px] ${themeClasses.mutedText}`}
             style={{ color: lightStyles.mutedText.color }}
           >
-            P.S. Want to talk? Reply here or{" "}
-            <Link
-              href="https://cal.com/pontus-midday/15min"
-              className={`underline ${themeClasses.mutedLink}`}
-              style={{ color: lightStyles.mutedText.color }}
-            >
-              book a quick call
-            </Link>
-            .
+            Open your workspace to review your account and notification
+            settings.
           </Text>
 
           <br />

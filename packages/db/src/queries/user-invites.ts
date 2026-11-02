@@ -1,6 +1,20 @@
-import { and, eq, or, sql } from "drizzle-orm";
-import type { Database } from "../client";
-import { teams, userInvites, users, usersOnTeam } from "../schema";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import type { Database, DatabaseOrTransaction } from "../client";
+import {
+  teamInviteDeliveries,
+  teams,
+  userInvites,
+  users,
+  usersOnTeam,
+} from "../schema";
+import type { TeamInviteEmailContext } from "../team-invite-delivery";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireTeamMember,
+  requireTeamOwner,
+} from "../utils/team-membership";
 
 export async function getUserInvites(db: Database, email: string) {
   return db.query.userInvites.findMany({
@@ -40,37 +54,50 @@ export async function acceptTeamInvite(
   db: Database,
   params: AcceptTeamInviteParams,
 ) {
-  const inviteData = await db.query.userInvites.findFirst({
-    where: and(eq(userInvites.id, params.id)),
-    columns: {
-      id: true,
-      role: true,
-      teamId: true,
-      email: true,
-    },
+  return db.transaction(async (tx) => {
+    await lockUserMembership(tx, params.userId);
+    const candidate = await tx.query.userInvites.findFirst({
+      where: eq(userInvites.id, params.id),
+      columns: { teamId: true },
+    });
+    if (!candidate?.teamId) throw new Error("Invite not found");
+
+    // Same lock order as create/remove/demote/delete: user guard, then team.
+    const members = await lockTeamMembership(tx, candidate.teamId);
+    const [inviteData] = await tx
+      .select({
+        id: userInvites.id,
+        role: userInvites.role,
+        teamId: userInvites.teamId,
+        email: userInvites.email,
+      })
+      .from(userInvites)
+      .where(
+        and(
+          eq(userInvites.id, params.id),
+          eq(userInvites.teamId, candidate.teamId),
+        ),
+      )
+      .for("update");
+    if (!inviteData) throw new Error("Invite not found");
+
+    const inviteEmail = inviteData.email?.trim().toLowerCase();
+    if (!inviteEmail || inviteEmail !== params.userEmail.trim().toLowerCase()) {
+      throw new Error("Invite was sent to a different email address");
+    }
+
+    // Concurrent acceptance cannot create a second membership. Existing
+    // memberships are not silently upgraded by an old pending invitation.
+    if (!members.some((member) => member.userId === params.userId)) {
+      await tx.insert(usersOnTeam).values({
+        userId: params.userId,
+        role: inviteData.role,
+        teamId: candidate.teamId,
+      });
+    }
+    await tx.delete(userInvites).where(eq(userInvites.id, inviteData.id));
+    return inviteData;
   });
-
-  if (!inviteData) {
-    throw new Error("Invite not found");
-  }
-
-  const inviteEmail = inviteData.email?.trim().toLowerCase();
-  const userEmail = params.userEmail.trim().toLowerCase();
-
-  if (!inviteEmail || inviteEmail !== userEmail) {
-    throw new Error("Invite was sent to a different email address");
-  }
-
-  await db.insert(usersOnTeam).values({
-    userId: params.userId,
-    role: inviteData.role,
-    teamId: inviteData.teamId!,
-  });
-
-  // Delete the invite
-  await db.delete(userInvites).where(eq(userInvites.id, inviteData.id));
-
-  return inviteData;
 }
 
 type DeclineTeamInviteParams = {
@@ -90,7 +117,7 @@ export async function declineTeamInvite(
 }
 
 export async function getTeamInvites(db: Database, teamId: string) {
-  return db.query.userInvites.findMany({
+  const invites = await db.query.userInvites.findMany({
     where: eq(userInvites.teamId, teamId),
     columns: {
       id: true,
@@ -114,6 +141,40 @@ export async function getTeamInvites(db: Database, teamId: string) {
         },
       },
     },
+  });
+  if (invites.length === 0) return [];
+  const deliveries = await db
+    .select({
+      inviteId: teamInviteDeliveries.inviteId,
+      status: teamInviteDeliveries.status,
+      acceptedAt: teamInviteDeliveries.acceptedAt,
+      errorCode: teamInviteDeliveries.lastError,
+    })
+    .from(teamInviteDeliveries)
+    .where(
+      and(
+        eq(teamInviteDeliveries.teamId, teamId),
+        inArray(
+          teamInviteDeliveries.inviteId,
+          invites.map((invite) => invite.id),
+        ),
+      ),
+    );
+  const byInvite = new Map(
+    deliveries.map((delivery) => [delivery.inviteId, delivery]),
+  );
+  return invites.map((invite) => {
+    const delivery = byInvite.get(invite.id);
+    return {
+      ...invite,
+      delivery: delivery
+        ? {
+            status: delivery.status,
+            acceptedAt: delivery.acceptedAt,
+            errorCode: delivery.errorCode,
+          }
+        : null,
+    };
   });
 }
 
@@ -148,24 +209,36 @@ export async function getInvitesByEmail(db: Database, email: string) {
 type DeleteTeamInviteParams = {
   id: string;
   teamId: string;
+  actorId: string;
 };
 
 export async function deleteTeamInvite(
   db: Database,
   params: DeleteTeamInviteParams,
 ) {
-  const { id, teamId } = params;
-
-  const [deleted] = await db
-    .delete(userInvites)
-    .where(and(eq(userInvites.id, id), eq(userInvites.teamId, teamId)))
-    .returning();
-
-  return deleted;
+  return db.transaction(async (tx) => {
+    const members = await lockTeamMembership(tx, params.teamId);
+    requireTeamMember(members, params.actorId);
+    const [deleted] = await tx
+      .delete(userInvites)
+      .where(
+        and(
+          eq(userInvites.id, params.id),
+          eq(userInvites.teamId, params.teamId),
+        ),
+      )
+      .returning();
+    return deleted;
+  });
 }
 
 type CreateTeamInvitesParams = {
   teamId: string;
+  actorId: string;
+  deliveryContext?: Pick<
+    TeamInviteEmailContext,
+    "invitedByName" | "invitedByEmail" | "locale" | "ip"
+  >;
   invites: {
     email: string;
     role: "owner" | "member";
@@ -189,7 +262,7 @@ type InviteValidationResult = {
  * Validates invites by checking for existing team members, pending invites, and duplicates
  */
 async function validateInvites(
-  db: Database,
+  db: DatabaseOrTransaction,
   teamId: string,
   invites: {
     email: string;
@@ -197,14 +270,17 @@ async function validateInvites(
     invitedBy: string;
   }[],
 ): Promise<InviteValidationResult> {
-  // Remove duplicates from input
-  const uniqueInvites = invites.filter(
-    (invite, index, self) =>
-      index ===
-      self.findIndex(
-        (i) => i.email.toLowerCase() === invite.email.toLowerCase(),
-      ),
-  );
+  const seen = new Set<string>();
+  const duplicateInvites: InviteValidationResult["skippedInvites"] = [];
+  const uniqueInvites = invites.filter((invite) => {
+    const email = invite.email.toLowerCase();
+    if (seen.has(email)) {
+      duplicateInvites.push({ email: invite.email, reason: "duplicate" });
+      return false;
+    }
+    seen.add(email);
+    return true;
+  });
 
   const emails = uniqueInvites.map((invite) => invite.email.toLowerCase());
 
@@ -251,7 +327,7 @@ async function validateInvites(
   const skippedInvites: {
     email: string;
     reason: "already_member" | "already_invited" | "duplicate";
-  }[] = [];
+  }[] = [...duplicateInvites];
 
   // Process each invite
   for (const invite of uniqueInvites) {
@@ -276,71 +352,94 @@ async function validateInvites(
 }
 
 export async function createTeamInvites(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: CreateTeamInvitesParams,
 ) {
-  const { teamId, invites } = params;
+  const { teamId, actorId } = params;
+  if (params.invites.length < 1 || params.invites.length > 50)
+    throw new Error("Invite between 1 and 50 people at a time");
+  const invites = params.invites.map((invite) => ({
+    ...invite,
+    email: invite.email.trim().toLowerCase(),
+    invitedBy: actorId,
+  }));
+  if (
+    invites.some(
+      (invite) =>
+        invite.email.length > 254 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invite.email) ||
+        !["owner", "member"].includes(invite.role),
+    )
+  )
+    throw new Error("Invalid invitation");
 
-  // Validate invites and filter out invalid ones
-  const { validInvites, skippedInvites } = await validateInvites(
-    db,
-    teamId,
-    invites,
-  );
-
-  // If no valid invites, return empty results with skipped info
-  if (validInvites.length === 0) {
-    return {
-      results: [],
-      skippedInvites,
+  return db.transaction(async (tx) => {
+    // Same lock order as membership acquisition and account deletion.
+    await lockUserMembership(tx, actorId);
+    const members = await lockTeamMembership(tx, teamId);
+    requireTeamMember(members, actorId);
+    if (invites.some((invite) => invite.role === "owner"))
+      requireTeamOwner(members, actorId);
+    const { validInvites, skippedInvites } = await validateInvites(
+      tx,
+      teamId,
+      invites,
+    );
+    const [actor] = await tx
+      .select({ email: users.email, fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, actorId));
+    const [team] = await tx
+      .select({ id: teams.id, name: teams.name })
+      .from(teams)
+      .where(eq(teams.id, teamId));
+    if (!actor || !team) throw new Error("Invitation actor or team not found");
+    const invitedByEmail =
+      params.deliveryContext?.invitedByEmail ?? actor.email;
+    if (!invitedByEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invitedByEmail))
+      throw new Error("Invitation actor email is required");
+    const plain = (value: string) =>
+      value.replace(/[\r\n]/g, " ").slice(0, 200);
+    const context: TeamInviteEmailContext = {
+      invitedByName: plain(
+        params.deliveryContext?.invitedByName ?? actor.fullName ?? "",
+      ),
+      invitedByEmail,
+      teamName: plain(team.name ?? ""),
+      locale: params.deliveryContext?.locale ?? "en",
+      ...(params.deliveryContext?.ip
+        ? { ip: params.deliveryContext.ip.slice(0, 64) }
+        : {}),
     };
-  }
-
-  const results = await Promise.all(
-    validInvites.map(async (invite) => {
-      // Insert new invite with conflict handling to prevent race conditions
-      const [row] = await db
+    const results = [];
+    for (const invite of validInvites) {
+      const [row] = await tx
         .insert(userInvites)
-        .values({
-          email: invite.email,
-          role: invite.role,
-          invitedBy: invite.invitedBy,
-          teamId: teamId,
-        })
+        .values({ ...invite, code: nanoid(24), teamId })
         .onConflictDoNothing({
           target: [userInvites.teamId, userInvites.email],
         })
-        .returning({
-          id: userInvites.id,
-          email: userInvites.email,
-          code: userInvites.code,
-          role: userInvites.role,
-          invitedBy: userInvites.invitedBy,
-          teamId: userInvites.teamId,
-        });
-
-      if (!row) return null;
-
-      // Fetch team
-      const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
-        columns: {
-          id: true,
-          name: true,
-        },
-      });
-
-      return {
+        .returning();
+      if (!row) {
+        skippedInvites.push({ email: invite.email, reason: "already_invited" });
+        continue;
+      }
+      // Intent and invitation commit together. Losing Redis cannot lose this email.
+      const [delivery] = await tx
+        .insert(teamInviteDeliveries)
+        .values({ teamId, inviteId: row.id, recipient: invite.email, context })
+        .returning({ id: teamInviteDeliveries.id });
+      if (!delivery)
+        throw new Error("Invitation delivery intent was not persisted");
+      results.push({
+        id: row.id,
+        deliveryId: delivery.id,
         email: row.email,
         code: row.code,
         role: row.role,
         team,
-      };
-    }),
-  );
-
-  return {
-    results: results.filter(Boolean),
-    skippedInvites,
-  };
+      });
+    }
+    return { results, skippedInvites };
+  });
 }

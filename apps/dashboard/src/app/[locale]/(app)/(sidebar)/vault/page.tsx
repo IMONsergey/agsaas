@@ -12,7 +12,7 @@ import { prefetch, trpc } from "@/trpc/server";
 import { getInitialTableSettings } from "@/utils/columns";
 
 export const metadata: Metadata = {
-  title: "Vault | Midday",
+  title: "Vault | AGSaaS",
 };
 
 type Props = {

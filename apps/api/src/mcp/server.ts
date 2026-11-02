@@ -1,3 +1,4 @@
+import { getAppUrl } from "@midday/utils/envs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerMcpApps } from "./apps";
 import { registerPrompts } from "./prompts";
@@ -32,7 +33,7 @@ function getServerInstructions(ctx: McpContext): string {
   const dateFormat = ctx.dateFormat || null;
   const timeFormat = ctx.timeFormat ?? 24;
 
-  return `Midday is a financial operating system for small businesses. This MCP server provides access to financial data including transactions, invoices, customers, time tracking, documents, and reports.
+  return `AGSaaS is a financial operating system for small businesses. This MCP server provides access to financial data including transactions, invoices, customers, time tracking, documents, and reports.
 
 ## Current Date & Timezone
 
@@ -87,21 +88,16 @@ export { MCP_SERVER_VERSION };
 export function createMcpServer(ctx: McpContext): McpServer {
   const server = new McpServer(
     {
-      name: "midday",
+      name: "agsaas",
       version: MCP_SERVER_VERSION,
-      title: "Midday",
+      title: "AGSaaS",
       description:
         "Financial operating system for small businesses — transactions, invoices, time tracking, and reports",
-      websiteUrl: "https://midday.ai",
-      icons: [
-        {
-          src: "https://midday.ai/images/midday-icon.svg",
-          mimeType: "image/svg+xml",
-        },
-      ],
+      websiteUrl: getAppUrl(),
     },
     {
       instructions: getServerInstructions(ctx),
+      maxToolInputElements: 10_000,
     },
   );
 

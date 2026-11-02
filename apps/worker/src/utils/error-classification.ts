@@ -1,3 +1,5 @@
+import { UnrecoverableError } from "bullmq";
+
 /**
  * Error classification utility
  * Categorizes errors as retryable or non-retryable for smart retry strategies
@@ -27,7 +29,7 @@ export interface ClassifiedError {
  * Custom error class for non-retryable errors
  * When thrown, this error signals that the job should not be retried
  */
-export class NonRetryableError extends Error {
+export class NonRetryableError extends UnrecoverableError {
   constructor(
     message: string,
     public readonly originalError?: unknown,
@@ -35,6 +37,9 @@ export class NonRetryableError extends Error {
   ) {
     super(message);
     this.name = "NonRetryableError";
+    // Keep the application-specific type/metadata while using BullMQ's actual
+    // stop-retrying contract. The cause is also visible to error diagnostics.
+    if (originalError !== undefined) this.cause = originalError;
     // Maintain stack trace
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, NonRetryableError);
@@ -64,6 +69,15 @@ export class UnsupportedFileTypeError extends NonRetryableError {
  * Classify an error to determine retry strategy
  */
 export function classifyError(error: unknown): ClassifiedError {
+  // Explicit permanent errors take precedence over message/stack heuristics.
+  // For example, a validation error may have originated in a fetch call.
+  if (error instanceof NonRetryableError) {
+    return { category: error.category, retryable: false };
+  }
+  if (isNonRetryableError(error)) {
+    return { category: "non_retryable", retryable: false };
+  }
+
   // Handle TimeoutError from timeout utility
   if (error instanceof Error && error.name === "TimeoutError") {
     return {
@@ -266,10 +280,13 @@ export function getMaxRetries(error: unknown): number {
 }
 
 /**
- * Check if error is a NonRetryableError
+ * Match BullMQ's permanent-error contract, including application subclasses.
  */
 export function isNonRetryableError(error: unknown): boolean {
-  return error instanceof NonRetryableError;
+  return (
+    error instanceof UnrecoverableError ||
+    (error instanceof Error && error.name === "UnrecoverableError")
+  );
 }
 
 /**

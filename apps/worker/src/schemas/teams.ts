@@ -35,3 +35,14 @@ export const paymentIssueSchema = z.object({
 });
 
 export type PaymentIssuePayload = z.infer<typeof paymentIssueSchema>;
+
+export const deliverTeamInvitationSchema = z
+  .object({
+    teamId: z.string().uuid(),
+    inviteId: z.string().uuid(),
+    deliveryId: z.string().uuid(),
+  })
+  .strict();
+export type DeliverTeamInvitationPayload = z.infer<
+  typeof deliverTeamInvitationSchema
+>;

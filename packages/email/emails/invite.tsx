@@ -25,6 +25,8 @@ interface Props {
   teamName?: string;
   ip?: string;
   locale: string;
+  appUrl?: string;
+  productName?: string;
 }
 
 const baseAppUrl = getAppUrl();
@@ -34,11 +36,13 @@ export const InviteEmail = ({
   invitedByName = "Pontus Abrahamsson",
   email = "pontus@lostisland.co",
   teamName = "Acme Co",
-  ip = "204.13.186.218",
+  ip,
   locale = "en",
+  appUrl = baseAppUrl,
+  productName = "Midday",
 }: Props) => {
   const { t } = getI18n({ locale });
-  const inviteLink = `${baseAppUrl}/teams`;
+  const inviteLink = `${appUrl}/teams`;
   const themeClasses = getEmailThemeClasses();
   const lightStyles = getEmailInlineStyles("light");
 
@@ -58,13 +62,19 @@ export const InviteEmail = ({
             borderColor: lightStyles.container.borderColor,
           }}
         >
-          <Logo />
+          {productName === "Midday" ? (
+            <Logo />
+          ) : (
+            <Text className="text-[18px] font-semibold text-center">
+              {productName}
+            </Text>
+          )}
           <Heading
             className={`font-serif mx-0 my-[30px] p-0 text-[24px] font-normal text-center ${themeClasses.heading}`}
             style={{ color: lightStyles.text.color }}
           >
             {t("invite.title1")} <strong>{teamName}</strong>{" "}
-            {t("invite.title2")} <strong>Midday</strong>
+            {t("invite.title2")} <strong>{productName}</strong>
           </Heading>
 
           <Text
@@ -80,7 +90,7 @@ export const InviteEmail = ({
               {invitedByEmail}
             </Link>
             ) {t("invite.link1")} <strong>{teamName}</strong>{" "}
-            {t("invite.link2")} <strong>Midday</strong>.
+            {t("invite.link2")} <strong>{productName}</strong>.
           </Text>
           <Section className="mb-[42px] mt-[32px] text-center">
             <Button href={inviteLink}>{t("invite.join")}</Button>
@@ -113,20 +123,30 @@ export const InviteEmail = ({
               >
                 {email}
               </span>
-              . {t("invite.footer2")}{" "}
-              <span
-                className={themeClasses.text}
-                style={{ color: lightStyles.text.color }}
-              >
-                {ip}
-              </span>{" "}
-              . {t("invite.footer4")}
+              .{" "}
+              {ip ? (
+                <>
+                  {t("invite.footer2")}{" "}
+                  <span
+                    className={themeClasses.text}
+                    style={{ color: lightStyles.text.color }}
+                  >
+                    {ip}
+                  </span>{" "}
+                  .{" "}
+                </>
+              ) : null}
+              {t("invite.footer4")}
             </Text>
           </Section>
 
           <br />
 
-          <Footer />
+          {productName === "Midday" ? (
+            <Footer />
+          ) : (
+            <Text className="text-[12px] text-center">{productName}</Text>
+          )}
         </Container>
       </Body>
     </EmailThemeProvider>

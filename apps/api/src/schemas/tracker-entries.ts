@@ -3,6 +3,18 @@ import { z } from "@hono/zod-openapi";
 export const getBillableHoursSchema = z.object({
   date: z.string(),
   view: z.enum(["week", "month"]),
+  timezone: z
+    .string()
+    .optional()
+    .refine((value) => {
+      if (!value) return true;
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: value });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Invalid timezone"),
   weekStartsOnMonday: z.boolean().optional().default(false),
 });
 

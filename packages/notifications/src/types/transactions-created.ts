@@ -1,5 +1,4 @@
 import { getI18n } from "@midday/email/locales";
-import { getInboxEmail } from "@midday/inbox";
 import type { NotificationHandler } from "../base";
 import { transactionsCreatedSchema } from "../schemas";
 
@@ -45,7 +44,6 @@ export const transactionsCreated: NotificationHandler = {
       emailType: "owners",
       subject: t("transactions.subject"),
       user,
-      replyTo: getInboxEmail(team.inboxId),
       data: {
         transactions: data.transactions,
         teamName: team.name,

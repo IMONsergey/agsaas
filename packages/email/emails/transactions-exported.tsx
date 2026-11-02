@@ -13,6 +13,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   teamName: string;
@@ -21,9 +22,9 @@ interface Props {
 }
 
 export const TransactionsExportedEmail = ({
-  teamName = "Midday",
+  teamName = "Your team",
   transactionCount = 100,
-  downloadLink = "https://app.midday.ai/s/abc123",
+  downloadLink = `${getProductEmailConfig().appUrl}/transactions`,
 }: Props) => {
   const preview = `${transactionCount} transaction${transactionCount !== 1 ? "s" : ""} ready to download`;
   const themeClasses = getEmailThemeClasses();

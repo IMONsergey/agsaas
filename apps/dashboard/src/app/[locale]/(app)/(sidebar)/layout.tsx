@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { AppSunsetBanner } from "@/components/app-sunset-banner";
 import { ExportStatus } from "@/components/export-status";
 import { GlobalTimerProvider } from "@/components/global-timer-provider";
 import { Header } from "@/components/header";
@@ -12,6 +11,7 @@ import {
   HydrateClient,
   trpc,
 } from "@/trpc/server";
+import { getAccountEntryRedirect } from "@/utils/account-deletion";
 
 export default async function Layout({
   children,
@@ -20,13 +20,6 @@ export default async function Layout({
 }) {
   const queryClient = getQueryClient();
 
-  // NOTE: These are used in the global sheets
-  batchPrefetch([
-    trpc.team.current.queryOptions(),
-    trpc.invoice.defaultSettings.queryOptions(),
-    trpc.search.global.queryOptions({ searchTerm: "" }),
-  ]);
-
   // Fetch the user – .catch → redirect so a transient API failure
   // (timeout, 5xx, expired session, etc.) doesn't crash the entire
   // layout and blank the page.
@@ -34,13 +27,16 @@ export default async function Layout({
     .fetchQuery(trpc.user.me.queryOptions())
     .catch(() => redirect("/login"));
 
-  if (!user) {
-    redirect("/login");
-  }
+  const accountRedirect = getAccountEntryRedirect(user);
+  if (accountRedirect) redirect(accountRedirect);
 
-  if (!user.fullName || !user.teamId) {
-    redirect("/onboarding");
-  }
+  // Team-scoped prefetches must not run for a pending account deletion. Such a
+  // user needs the independent retry page, not onboarding or team queries.
+  batchPrefetch([
+    trpc.team.current.queryOptions(),
+    trpc.invoice.defaultSettings.queryOptions(),
+    trpc.search.global.queryOptions({ searchTerm: "" }),
+  ]);
 
   return (
     <HydrateClient>
@@ -48,7 +44,6 @@ export default async function Layout({
         <Sidebar />
 
         <div className="md:ml-[70px] pb-4">
-          <AppSunsetBanner />
           <Header />
           <div className="px-4 md:px-8">{children}</div>
         </div>

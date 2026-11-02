@@ -9,8 +9,25 @@ export type GetBillingOrdersSchema = z.infer<typeof getBillingOrdersSchema>;
 
 export const createCheckoutSchema = z.object({
   plan: z.enum(["starter", "pro"]),
-  planType: z.string().optional(),
-  embedOrigin: z.string(),
+  planType: z
+    .string()
+    .max(32)
+    .refine(
+      (value) =>
+        [
+          "monthly",
+          "yearly",
+          "month",
+          "year",
+          "starter",
+          "pro",
+          "starter_yearly",
+          "pro_yearly",
+        ].includes(value),
+      "Invalid billing interval",
+    )
+    .optional(),
+  embedOrigin: z.string().url(),
   currency: z.enum(["USD", "EUR"]).optional(),
   requireTrial: z.boolean().optional(),
 });

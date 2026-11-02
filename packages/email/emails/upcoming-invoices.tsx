@@ -14,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   count: number;
@@ -24,7 +25,7 @@ interface Props {
 export const UpcomingInvoicesEmail = ({
   count = 3,
   teamName = "Your Team",
-  link = "https://app.midday.ai/invoices",
+  link = `${getProductEmailConfig().appUrl}/invoices`,
 }: Props) => {
   // Link to invoices filtered to show only recurring invoices
   const viewLink = `${link}?recurring=true`;

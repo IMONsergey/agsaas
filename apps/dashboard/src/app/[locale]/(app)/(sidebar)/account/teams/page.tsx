@@ -7,7 +7,7 @@ import { TeamsSkeleton } from "@/components/tables/teams/skeleton";
 import { prefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Teams | Midday",
+  title: "Teams | AGSaaS",
 };
 
 export default function Teams() {

@@ -1,10 +1,15 @@
-import { Notifications } from "@midday/notifications";
+import { Notifications, type NotificationTypes } from "@midday/notifications";
 import type { Job } from "bullmq";
 import {
   type NotificationPayload,
   notificationPayloadSchema,
 } from "../../schemas/notifications";
 import { getDb } from "../../utils/db";
+import { NonRetryableError } from "../../utils/error-classification";
+import {
+  dispatchNotificationEmail,
+  type NotificationDispatchResult,
+} from "../../utils/notification-dispatch";
 import { sendToProviders } from "../../utils/provider-notifications";
 import { BaseProcessor } from "../base";
 
@@ -27,7 +32,9 @@ import { BaseProcessor } from "../base";
  * - invoice_reminder_sent: Handled by SendInvoiceReminderProcessor (needs token, BCC logic)
  */
 export class NotificationProcessor extends BaseProcessor<NotificationPayload> {
-  async process(job: Job<NotificationPayload>): Promise<void> {
+  async process(
+    job: Job<NotificationPayload>,
+  ): Promise<NotificationDispatchResult | void> {
     // Validate payload using Zod schema - fail fast on invalid data
     const parseResult = notificationPayloadSchema.safeParse(job.data);
     if (!parseResult.success) {
@@ -44,6 +51,33 @@ export class NotificationProcessor extends BaseProcessor<NotificationPayload> {
     const payload = parseResult.data;
     const db = getDb();
     const notifications = new Notifications(db);
+    const deliver = <T extends keyof NotificationTypes>(
+      type: T,
+      data: Omit<NotificationTypes[T], "users">,
+    ) => {
+      if (!job.id)
+        throw new NonRetryableError(
+          "Notification email requires a stable job identity",
+        );
+      return dispatchNotificationEmail({
+        db,
+        kind: "notification",
+        sourceJobId: job.id,
+        payload,
+        createActivities: async (activityOperationKey) =>
+          (
+            await notifications.create(type, payload.teamId, data, {
+              sendEmail: false,
+              activityOperationKey,
+            })
+          ).activities,
+        send: () =>
+          notifications.create(type, payload.teamId, data, {
+            sendEmail: true,
+            skipActivities: true,
+          }),
+      });
+    };
 
     this.logger.info("Processing notification", {
       jobId: job.id,
@@ -57,27 +91,23 @@ export class NotificationProcessor extends BaseProcessor<NotificationPayload> {
       // Insight Notifications
       // ========================================
       case "insight_ready": {
-        await notifications.create(
-          "insight_ready",
-          payload.teamId,
-          {
-            insightId: payload.insightId,
-            periodType: payload.periodType,
-            periodLabel: payload.periodLabel,
-            periodNumber: payload.periodNumber,
-            periodYear: payload.periodYear,
-            title: payload.title,
-            audioUrl: payload.audioUrl,
-          },
-          { sendEmail: true },
-        );
+        const result = await deliver("insight_ready", {
+          insightId: payload.insightId,
+          periodType: payload.periodType,
+          periodLabel: payload.periodLabel,
+          periodNumber: payload.periodNumber,
+          periodYear: payload.periodYear,
+          title: payload.title,
+          audioUrl: payload.audioUrl,
+        });
 
-        this.logger.info("Insight ready notification sent", {
+        this.logger.info("Insight ready email dispatch recorded", {
           insightId: payload.insightId,
           teamId: payload.teamId,
           periodLabel: payload.periodLabel,
+          ...result,
         });
-        break;
+        return result;
       }
 
       // ========================================
@@ -108,25 +138,21 @@ export class NotificationProcessor extends BaseProcessor<NotificationPayload> {
       // Transaction Export Notifications
       // ========================================
       case "transactions_exported": {
-        await notifications.create(
-          "transactions_exported",
-          payload.teamId,
-          {
-            userEmail: payload.userEmail,
-            transactionCount: payload.transactionCount,
-            downloadLink: payload.downloadLink,
-            accountantEmail: payload.accountantEmail,
-            sendCopyToMe: payload.sendCopyToMe,
-          },
-          { sendEmail: true },
-        );
+        const result = await deliver("transactions_exported", {
+          userEmail: payload.userEmail,
+          transactionCount: payload.transactionCount,
+          downloadLink: payload.downloadLink,
+          accountantEmail: payload.accountantEmail,
+          sendCopyToMe: payload.sendCopyToMe,
+        });
 
-        this.logger.info("Transactions exported notification sent", {
+        this.logger.info("Transactions exported email dispatch recorded", {
           teamId: payload.teamId,
           transactionCount: payload.transactionCount,
           sendCopyToMe: payload.sendCopyToMe,
+          ...result,
         });
-        break;
+        return result;
       }
 
       // ========================================
@@ -164,60 +190,64 @@ export class NotificationProcessor extends BaseProcessor<NotificationPayload> {
       // Invoice Notifications
       // ========================================
       case "invoice_paid": {
-        await notifications.create(
-          "invoice_paid",
-          payload.teamId,
-          {
-            invoiceId: payload.invoiceId,
-            invoiceNumber: payload.invoiceNumber,
-            customerName: payload.customerName,
-            paidAt: payload.paidAt,
-            source: "system",
-          },
-          { sendEmail: true },
-        );
-
-        // Send to external providers (Slack, WhatsApp)
-        await sendToProviders(db, payload.teamId, "invoice_paid", {
+        const result = await deliver("invoice_paid", {
           invoiceId: payload.invoiceId,
           invoiceNumber: payload.invoiceNumber,
           customerName: payload.customerName,
           paidAt: payload.paidAt,
+          source: "system",
         });
 
-        this.logger.info("Invoice paid notification sent", {
+        // A separate channel failure must never replay accepted email.
+        if (!result.reused)
+          await sendToProviders(db, payload.teamId, "invoice_paid", {
+            invoiceId: payload.invoiceId,
+            invoiceNumber: payload.invoiceNumber,
+            customerName: payload.customerName,
+            paidAt: payload.paidAt,
+          }).catch(() =>
+            this.logger.warn(
+              "Secondary notification provider outcome unconfirmed",
+              { dispatchId: result.dispatchId },
+            ),
+          );
+
+        this.logger.info("Invoice paid email dispatch recorded", {
           invoiceId: payload.invoiceId,
           invoiceNumber: payload.invoiceNumber,
           teamId: payload.teamId,
+          ...result,
         });
-        break;
+        return result;
       }
 
       case "invoice_overdue": {
-        await notifications.create(
-          "invoice_overdue",
-          payload.teamId,
-          {
-            invoiceId: payload.invoiceId,
-            invoiceNumber: payload.invoiceNumber,
-            customerName: payload.customerName || "Unknown",
-            source: "system",
-          },
-          { sendEmail: true },
-        );
-
-        await sendToProviders(db, payload.teamId, "invoice_overdue", {
+        const result = await deliver("invoice_overdue", {
           invoiceId: payload.invoiceId,
           invoiceNumber: payload.invoiceNumber,
           customerName: payload.customerName || "Unknown",
+          source: "system",
         });
 
-        this.logger.info("Invoice overdue notification sent", {
+        if (!result.reused)
+          await sendToProviders(db, payload.teamId, "invoice_overdue", {
+            invoiceId: payload.invoiceId,
+            invoiceNumber: payload.invoiceNumber,
+            customerName: payload.customerName || "Unknown",
+          }).catch(() =>
+            this.logger.warn(
+              "Secondary notification provider outcome unconfirmed",
+              { dispatchId: result.dispatchId },
+            ),
+          );
+
+        this.logger.info("Invoice overdue email dispatch recorded", {
           invoiceId: payload.invoiceId,
           invoiceNumber: payload.invoiceNumber,
           teamId: payload.teamId,
+          ...result,
         });
-        break;
+        return result;
       }
 
       case "invoice_sent": {

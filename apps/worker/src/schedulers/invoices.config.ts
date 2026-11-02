@@ -6,6 +6,22 @@ import type { StaticSchedulerConfig } from "../types/scheduler-config";
  */
 export const invoicesStaticSchedulers: StaticSchedulerConfig[] = [
   {
+    name: "reconcile-financial-jobs",
+    queue: "invoices",
+    cron: "* * * * *",
+    jobName: "reconcile-financial-jobs",
+    payload: {},
+    options: { tz: "UTC" },
+  },
+  {
+    name: "reconcile-invoice-deliveries",
+    queue: "invoices",
+    cron: "* * * * *",
+    jobName: "reconcile-invoice-deliveries",
+    payload: {},
+    options: { tz: "UTC" },
+  },
+  {
     name: "invoice-recurring-scheduler",
     queue: "invoices",
     cron: "0 * * * *", // Every hour at :00

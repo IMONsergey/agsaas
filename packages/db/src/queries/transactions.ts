@@ -22,12 +22,17 @@ import {
 } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
 import { nanoid } from "nanoid";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
+import {
+  FinancialOperationConflictError,
+  financialRequestHash,
+} from "../financial-job";
 import {
   accountingSyncRecords,
   bankAccounts,
   bankConnections,
   inbox,
+  manualTransactionOperations,
   tags,
   transactionAttachments,
   transactionCategories,
@@ -38,6 +43,10 @@ import {
   users,
 } from "../schema";
 import {
+  assertTeamMembers,
+  TenantResourceNotFoundError,
+} from "../utils/tenant-ownership";
+import {
   calculateAmountScore,
   calculateCurrencyScore,
   calculateDateScore,
@@ -45,6 +54,7 @@ import {
   scoreMatch,
 } from "../utils/transaction-matching";
 import { createActivity } from "./activities";
+import { ensureFinancialJobDispatch } from "./financial-job-dispatches";
 import { type Attachment, createAttachments } from "./transaction-attachments";
 
 const logger = createLoggerWithContext("transactions");
@@ -754,7 +764,7 @@ type GetTransactionByIdParams = {
 };
 
 export async function getTransactionById(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: GetTransactionByIdParams,
 ) {
   const [result] = await db
@@ -922,7 +932,7 @@ export async function getTransactionById(
 
 // Helper function to get full transaction data by ID with the same structure as getTransactionById
 async function getFullTransactionData(
-  db: Database,
+  db: DatabaseOrTransaction,
   transactionId: string,
   teamId: string,
 ) {
@@ -1837,10 +1847,11 @@ export type CreateTransactionParams = {
 };
 
 export async function createTransaction(
-  db: Database,
-  params: CreateTransactionParams,
+  db: DatabaseOrTransaction,
+  params: CreateTransactionParams & { operationId: string },
 ) {
   const {
+    operationId: rawOperationId,
     teamId,
     attachments,
     bankAccountId,
@@ -1848,40 +1859,102 @@ export async function createTransaction(
     assignedId,
     ...rest
   } = params;
+  const operationId = rawOperationId.toLowerCase();
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      operationId,
+    )
+  )
+    throw new Error("A stable operation ID is required");
+  const requestHash = financialRequestHash({
+    ...rest,
+    bankAccountId,
+    categorySlug: categorySlug ?? null,
+    assignedId: assignedId ?? null,
+    attachments: attachments ?? [],
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${"manual-transaction/" + teamId + "/" + operationId}, 0))`,
+    );
+    const [prior] = await tx
+      .select()
+      .from(manualTransactionOperations)
+      .where(
+        and(
+          eq(manualTransactionOperations.teamId, teamId),
+          eq(manualTransactionOperations.operationId, operationId),
+        ),
+      );
+    if (prior) {
+      if (prior.requestHash !== requestHash)
+        throw new FinancialOperationConflictError();
+      if (!prior.transactionId)
+        throw new FinancialOperationConflictError(
+          "This operation created a transaction that has since been deleted",
+        );
+      return getFullTransactionData(tx, prior.transactionId, teamId);
+    }
+    const [account] = await tx
+      .select({ id: bankAccounts.id })
+      .from(bankAccounts)
+      .where(
+        and(
+          eq(bankAccounts.id, bankAccountId),
+          eq(bankAccounts.teamId, teamId),
+        ),
+      )
+      .for("share");
+    if (!account) throw new TenantResourceNotFoundError();
+    await assertTeamMembers(tx, teamId, [assignedId]);
+    const [result] = await tx
+      .insert(transactions)
+      .values({
+        ...rest,
+        teamId,
+        bankAccountId,
+        categorySlug,
+        assignedId,
+        method: "other",
+        manual: true,
+        notified: true,
+        status: "posted",
+        internalId: `${teamId}_manual_${operationId}`,
+      })
+      .returning({
+        id: transactions.id,
+      });
 
-  const [result] = await db
-    .insert(transactions)
-    .values({
-      ...rest,
+    if (!result) {
+      return null;
+    }
+
+    if (attachments?.length) {
+      await createAttachments(tx, {
+        attachments: attachments.map((attachment) => ({
+          ...attachment,
+          transactionId: result.id,
+        })),
+        teamId,
+      });
+    }
+    await tx
+      .insert(manualTransactionOperations)
+      .values({ teamId, operationId, requestHash, transactionId: result.id });
+    await ensureFinancialJobDispatch(tx, {
       teamId,
-      bankAccountId,
-      categorySlug,
-      assignedId,
-      method: "other",
-      manual: true,
-      notified: true,
-      status: "posted",
-      internalId: `${teamId}_${nanoid()}`,
-    })
-    .returning({
-      id: transactions.id,
+      jobName: "enrich-transactions",
+      source: result.id,
+      payload: { teamId, transactionIds: [result.id] },
     });
-
-  if (!result) {
-    return null;
-  }
-
-  if (attachments) {
-    await createAttachments(db, {
-      attachments: attachments.map((attachment) => ({
-        ...attachment,
-        transactionId: result.id,
-      })),
+    await ensureFinancialJobDispatch(tx, {
       teamId,
+      jobName: "match-transactions-bidirectional",
+      source: result.id,
+      payload: { teamId, newTransactionIds: [result.id] },
     });
-  }
-
-  return getFullTransactionData(db, result.id, teamId);
+    return getFullTransactionData(tx, result.id, teamId);
+  });
 }
 
 export async function createTransactions(

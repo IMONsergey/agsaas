@@ -30,7 +30,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   InvalidReportTypeError,
   ReportExpiredError,
@@ -114,7 +114,7 @@ async function getCogsCategorySlugs(
 }
 
 async function getTargetCurrency(
-  db: Database,
+  db: DatabaseOrTransaction,
   teamId: string,
   inputCurrency?: string,
 ): Promise<string | null> {
@@ -1221,7 +1221,10 @@ export type GetTaxParams = {
   currency?: string;
 };
 
-export async function getTaxSummary(db: Database, params: GetTaxParams) {
+export async function getTaxSummary(
+  db: DatabaseOrTransaction,
+  params: GetTaxParams,
+) {
   const {
     teamId,
     type,
@@ -1235,11 +1238,12 @@ export async function getTaxSummary(db: Database, params: GetTaxParams) {
   const fromDate = startOfMonth(new UTCDate(parseISO(from))).toISOString();
   const toDate = endOfMonth(new UTCDate(parseISO(to))).toISOString();
 
-  const targetCurrency = await getTargetCurrency(db, teamId, inputCurrency);
-
-  const amtExpr = targetCurrency
-    ? resolvedAmount(targetCurrency)
-    : sql`COALESCE(${transactions.baseAmount}, ${transactions.amount})`;
+  // The response has historically defaulted to USD when a team has no base
+  // currency. Resolve amounts into that currency too, rather than labeling a
+  // mixture of raw/base amounts as USD.
+  const targetCurrency =
+    (await getTargetCurrency(db, teamId, inputCurrency)) || "USD";
+  const amtExpr = resolvedAmount(targetCurrency);
 
   const tc = transactionCategories;
 
@@ -1249,26 +1253,16 @@ export async function getTaxSummary(db: Database, params: GetTaxParams) {
     ne(transactions.status, "excluded"),
     gte(transactions.date, fromDate),
     lte(transactions.date, toDate),
+    sql`${transactions.currency} ~ '^[A-Z]{3}$'`,
   ];
 
-  if (targetCurrency) {
-    if (type === "paid") {
-      conditions.push(sql`(${amtExpr} < 0)`);
-    } else {
-      conditions.push(sql`(${amtExpr} > 0)`);
-    }
-    conditions.push(
-      or(
-        eq(transactions.currency, targetCurrency),
-        eq(transactions.baseCurrency, targetCurrency),
-      )!,
-    );
+  // Preserve the cash-direction contract, including refunds: outflows are
+  // paid, inflows collected. Also exclude zero amounts and invalid FX values
+  // that would reverse a transaction's direction. NULL FX amounts do not pass.
+  if (type === "paid") {
+    conditions.push(lt(transactions.amount, 0), sql`(${amtExpr} < 0)`);
   } else {
-    if (type === "paid") {
-      conditions.push(lt(transactions.amount, 0));
-    } else {
-      conditions.push(gt(transactions.amount, 0));
-    }
+    conditions.push(gt(transactions.amount, 0), sql`(${amtExpr} > 0)`);
   }
 
   if (categorySlug) {
@@ -1291,16 +1285,26 @@ export async function getTaxSummary(db: Database, params: GetTaxParams) {
 
   conditions.push(or(isNull(tc.excluded), eq(tc.excluded, false))!);
 
-  const taxRateExpr = sql`COALESCE(${transactions.taxRate}, ${tc.taxRate}, 0)`;
+  // Match resolveTaxValues: an explicit fixed amount (including zero) wins;
+  // category rates only apply when neither a fixed amount nor own rate exists.
+  const taxRateExpr = sql`CASE WHEN ${transactions.taxAmount} IS NOT NULL
+    THEN ${transactions.taxRate}
+    ELSE COALESCE(${transactions.taxRate}, ${tc.taxRate}) END`;
+  const taxAmountExpr = sql`CASE
+    WHEN ${transactions.taxAmount} IS NOT NULL THEN
+      ABS(${transactions.taxAmount}) * (${amtExpr}) / NULLIF(ABS(${transactions.amount}), 0)
+    ELSE (${amtExpr}) * COALESCE(${taxRateExpr}, 0) / NULLIF(100 + COALESCE(${taxRateExpr}, 0), 0)
+  END`;
+  const totalTaxAmountExpr = sql`ROUND(ABS(SUM(${taxAmountExpr})), 2)`;
 
   const rawData = await db
     .select({
       category_slug: sql<string>`COALESCE(${tc.slug}, 'uncategorized')`,
       category_name: sql<string>`COALESCE(${tc.name}, 'Uncategorized')`,
-      total_tax_amount: sql<string>`ROUND(ABS(SUM(${amtExpr} * ${taxRateExpr} / (100 + ${taxRateExpr}))), 2)::text`,
+      total_tax_amount: sql<string>`${totalTaxAmountExpr}::text`,
       total_transaction_amount: sql<string>`ROUND(ABS(SUM(${amtExpr})), 2)::text`,
       transaction_count: sql<number>`COUNT(${transactions.id})`,
-      avg_tax_rate: sql<string>`ROUND(AVG(COALESCE(${transactions.taxRate}, ${tc.taxRate})), 2)::text`,
+      avg_tax_rate: sql<string>`ROUND(AVG(${taxRateExpr}), 2)::text`,
       tax_type: sql<string>`COALESCE(${transactions.taxType}, ${tc.taxType})`,
       earliest_date: sql<string>`MIN(${transactions.date})`,
       latest_date: sql<string>`MAX(${transactions.date})`,
@@ -1319,11 +1323,9 @@ export async function getTaxSummary(db: Database, params: GetTaxParams) {
       sql`COALESCE(${tc.name}, 'Uncategorized')`,
       sql`COALESCE(${transactions.taxType}, ${tc.taxType})`,
     )
-    .orderBy(
-      sql`ROUND(ABS(SUM(${amtExpr} * ${taxRateExpr} / (100 + ${taxRateExpr}))), 2) DESC`,
-    );
+    .orderBy(sql`${totalTaxAmountExpr} DESC`);
 
-  const effectiveCurrency = targetCurrency || "USD";
+  const effectiveCurrency = targetCurrency;
 
   const processedData = rawData?.map((item) => ({
     category_slug: item.category_slug,

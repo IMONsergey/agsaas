@@ -106,6 +106,7 @@ export function TransactionCreateForm() {
   const [isOpen, setIsOpen] = useState(false);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [temporaryAttachmentId] = useState(() => nanoid());
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   const { data: user } = useUserQuery();
   const { data: team } = useTeamQuery();
   const { data: accounts } = useQuery(
@@ -121,6 +122,7 @@ export function TransactionCreateForm() {
   const createTransactionMutation = useMutation(
     trpc.transactions.create.mutationOptions({
       onSuccess: () => {
+        setOperationId(crypto.randomUUID());
         track(LogEvents.TransactionCreated.name);
         invalidateTransactionQueries();
         setParams(null);
@@ -204,6 +206,7 @@ export function TransactionCreateForm() {
           // Amount is already stored with correct sign (negative for expense, positive for income)
           createTransactionMutation.mutate({
             ...formValues,
+            operationId,
           });
         })}
         className="space-y-8"

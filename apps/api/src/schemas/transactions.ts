@@ -841,6 +841,16 @@ export const searchTransactionMatchSchema = z.object({
 });
 
 export const createTransactionSchema = z.object({
+  operationId: z
+    .string()
+    .uuid()
+    .describe(
+      "Stable UUID for this manual creation. Reuse the same UUID and payload after a timeout; use a new UUID for a new transaction.",
+    )
+    .openapi({
+      description:
+        "Idempotency UUID. Reuse for retries of the same creation request.",
+    }),
   name: z.string().describe("Transaction name or description").openapi({
     description: "Name of the transaction.",
   }),
@@ -895,7 +905,7 @@ export const createTransactionSchema = z.object({
 });
 
 export const createTransactionsSchema = z
-  .array(createTransactionSchema)
+  .array(createTransactionSchema.omit({ operationId: true }))
   .max(100)
   .min(1)
   .openapi({
@@ -1000,6 +1010,13 @@ export const importTransactionsSchema = z.object({
   currency: z.string(),
   currentBalance: z.string().optional(),
   inverted: z.boolean(),
+  parseProfile: z
+    .object({
+      dateOrder: z.enum(["auto", "day-first", "month-first"]).optional(),
+      amountFormat: z.enum(["auto", "decimal-comma", "decimal-dot"]).optional(),
+    })
+    .strict()
+    .optional(),
   mappings: z
     .object({
       amount: z.string(),

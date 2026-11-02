@@ -10,7 +10,7 @@ import { OAuthDataTable } from "@/components/tables/oauth-applications";
 import { batchPrefetch, trpc } from "@/trpc/server";
 
 export const metadata: Metadata = {
-  title: "Developer | Midday",
+  title: "Developer | AGSaaS",
 };
 
 export default async function Page() {

@@ -4,6 +4,8 @@ import { Icons } from "@midday/ui/icons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@midday/ui/tabs";
 import { useState } from "react";
 
+const mcpUrl = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:3003").replace(/\/$/, "")}/mcp`;
+
 function CopyableUrl({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -85,7 +87,7 @@ export function ChatGPTSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect ChatGPT to your Midday account via MCP. No API key needed —
+        Connect ChatGPT to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
@@ -93,7 +95,7 @@ export function ChatGPTSetupInstructions() {
         <p className="text-xs text-[#878787]">
           Copy this URL and add it as a connector in ChatGPT:
         </p>
-        <CopyableUrl url="https://api.midday.ai/mcp" />
+        <CopyableUrl url={mcpUrl} />
       </div>
 
       <div className="space-y-2.5">
@@ -110,7 +112,7 @@ export function ChatGPTSetupInstructions() {
             Paste the URL above as the connector URL
           </SetupStep>
           <SetupStep number={3}>
-            When you use a Midday tool, you'll be prompted to sign in and select
+            When you use a AGSaaS tool, you'll be prompted to sign in and select
             a team
           </SetupStep>
         </ol>
@@ -131,15 +133,17 @@ export function GeminiSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Gemini CLI to your Midday account via MCP. No API key needed —
+        Connect Gemini CLI to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
       <div className="space-y-2">
         <p className="text-xs text-[#878787]">
-          Run this command to add the Midday MCP server:
+          Run this command to add the AGSaaS MCP server:
         </p>
-        <CopyableCode code="gemini mcp add --transport http midday https://api.midday.ai/mcp" />
+        <CopyableCode
+          code={`gemini mcp add --transport http agsaas ${mcpUrl}`}
+        />
       </div>
 
       <div className="space-y-2.5">
@@ -149,10 +153,10 @@ export function GeminiSetupInstructions() {
             Run the command above in your terminal
           </SetupStep>
           <SetupStep number={2}>
-            When prompted, sign in to Midday in your browser and select a team
+            When prompted, sign in to AGSaaS in your browser and select a team
           </SetupStep>
           <SetupStep number={3}>
-            Use Midday tools in Gemini CLI to access your financial data
+            Use AGSaaS tools in Gemini CLI to access your financial data
           </SetupStep>
         </ol>
       </div>
@@ -180,7 +184,7 @@ export function WindsurfSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Windsurf to your Midday account via MCP. No API key needed —
+        Connect Windsurf to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
@@ -197,10 +201,10 @@ export function WindsurfSetupInstructions() {
           </SetupStep>
           <SetupStep number={2}>
             Add a new server with URL:
-            <CopyableUrl url="https://api.midday.ai/mcp" />
+            <CopyableUrl url={mcpUrl} />
           </SetupStep>
           <SetupStep number={3}>
-            When prompted, sign in to Midday in your browser and select a team
+            When prompted, sign in to AGSaaS in your browser and select a team
           </SetupStep>
         </ol>
       </div>
@@ -212,7 +216,7 @@ export function ClineSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Cline to your Midday account via MCP. No API key needed —
+        Connect Cline to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
@@ -225,11 +229,11 @@ export function ClineSetupInstructions() {
           </SetupStep>
           <SetupStep number={2}>
             Add the server URL:
-            <CopyableUrl url="https://api.midday.ai/mcp" />
+            <CopyableUrl url={mcpUrl} />
           </SetupStep>
           <SetupStep number={3}>
             Click <span className="font-medium text-primary">Authenticate</span>{" "}
-            and sign in to Midday in your browser
+            and sign in to AGSaaS in your browser
           </SetupStep>
         </ol>
       </div>
@@ -248,7 +252,7 @@ export function ZedSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Zed to your Midday account via MCP. No API key needed —
+        Connect Zed to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
@@ -265,10 +269,10 @@ export function ZedSetupInstructions() {
           </SetupStep>
           <SetupStep number={2}>
             Enter the URL:
-            <CopyableUrl url="https://api.midday.ai/mcp" />
+            <CopyableUrl url={mcpUrl} />
           </SetupStep>
           <SetupStep number={3}>
-            When prompted, sign in to Midday in your browser and select a team
+            When prompted, sign in to AGSaaS in your browser and select a team
           </SetupStep>
         </ol>
       </div>
@@ -287,7 +291,7 @@ export function ManusSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Manus to your Midday account via MCP.
+        Connect Manus to your AGSaaS account via MCP.
       </p>
 
       <div className="space-y-2.5">
@@ -300,10 +304,10 @@ export function ManusSetupInstructions() {
           </SetupStep>
           <SetupStep number={2}>
             Enter the server URL:
-            <CopyableUrl url="https://api.midday.ai/mcp" />
+            <CopyableUrl url={mcpUrl} />
           </SetupStep>
           <SetupStep number={3}>
-            Authenticate with your Midday account when prompted
+            Authenticate with your AGSaaS account when prompted
           </SetupStep>
         </ol>
       </div>
@@ -322,7 +326,7 @@ export function ClaudeSetupInstructions() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[#878787]">
-        Connect Claude to your Midday account via MCP. No API key needed —
+        Connect Claude to your AGSaaS account via MCP. No API key needed;
         authentication is handled automatically via OAuth.
       </p>
 
@@ -341,7 +345,7 @@ export function ClaudeSetupInstructions() {
             <p className="text-xs text-[#878787]">
               Copy this URL and add it as a connector in Claude:
             </p>
-            <CopyableUrl url="https://api.midday.ai/mcp" />
+            <CopyableUrl url={mcpUrl} />
           </div>
 
           <div className="space-y-2.5">
@@ -361,7 +365,7 @@ export function ClaudeSetupInstructions() {
                 Paste the URL above as the server URL
               </SetupStep>
               <SetupStep number={3}>
-                When you use a Midday tool, you'll be prompted to sign in and
+                When you use a AGSaaS tool, you'll be prompted to sign in and
                 select a team
               </SetupStep>
             </ol>
@@ -371,10 +375,12 @@ export function ClaudeSetupInstructions() {
         <TabsContent value="code" className="space-y-4 mt-3">
           <div className="space-y-2">
             <p className="text-xs text-[#878787]">
-              Run this command to add the Midday MCP server. OAuth will be
+              Run this command to add the AGSaaS MCP server. OAuth will be
               handled automatically in your browser:
             </p>
-            <CopyableCode code="claude mcp add --transport http midday https://api.midday.ai/mcp" />
+            <CopyableCode
+              code={`claude mcp add --transport http agsaas ${mcpUrl}`}
+            />
           </div>
 
           <div className="space-y-2.5">
@@ -384,11 +390,11 @@ export function ClaudeSetupInstructions() {
                 Run the command above in your terminal
               </SetupStep>
               <SetupStep number={2}>
-                When prompted, sign in to Midday in your browser and select a
+                When prompted, sign in to AGSaaS in your browser and select a
                 team
               </SetupStep>
               <SetupStep number={3}>
-                Use <span className="font-mono">@midday</span> in Claude Code to
+                Use <span className="font-mono">@agsaas</span> in Claude Code to
                 access your financial data
               </SetupStep>
             </ol>

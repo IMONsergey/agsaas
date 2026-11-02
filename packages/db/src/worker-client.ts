@@ -2,7 +2,7 @@ import { createLoggerWithContext } from "@midday/logger";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import type { Database } from "./client";
-import * as schema from "./schema";
+import { runtimeSchema as schema } from "./runtime-schema";
 
 const isDevelopment = process.env.NODE_ENV === "development";
 const logger = createLoggerWithContext("db:worker");

@@ -18,21 +18,24 @@ let cachedIndex: ToolIndex<any> | null = null;
 let inflightIndexPromise: Promise<ToolIndex<any>> | null = null;
 
 async function bootstrapTools(ctx: McpContext) {
-  const mcpServer = createMcpServer(ctx);
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
+  const client = await connectChatClient(ctx, "midday-bootstrap");
+  let definitions: ToolDefinitions;
+  let tools: ReturnType<ChatMCPClient["toolsFromDefinitions"]>;
 
-  await mcpServer.connect(serverTransport);
+  try {
+    definitions = await client.listTools();
+    tools = client.toolsFromDefinitions(definitions);
+  } catch (error) {
+    // Keep the actual bootstrap failure when cleanup fails as well.
+    await client.close().catch((cleanupError: unknown) => {
+      logger.warn("[chat] MCP bootstrap cleanup failed", {
+        error: cleanupError,
+      });
+    });
+    throw error;
+  }
 
-  const client = await createMCPClient({
-    transport: clientTransport,
-    name: "midday-bootstrap",
-  });
-
-  const definitions = await client.listTools();
-  const tools = client.toolsFromDefinitions(definitions);
   await client.close();
-
   return { definitions, tools };
 }
 
@@ -125,6 +128,9 @@ export function getSearchTool() {
  * times — subsequent calls are no-ops once the index is cached.
  */
 export function warmToolIndex(): void {
+  // Chat is optional; a core-only API should not attempt embedding requests.
+  if (!process.env.OPENAI_API_KEY) return;
+
   const stubCtx: McpContext = {
     db: {} as McpContext["db"],
     teamId: "warmup",
@@ -150,12 +156,31 @@ export function warmToolIndex(): void {
 }
 
 export async function createExecutionClient(ctx: McpContext) {
+  return connectChatClient(ctx, "midday-chat");
+}
+
+async function connectChatClient(
+  ctx: McpContext,
+  name: string,
+): Promise<ChatMCPClient> {
   const mcpServer = createMcpServer(ctx);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
-  await mcpServer.connect(serverTransport);
-  return createMCPClient({
-    transport: clientTransport,
-    name: "midday-chat",
-  });
+
+  try {
+    await mcpServer.connect(serverTransport);
+    return await createMCPClient({
+      transport: clientTransport,
+      name,
+    });
+  } catch (error) {
+    // Closing the server also closes its linked in-memory client transport.
+    // Until initialization succeeds, the caller cannot own this cleanup.
+    await mcpServer.close().catch((cleanupError: unknown) => {
+      logger.warn("[chat] MCP connection cleanup failed", {
+        error: cleanupError,
+      });
+    });
+    throw error;
+  }
 }

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { formatISO } from "date-fns";
+import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
 
 type UseBillableHoursParams = {
@@ -13,7 +14,7 @@ type UseBillableHoursParams = {
 
 /**
  * Single source of truth for billable hours calculations.
- * All date range logic with 1-day buffer handled on backend.
+ * Reporting intervals are clipped on the backend in the user calendar timezone.
  */
 export function useBillableHours(params: UseBillableHoursParams) {
   const {
@@ -25,6 +26,7 @@ export function useBillableHours(params: UseBillableHoursParams) {
     refetchOnWindowFocus,
   } = params;
   const trpc = useTRPC();
+  const { data: user } = useUserQuery();
 
   // Convert date to ISO string format (YYYY-MM-DD)
   const dateString =
@@ -37,6 +39,8 @@ export function useBillableHours(params: UseBillableHoursParams) {
       date: dateString,
       view,
       weekStartsOnMonday,
+      timezone:
+        user?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     }),
     enabled,
     refetchInterval,

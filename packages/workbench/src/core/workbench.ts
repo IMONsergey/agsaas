@@ -39,6 +39,10 @@ export class WorkbenchCore {
     return this.queueManager;
   }
 
+  close(): Promise<void> {
+    return this.queueManager.close();
+  }
+
   /**
    * Check if authentication is required
    */

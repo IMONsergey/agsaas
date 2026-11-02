@@ -13,11 +13,13 @@ export default async function Image({ params }: Props) {
   const { token } = await params;
   const queryClient = getQueryClient();
 
-  const invoice = await queryClient.fetchQuery(
-    trpc.invoice.getInvoiceByToken.queryOptions({
-      token,
-    }),
-  );
+  const invoice = await queryClient
+    .fetchQuery(
+      trpc.invoice.getInvoiceByToken.queryOptions({
+        token,
+      }),
+    )
+    .catch(() => null);
 
   if (!invoice) {
     return new Response("Not found", { status: 404 });

@@ -1,4 +1,3 @@
-import { getAppUrl } from "@midday/utils/envs";
 import {
   Body,
   Container,
@@ -15,17 +14,16 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   fullName: string;
   teamName: string;
 }
 
-const baseAppUrl = getAppUrl();
-
 export const PaymentIssueEmail = ({
   fullName = "",
-  teamName = "Midday",
+  teamName = "Your team",
 }: Props) => {
   const firstName = fullName ? fullName.split(" ").at(0) : "";
   const previewText = `Your last payment for ${teamName} didn't go through.`;
@@ -74,7 +72,7 @@ export const PaymentIssueEmail = ({
           </Text>
 
           <Section className="text-center mt-[50px] mb-[50px]">
-            <Button href={`${baseAppUrl}/settings/billing`}>
+            <Button href={`${getProductEmailConfig().appUrl}/settings/billing`}>
               Update payment method
             </Button>
           </Section>

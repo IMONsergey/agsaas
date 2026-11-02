@@ -1,9 +1,34 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { InvoicePaymentError } from "@midday/db/errors";
 import { createCallerFactory } from "../../trpc/init";
-import { invoicePaymentsRouter } from "../../trpc/routers/invoice-payments";
 import { createTestContext } from "../helpers/test-context";
 import { mocks } from "../setup";
 
+const invoiceId = "73edc15c-7f58-42ca-9b25-ad0319f0bd10";
+const retrievePayment = mock(async () => ({
+  id: "pi_fixture",
+  amount: 12005,
+  amount_received: 12005,
+  currency: "usd",
+  status: "succeeded",
+  metadata: { invoice_id: invoiceId, team_id: "test-team-id" },
+}));
+const requestRefund = mock(async () => ({
+  id: "re_fixture",
+  amount: 12005,
+  currency: "usd",
+  payment_intent: "pi_fixture",
+  status: "pending",
+}));
+mock.module("stripe", () => ({
+  default: class {
+    paymentIntents = { retrieve: retrievePayment };
+    refunds = { create: requestRefund };
+  },
+}));
+const { invoicePaymentsRouter } = await import(
+  "../../trpc/routers/invoice-payments"
+);
 const createCaller = createCallerFactory(invoicePaymentsRouter);
 
 describe("tRPC: invoicePayments.stripeStatus", () => {
@@ -117,5 +142,95 @@ describe("tRPC: invoicePayments.disconnectStripe", () => {
         },
       }),
     );
+  });
+});
+
+describe("tRPC: invoicePayments.refundPayment", () => {
+  beforeEach(() => {
+    mocks.getInvoiceRefundContext.mockReset();
+    mocks.updateInvoice.mockClear();
+    retrievePayment.mockClear();
+    requestRefund.mockClear();
+    mocks.getInvoiceRefundContext.mockImplementation(async () => ({
+      invoiceId,
+      teamId: "test-team-id",
+      paymentIntentId: "pi_fixture",
+      stripeAccountId: "acct_original",
+      amountMinor: 12005,
+      currency: "usd",
+    }));
+    requestRefund.mockImplementation(async () => ({
+      id: "re_fixture",
+      amount: 12005,
+      currency: "usd",
+      payment_intent: "pi_fixture",
+      status: "pending",
+    }));
+  });
+
+  test("pending refund is acknowledged without changing invoice financial state", async () => {
+    const caller = createCaller(createTestContext());
+    expect(await caller.refundPayment({ invoiceId })).toEqual({
+      accepted: true,
+      status: "requested",
+      refundStatus: "pending",
+      refundId: "re_fixture",
+    });
+    expect(mocks.getInvoiceRefundContext).toHaveBeenCalledWith(
+      expect.anything(),
+      { invoiceId, teamId: "test-team-id" },
+    );
+    expect(requestRefund).toHaveBeenCalledWith(
+      { payment_intent: "pi_fixture" },
+      {
+        stripeAccount: "acct_original",
+        idempotencyKey: `invoice-refund/${invoiceId}/pi_fixture/full/v1`,
+      },
+    );
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+  });
+
+  for (const [status, code] of [
+    [400, "BAD_REQUEST"],
+    [404, "NOT_FOUND"],
+    [409, "CONFLICT"],
+    [503, "INTERNAL_SERVER_ERROR"],
+  ] as const) {
+    test(`preserves a ${status} context rejection and never reaches Stripe`, async () => {
+      mocks.getInvoiceRefundContext.mockImplementation(async () => {
+        throw new InvoicePaymentError(status, "Fixture rejection");
+      });
+      const caller = createCaller(createTestContext());
+      await expect(caller.refundPayment({ invoiceId })).rejects.toMatchObject({
+        code,
+      });
+      expect(retrievePayment).not.toHaveBeenCalled();
+      expect(requestRefund).not.toHaveBeenCalled();
+    });
+  }
+
+  test("missing team cannot request a refund for a supplied invoice ID", async () => {
+    mocks.simulateMissingTeamOnce();
+    const caller = createCaller(createTestContext());
+    await expect(caller.refundPayment({ invoiceId })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(mocks.getInvoiceRefundContext).not.toHaveBeenCalled();
+    expect(requestRefund).not.toHaveBeenCalled();
+  });
+
+  test("failed provider refund is a conflict, not completed financial history", async () => {
+    requestRefund.mockImplementation(async () => ({
+      id: "re_fixture",
+      amount: 12005,
+      currency: "usd",
+      payment_intent: "pi_fixture",
+      status: "failed",
+    }));
+    const caller = createCaller(createTestContext());
+    await expect(caller.refundPayment({ invoiceId })).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
   });
 });

@@ -24,7 +24,7 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be Friday, January 10, 2025
-      expect(result.getDay()).toBe(5); // Friday
+      expect(result.getUTCDay()).toBe(5); // Friday
       expect(result > currentDate).toBe(true);
     });
 
@@ -42,7 +42,7 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be next Friday, January 17, 2025
-      expect(result.getDay()).toBe(5); // Friday
+      expect(result.getUTCDay()).toBe(5); // Friday
       expect(result > currentDate).toBe(true);
     });
 
@@ -59,7 +59,7 @@ describe("calculateNextScheduledDate", () => {
 
       const result = calculateNextScheduledDate(params, currentDate);
 
-      expect(result.getDay()).toBe(0); // Sunday
+      expect(result.getUTCDay()).toBe(0); // Sunday
       expect(result > currentDate).toBe(true);
     });
   });
@@ -79,8 +79,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be February 15, 2025
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(15);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(15);
     });
 
     test("handles 31st in month with 30 days (April)", () => {
@@ -97,8 +97,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // April has 30 days, so should fall back to 30th
-      expect(result.getMonth()).toBe(3); // April (0-indexed)
-      expect(result.getDate()).toBe(30);
+      expect(result.getUTCMonth()).toBe(3); // April (0-indexed)
+      expect(result.getUTCDate()).toBe(30);
     });
 
     test("handles 31st in February (non-leap year)", () => {
@@ -115,8 +115,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2025 has 28 days (non-leap year)
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(28);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(28);
     });
 
     test("handles 29th in February (leap year)", () => {
@@ -133,8 +133,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2024 has 29 days (leap year)
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(29);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(29);
     });
   });
 
@@ -153,9 +153,9 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // 1st Friday of February 2025 is Feb 7
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDay()).toBe(5); // Friday
-      expect(result.getDate()).toBe(7);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDay()).toBe(5); // Friday
+      expect(result.getUTCDate()).toBe(7);
     });
 
     test("handles 2nd Tuesday correctly", () => {
@@ -172,9 +172,55 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // 2nd Tuesday of February 2025 is Feb 11
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDay()).toBe(2); // Tuesday
-      expect(result.getDate()).toBe(11);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDay()).toBe(2); // Tuesday
+      expect(result.getUTCDate()).toBe(11);
+    });
+
+    test.each([
+      ["UTC", "2025-01-15T12:00:00Z", 5, 1, "2025-02-07T00:00:00.000Z"],
+      [
+        "Europe/Moscow",
+        "2025-01-15T12:00:00Z",
+        5,
+        1,
+        "2025-02-06T21:00:00.000Z",
+      ],
+      [
+        "America/New_York",
+        "2025-01-15T12:00:00Z",
+        5,
+        1,
+        "2025-02-07T05:00:00.000Z",
+      ],
+      ["Asia/Tokyo", "2025-01-15T12:00:00Z", 5, 1, "2025-02-06T15:00:00.000Z"],
+      [
+        "Pacific/Kiritimati",
+        "2025-01-15T12:00:00Z",
+        5,
+        1,
+        "2025-02-06T10:00:00.000Z",
+      ],
+      [
+        "America/New_York",
+        "2025-02-15T12:00:00Z",
+        2,
+        2,
+        "2025-03-11T04:00:00.000Z",
+      ],
+    ] as const)("constructs the nth weekday in %s independently of the host timezone", (timezone, reference, frequencyDay, frequencyWeek, expected) => {
+      const result = calculateNextScheduledDate(
+        {
+          frequency: "monthly_weekday",
+          frequencyDay,
+          frequencyWeek,
+          frequencyInterval: null,
+          timezone,
+        },
+        new Date(reference),
+      );
+
+      expect(result.toISOString()).toBe(expected);
     });
   });
 
@@ -193,8 +239,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be January 15, 2025
-      expect(result.getMonth()).toBe(0); // January (0-indexed)
-      expect(result.getDate()).toBe(15);
+      expect(result.getUTCMonth()).toBe(0); // January (0-indexed)
+      expect(result.getUTCDate()).toBe(15);
     });
 
     test("defaults to 1 day if interval not specified", () => {
@@ -209,7 +255,7 @@ describe("calculateNextScheduledDate", () => {
 
       const result = calculateNextScheduledDate(params, currentDate);
 
-      expect(result.getDate()).toBe(2); // January 2
+      expect(result.getUTCDate()).toBe(2); // January 2
     });
   });
 
@@ -228,8 +274,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be April 15, 2025
-      expect(result.getMonth()).toBe(3); // April (0-indexed)
-      expect(result.getDate()).toBe(15);
+      expect(result.getUTCMonth()).toBe(3); // April (0-indexed)
+      expect(result.getUTCDate()).toBe(15);
     });
 
     test("handles 31st in month with 30 days", () => {
@@ -246,8 +292,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // April has 30 days, should be April 30
-      expect(result.getMonth()).toBe(3); // April (0-indexed)
-      expect(result.getDate()).toBe(30);
+      expect(result.getUTCMonth()).toBe(3); // April (0-indexed)
+      expect(result.getUTCDate()).toBe(30);
     });
 
     test("handles February edge case", () => {
@@ -264,8 +310,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2025 has 28 days (non-leap year)
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(28);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(28);
     });
   });
 
@@ -284,8 +330,8 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be July 15, 2025
-      expect(result.getMonth()).toBe(6); // July (0-indexed)
-      expect(result.getDate()).toBe(15);
+      expect(result.getUTCMonth()).toBe(6); // July (0-indexed)
+      expect(result.getUTCDate()).toBe(15);
     });
 
     test("handles month length differences", () => {
@@ -302,9 +348,9 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2026 has 28 days
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(28);
-      expect(result.getFullYear()).toBe(2026);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(28);
+      expect(result.getUTCFullYear()).toBe(2026);
     });
   });
 
@@ -323,9 +369,9 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // Should be January 15, 2026
-      expect(result.getFullYear()).toBe(2026);
-      expect(result.getMonth()).toBe(0); // January (0-indexed)
-      expect(result.getDate()).toBe(15);
+      expect(result.getUTCFullYear()).toBe(2026);
+      expect(result.getUTCMonth()).toBe(0); // January (0-indexed)
+      expect(result.getUTCDate()).toBe(15);
     });
 
     test("handles leap year to non-leap year (Feb 29)", () => {
@@ -342,9 +388,9 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2025 has only 28 days
-      expect(result.getFullYear()).toBe(2025);
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(28);
+      expect(result.getUTCFullYear()).toBe(2025);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(28);
     });
 
     test("handles non-leap year to leap year (Feb 28)", () => {
@@ -361,9 +407,9 @@ describe("calculateNextScheduledDate", () => {
       const result = calculateNextScheduledDate(params, currentDate);
 
       // February 2024 has 29 days, but we keep the same day (28)
-      expect(result.getFullYear()).toBe(2024);
-      expect(result.getMonth()).toBe(1); // February (0-indexed)
-      expect(result.getDate()).toBe(28);
+      expect(result.getUTCFullYear()).toBe(2024);
+      expect(result.getUTCMonth()).toBe(1); // February (0-indexed)
+      expect(result.getUTCDate()).toBe(28);
     });
   });
 });
@@ -767,8 +813,8 @@ describe("advanceToFutureDate", () => {
       const result = advanceToFutureDate(biweeklyParams, scheduledDate, now);
 
       // Should advance to Jan 29
-      expect(result.date.getDate()).toBe(29);
-      expect(result.date.getMonth()).toBe(0); // January
+      expect(result.date.getUTCDate()).toBe(29);
+      expect(result.date.getUTCMonth()).toBe(0); // January
       expect(result.intervalsSkipped).toBe(1);
       expect(result.hitSafetyLimit).toBe(false);
     });
@@ -805,7 +851,7 @@ describe("advanceToFutureDate", () => {
       const result = advanceToFutureDate(customParams, scheduledDate, now);
 
       // Jan 8 -> Jan 15 -> Jan 22 -> Jan 29 (first future date)
-      expect(result.date.getDate()).toBe(29);
+      expect(result.date.getUTCDate()).toBe(29);
       expect(result.intervalsSkipped).toBe(3);
       expect(result.hitSafetyLimit).toBe(false);
     });
@@ -872,8 +918,8 @@ describe("advanceToFutureDate", () => {
       // Feb 15 <= March 20? Yes, advance -> March 15
       // March 15 <= March 20? Yes, advance -> April 15
       // April 15 <= March 20? No, done (2 intervals skipped)
-      expect(result.date.getMonth()).toBe(3); // April
-      expect(result.date.getDate()).toBe(15);
+      expect(result.date.getUTCMonth()).toBe(3); // April
+      expect(result.date.getUTCDate()).toBe(15);
       expect(result.intervalsSkipped).toBe(2);
     });
   });

@@ -1,14 +1,6 @@
 import { createLoggerWithContext } from "@midday/logger";
 import type { Queue } from "bullmq";
-import { accountingQueue } from "../queues/accounting";
-import { documentsQueue } from "../queues/documents";
-import { inboxProviderQueue, inboxQueue } from "../queues/inbox";
-import { insightsQueue } from "../queues/insights";
-import { institutionsQueue } from "../queues/institutions";
-import { invoicesQueue } from "../queues/invoices";
-import { notificationsQueue } from "../queues/notifications";
-import { ratesQueue } from "../queues/rates";
-import { transactionsQueue } from "../queues/transactions";
+import { getAllQueues } from "../queues";
 import type { RegisterDynamicSchedulerParams } from "../types/scheduler-config";
 import { dynamicSchedulerTemplates, staticSchedulerConfigs } from "./index";
 
@@ -18,30 +10,13 @@ const logger = createLoggerWithContext("scheduler");
  * Get queue instance by name
  */
 function getQueueByName(queueName: string): Queue {
-  switch (queueName) {
-    case "inbox":
-      return inboxQueue;
-    case "inbox-provider":
-      return inboxProviderQueue;
-    case "transactions":
-      return transactionsQueue;
-    case "documents":
-      return documentsQueue;
-    case "rates":
-      return ratesQueue;
-    case "accounting":
-      return accountingQueue;
-    case "invoices":
-      return invoicesQueue;
-    case "insights":
-      return insightsQueue;
-    case "notifications":
-      return notificationsQueue;
-    case "institutions":
-      return institutionsQueue;
-    default:
-      throw new Error(`Unknown queue: ${queueName}`);
-  }
+  // Share the exact instances owned by worker startup and shutdown.
+  // A second queue-name mapping can miss newly scheduled queues.
+  const queue = getAllQueues().find(
+    (candidate) => candidate.name === queueName,
+  );
+  if (!queue) throw new Error(`Unknown queue: ${queueName}`);
+  return queue;
 }
 
 /**
@@ -131,14 +106,6 @@ export async function registerDynamicScheduler(
   const jobKey = templateConfig.jobKey(accountId);
   const payload = templateConfig.payloadGenerator(accountId);
 
-  // Check if already registered
-  if (registeredDynamicSchedulers.has(jobKey)) {
-    logger.warn("Dynamic scheduler already registered, skipping", {
-      jobKey,
-    });
-    return;
-  }
-
   try {
     const queue = getQueueByName(templateConfig.queue);
 
@@ -194,16 +161,10 @@ export async function unregisterDynamicScheduler(
 
   const jobKey = templateConfig.jobKey(accountId);
 
-  if (!registeredDynamicSchedulers.has(jobKey)) {
-    logger.warn("Dynamic scheduler not registered", { jobKey });
-    return;
-  }
-
   try {
-    const queue = registeredDynamicSchedulers.get(jobKey);
-    if (!queue) {
-      return;
-    }
+    // Redis owns persistence. A restart or a different worker process has no
+    // local registration entry, but must still be able to remove the schedule.
+    const queue = getQueueByName(templateConfig.queue);
 
     // Remove job scheduler using the scheduler ID
     // With upsertJobScheduler, we can remove by calling removeJobScheduler

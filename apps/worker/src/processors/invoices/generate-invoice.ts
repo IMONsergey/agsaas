@@ -1,6 +1,12 @@
-import { getInvoiceById, updateInvoice } from "@midday/db/queries";
+import {
+  getInvoiceById,
+  isCurrentInvoiceSchedule,
+  prepareInvoiceDocument,
+  updateInvoice,
+} from "@midday/db/queries";
 import { PdfTemplate, renderToBuffer } from "@midday/invoice";
 import { createClient } from "@midday/supabase/job";
+import { validateVaultKey } from "@midday/supabase/storage-path";
 import type { Job } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "../../config/job-options";
 import { documentsQueue } from "../../queues/documents";
@@ -8,6 +14,7 @@ import { invoicesQueue } from "../../queues/invoices";
 import type { GenerateInvoicePayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
 import { BaseProcessor } from "../base";
+import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 
 /**
  * Generate Invoice Processor
@@ -16,10 +23,8 @@ import { BaseProcessor } from "../base";
  */
 export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePayload> {
   async process(job: Job<GenerateInvoicePayload>): Promise<void> {
-    const { invoiceId, deliveryType } = job.data;
+    const { invoiceId, deliveryType, expectedScheduledJobId } = job.data;
     const db = getDb();
-    // Supabase client is needed for storage operations only
-    const supabase = createClient();
 
     this.logger.info("Starting invoice generation", {
       jobId: job.id,
@@ -28,13 +33,35 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     });
 
     // Fetch invoice data
-    const invoiceData = await getInvoiceById(db, { id: invoiceId });
+    let invoiceData = await getInvoiceById(db, { id: invoiceId });
 
     if (!invoiceData) {
       this.logger.error("Failed to fetch invoice", { invoiceId });
       throw new Error(`Invoice not found: ${invoiceId}`);
     }
 
+    if (
+      expectedScheduledJobId !== undefined &&
+      !isCurrentInvoiceSchedule(invoiceData, expectedScheduledJobId)
+    ) {
+      this.logger.info(
+        "Skipping generation for a superseded invoice schedule",
+        { invoiceId },
+      );
+      return;
+    }
+
+    // This worker is a publishing path, unlike read-only owner draft previews.
+    const document = await prepareInvoiceDocument(db, {
+      id: invoiceId,
+      teamId: invoiceData.teamId,
+      expectedScheduledJobId,
+    });
+    if (!document) {
+      if (expectedScheduledJobId !== undefined) return;
+      throw new Error("Invoice no longer exists");
+    }
+    invoiceData = document;
     const { user, ...invoice } = invoiceData;
 
     if (!invoice.template) {
@@ -47,8 +74,28 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     // Generate PDF buffer
     const buffer = await renderToBuffer(await PdfTemplate(invoice));
 
+    if (expectedScheduledJobId !== undefined) {
+      const current = await getInvoiceById(db, {
+        id: invoiceId,
+        teamId: invoiceData.teamId,
+      });
+      if (
+        !current ||
+        !isCurrentInvoiceSchedule(current, expectedScheduledJobId)
+      ) {
+        this.logger.info(
+          "Skipping superseded invoice schedule after PDF generation",
+          { invoiceId },
+        );
+        return;
+      }
+    }
+
     const filename = `${invoiceData.invoiceNumber}.pdf`;
-    const fullPath = `${invoiceData.teamId}/invoices/${filename}`;
+    const storageFilename = `${invoiceData.id}.pdf`;
+    const { normalizedPath: fullPath, pathArray } = validateVaultKey(
+      `${invoiceData.teamId}/invoices/${storageFilename}`,
+    );
 
     this.logger.debug("Uploading PDF to storage", {
       invoiceId,
@@ -57,6 +104,7 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     });
 
     // Upload to Supabase storage (storage SDK is still needed)
+    const supabase = createClient();
     const { error: uploadError } = await supabase.storage
       .from("vault")
       .upload(fullPath, buffer, {
@@ -78,7 +126,7 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     const updated = await updateInvoice(db, {
       id: invoiceId,
       teamId: invoiceData.teamId,
-      filePath: [invoiceData.teamId, "invoices", filename],
+      filePath: pathArray,
       fileSize: buffer.length,
     });
 
@@ -91,12 +139,24 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
 
     // Queue email sending if delivery type is create_and_send
     if (deliveryType === "create_and_send") {
+      const deliveryKey = invoiceDeliveryOperationKey({
+        teamId: invoiceData.teamId,
+        invoiceId,
+        kind: "invoice",
+        job,
+        expectedScheduledJobId,
+        deliveryKey: job.data.deliveryKey,
+      });
       await invoicesQueue.add(
         "send-invoice-email",
         {
           invoiceId,
           filename,
           fullPath,
+          deliveryKey,
+          ...(expectedScheduledJobId === undefined
+            ? {}
+            : { expectedScheduledJobId }),
         },
         DEFAULT_JOB_OPTIONS,
       );
@@ -108,7 +168,7 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     await documentsQueue.add(
       "process-document",
       {
-        filePath: [invoiceData.teamId, "invoices", filename],
+        filePath: pathArray,
         mimetype: "application/pdf",
         teamId: invoiceData.teamId,
       },

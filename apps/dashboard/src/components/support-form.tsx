@@ -23,18 +23,28 @@ import { Loader2 } from "lucide-react";
 import { useAction } from "next-safe-action/hooks";
 import { z } from "zod/v3";
 import { sendSupportAction } from "@/actions/send-support-action";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 import { useZodForm } from "@/hooks/use-zod-form";
 
 const formSchema = z.object({
-  subject: z.string(),
-  priority: z.string(),
-  type: z.string(),
-  message: z.string(),
-  url: z.string().optional(),
+  subject: z.string().trim().min(1).max(200),
+  priority: z.enum(["low", "normal", "high", "urgent"]),
+  type: z.enum([
+    "Transactions",
+    "Vault",
+    "Inbox",
+    "Invoicing",
+    "Tracker",
+    "AI",
+    "General",
+  ]),
+  message: z.string().trim().min(1).max(10_000),
+  url: z.string().max(2048).optional(),
 });
 
 export function SupportForm() {
   const { toast } = useToast();
+  const { data: capabilities, isPending } = useInstanceCapabilities();
 
   const form = useZodForm(formSchema, {
     defaultValues: {
@@ -46,7 +56,8 @@ export function SupportForm() {
   });
 
   const sendSupport = useAction(sendSupportAction, {
-    onSuccess: () => {
+    onSuccess: ({ data }) => {
+      if (!data?.accepted) return;
       toast({
         duration: 2500,
         title: "Support ticket sent.",
@@ -55,14 +66,25 @@ export function SupportForm() {
 
       form.reset();
     },
-    onError: () => {
+    onError: ({ error }) => {
       toast({
         duration: 3500,
         variant: "error",
-        title: "Something went wrong please try again.",
+        title: "Support request not confirmed",
+        description: error.serverError ?? "Check the form and try again.",
       });
     },
   });
+
+  if (!capabilities?.support.enabled) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {isPending
+          ? "Checking support availability..."
+          : "Support messaging is not configured for this installation. Contact your workspace administrator."}
+      </p>
+    );
+  }
 
   return (
     <Form {...form}>

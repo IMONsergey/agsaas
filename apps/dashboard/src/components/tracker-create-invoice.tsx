@@ -141,9 +141,9 @@ export function TrackerCreateInvoice({ projectId }: Props) {
               "This project does not have a valid hourly rate. Please set an hourly rate for this project.";
             break;
           case "NO_TRACKED_HOURS":
-            title = "No tracked time";
+            title = "No unbilled tracked time";
             description =
-              "No tracked hours found for this project in the selected date range. Please track some time first.";
+              "No unbilled hours are available for this project in the selected date range.";
             break;
           case "PROJECT_NOT_FOUND":
             title = "Project not found";

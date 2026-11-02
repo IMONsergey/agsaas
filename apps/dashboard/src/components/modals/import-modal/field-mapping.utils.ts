@@ -1,15 +1,21 @@
-import { formatDate } from "@midday/import";
+import {
+  formatAmountValue,
+  formatDate,
+  type ImportParseProfile,
+} from "@midday/import";
 
 import { mappableFields } from "./context";
 
 /**
- * Returns the balance value from the row with the latest date.
- * Used for both preview and import to ensure consistency.
+ * Returns the balance from the latest dated row in the preview sample only.
+ * This is not an authoritative statement/account balance and is never sent as
+ * currentBalance by the import form.
  */
 export function getBalanceFromLatestDate(
   rows: Record<string, string>[],
   dateColumn: string,
   balanceColumn: string,
+  parseProfile?: ImportParseProfile,
 ): string | undefined {
   if (
     !rows.length ||
@@ -23,7 +29,7 @@ export function getBalanceFromLatestDate(
   const rowsWithDates = rows
     .map((row) => ({
       row,
-      parsed: formatDate(row[dateColumn] ?? ""),
+      parsed: formatDate(row[dateColumn] ?? "", parseProfile?.dateOrder),
     }))
     .filter((r): r is { row: Record<string, string>; parsed: string } =>
       Boolean(r.parsed),
@@ -43,6 +49,17 @@ export function isActiveRequest(
   activeRequestRef: { current: number },
 ) {
   return requestId === activeRequestRef.current;
+}
+
+/** A statement balance is signed and is never inverted like a credit amount. */
+export function parseBalancePreview(
+  value: string,
+  profile?: ImportParseProfile,
+) {
+  return formatAmountValue({
+    amount: value,
+    amountFormat: profile?.amountFormat,
+  });
 }
 
 export function shouldApplyMappedColumn(

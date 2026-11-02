@@ -1,28 +1,107 @@
 // Import Sentry instrumentation first, before any other modules
 import "./instrument";
 
+import { closeSharedRedisClient } from "@midday/cache/shared-redis";
+import { checkWorkerHealth } from "@midday/db/utils/health";
 import { closeWorkerDb, getWorkerPoolStats } from "@midday/db/worker-client";
 import {
   buildReadinessResponse,
   checkDependencies,
 } from "@midday/health/checker";
 import { workerDependencies } from "@midday/health/probes";
+import { closeQueues } from "@midday/job-client";
 import { createLoggerWithContext } from "@midday/logger";
 import * as Sentry from "@sentry/bun";
 import { Worker } from "bullmq";
 import { Hono } from "hono";
-import { workbench } from "workbench/hono";
+import { createWorkerAdminApp, getWorkerAdminAuth } from "./http/admin";
 import { getProcessor } from "./processors/registry";
 import { getAllQueues, queueConfigs } from "./queues";
+import { createWorkerHealthApp } from "./runtime/health";
+import { createWorkerLifecycle } from "./runtime/lifecycle";
+import { installWorkerProcessHandlers } from "./runtime/process-handlers";
 import { registerStaticSchedulers } from "./schedulers/registry";
 import { extractErrorDetails } from "./utils/error-details";
 
 const logger = createLoggerWithContext("worker");
+const workers: Worker[] = [];
+const queues = getAllQueues();
+const redisClients: { status: string }[] = [];
+let server: Pick<Bun.Server<unknown>, "stop"> | undefined;
+let adminApp: ReturnType<typeof createWorkerAdminApp> | undefined;
+let poolStatsInterval: ReturnType<typeof setInterval> | undefined;
+
+const lifecycle = createWorkerLifecycle({
+  drainResources: () => [
+    {
+      name: "db-pool-stats timer",
+      close: () => {
+        clearInterval(poolStatsInterval);
+        poolStatsInterval = undefined;
+      },
+    },
+    ...(server
+      ? [{ name: "http server", close: () => server!.stop(false) }]
+      : []),
+    ...workers.map((worker) => ({
+      name: `worker:${worker.name}`,
+      close: () => worker.close(),
+    })),
+  ],
+  closeResources: () => [
+    { name: "workbench flow producer", close: () => adminApp?.close() },
+    ...queues.map((queue) => ({
+      name: `queue:${queue.name}`,
+      close: () => queue.close(),
+    })),
+    { name: "job-client queues", close: closeQueues },
+    { name: "redis cache", close: closeSharedRedisClient },
+    { name: "worker database", close: closeWorkerDb },
+  ],
+  finalResources: () => [
+    {
+      name: "sentry",
+      close: async () => {
+        if (Sentry.getClient() && !(await Sentry.close(2000))) {
+          throw new Error("Sentry flush did not complete");
+        }
+      },
+    },
+  ],
+  onError: (resource, error) => {
+    logger.error("Worker lifecycle failure", {
+      resource,
+      error: extractErrorDetails(error),
+    });
+    Sentry.captureException(error, {
+      tags: { resource, errorType: "worker_lifecycle" },
+    });
+  },
+  onReady: () =>
+    logger.info("Workers initialized and ready to process jobs", {
+      workers: workers.length,
+    }),
+  onExit: (result) => {
+    try {
+      logger.info("Worker shutdown finished", result);
+    } finally {
+      process.exit(result.exitCode);
+    }
+  },
+});
+
+installWorkerProcessHandlers(lifecycle, (event, error) => {
+  logger.error("Fatal worker error", {
+    event,
+    error: extractErrorDetails(error),
+  });
+  Sentry.captureException(error, { tags: { errorType: event } });
+});
 
 /**
  * Create workers dynamically from queue configurations
  */
-const workers = queueConfigs.map((config) => {
+function createConfiguredWorker(config: (typeof queueConfigs)[number]): Worker {
   const worker = new Worker(
     config.name,
     async (job) => {
@@ -32,7 +111,7 @@ const workers = queueConfigs.map((config) => {
       }
       return processor.handle(job);
     },
-    config.workerOptions,
+    { ...config.workerOptions, autorun: false },
   );
 
   // Always attach error handler to prevent unhandled errors
@@ -115,197 +194,141 @@ const workers = queueConfigs.map((config) => {
   }
 
   return worker;
-});
-
-// Register static schedulers on startup
-registerStaticSchedulers().catch((error) => {
-  logger.error("Failed to register static schedulers", {
-    error: error instanceof Error ? error.message : String(error),
-  });
-  process.exit(1);
-});
+}
 
 // Create Hono app
 const app = new Hono();
 
-const basePath = "/admin";
+app.use("*", async (c, next) => {
+  if (
+    (lifecycle.getPhase() === "draining" ||
+      lifecycle.getPhase() === "stopped") &&
+    c.req.path !== "/" &&
+    c.req.path !== "/health" &&
+    c.req.path !== "/health/ready"
+  ) {
+    return c.json({ error: "Worker is shutting down" }, 503);
+  }
+  return next();
+});
+
+app.route(
+  "/",
+  createWorkerHealthApp({
+    getPhase: lifecycle.getPhase,
+    isRuntimeReady: () =>
+      workers.length === queueConfigs.length &&
+      workers.every((worker) => worker.isRunning()) &&
+      redisClients.length === workers.length * 2 + queues.length &&
+      redisClients.every((client) => client.status === "ready"),
+    checkReadiness: async () =>
+      buildReadinessResponse(await checkDependencies(workerDependencies(), 1)),
+  }),
+);
 
 // Initialize Workbench dashboard
 function initializeWorkbench() {
-  const queues = getAllQueues();
+  const auth = getWorkerAdminAuth({
+    BOARD_USERNAME: process.env.BOARD_USERNAME,
+    BOARD_PASSWORD: process.env.BOARD_PASSWORD,
+  });
+  if (!auth) {
+    logger.warn(
+      "Worker administration disabled: set both BOARD_USERNAME and BOARD_PASSWORD to enable it",
+    );
+    return;
+  }
 
   if (queues.length === 0) {
     logger.warn("No queues found when initializing Workbench");
     return;
   }
 
-  // Mount workbench with optional auth
-  app.route(
-    basePath,
-    workbench({
-      queues,
-      auth:
-        process.env.BOARD_USERNAME && process.env.BOARD_PASSWORD
-          ? {
-              username: process.env.BOARD_USERNAME,
-              password: process.env.BOARD_PASSWORD,
-            }
-          : undefined,
-      title: "Midday Jobs",
-      tags: ["teamId"],
-    }),
-  );
+  adminApp = createWorkerAdminApp({ queues, auth });
+  app.route("/", adminApp);
 
   logger.info(`Workbench initialized with ${queues.length} queues`, {
     queues: queues.map((q) => q.name),
   });
 }
 
-// Initialize Workbench on startup
-initializeWorkbench();
-
-// Health check endpoint - verifies service is running
-app.get("/", (c) => {
-  return c.json({ status: "ok" }, 200);
-});
-
-// Health check endpoint - verifies service is running
-app.get("/health", (c) => {
-  return c.json({ status: "ok" }, 200);
-});
-
-// Readiness check - verifies core dependencies (DB, Redis queue)
-app.get("/health/ready", async (c) => {
-  const results = await checkDependencies(workerDependencies(), 1);
-  const response = buildReadinessResponse(results);
-  return c.json(response, response.status === "ok" ? 200 : 503);
-});
-
-// Dashboard info endpoint
-app.get("/info", (c) => {
-  const queues = getAllQueues();
-  return c.json({
-    queues: queues.map((q) => ({ name: q.name })),
-    dashboardUrl: `${basePath}/queues`,
+// The lifecycle catches partial initialization and closes every resource created
+// so far. Workers do not consume jobs until connections and schedulers are ready.
+void lifecycle.start(async (signal) => {
+  initializeWorkbench();
+  const httpServer = Bun.serve({
+    port: Number.parseInt(process.env.PORT || "8080", 10),
+    hostname: "0.0.0.0",
+    fetch: app.fetch,
   });
-});
+  server = httpServer;
+  logger.info(`Worker server running on port ${httpServer.port}`);
 
-// Start server
-const port = Number.parseInt(process.env.PORT || "8080", 10);
-
-Bun.serve({
-  port,
-  hostname: "0.0.0.0",
-  fetch: app.fetch,
-});
-
-logger.info(`Worker server running on port ${port}`);
-logger.info("Workers initialized and ready to process jobs");
-
-const poolStatsIntervalMsRaw = process.env.DB_POOL_STATS_INTERVAL_MS;
-const parsedPoolStatsIntervalMs = Number.parseInt(
-  poolStatsIntervalMsRaw ?? "60000",
-  10,
-);
-const poolStatsIntervalMs = Number.isFinite(parsedPoolStatsIntervalMs)
-  ? parsedPoolStatsIntervalMs
-  : 60000;
-const poolStatsInterval =
-  poolStatsIntervalMs > 0
-    ? setInterval(() => {
-        logger.info("Worker DB pool stats", {
-          pool: getWorkerPoolStats(),
-        });
-      }, poolStatsIntervalMs)
-    : null;
-
-if (poolStatsIntervalMs <= 0) {
-  logger.info("Worker DB pool stats logging disabled", {
-    configuredIntervalMs: poolStatsIntervalMsRaw ?? "0",
-  });
-}
-
-/**
- * Graceful shutdown handlers
- * Close database connections and workers cleanly on process termination
- */
-const shutdown = async (signal: string) => {
-  logger.info(`Received ${signal}, starting graceful shutdown...`);
-
-  const SHUTDOWN_TIMEOUT = 30_000; // 30 seconds max for shutdown
-
-  const shutdownPromise = (async () => {
-    try {
-      if (poolStatsInterval) {
-        clearInterval(poolStatsInterval);
-      }
-
-      // Stop accepting new jobs
-      logger.info("Stopping workers from accepting new jobs...");
-      await Promise.all(workers.map((worker) => worker.close()));
-
-      // Wait a bit for in-flight jobs to complete
-      logger.info("Waiting for in-flight jobs to complete...");
-      await new Promise((resolve) => setTimeout(resolve, 5000)); // 5 seconds grace period
-
-      // Close database connections
-      logger.info("Closing database connections...");
-      await closeWorkerDb();
-
-      // Flush pending Sentry events before exit
-      logger.info("Flushing Sentry events...");
-      await Sentry.close(2000);
-
-      logger.info("Graceful shutdown complete");
-    } catch (error) {
-      logger.error("Error during shutdown", {
-        error: error instanceof Error ? error.message : String(error),
+  for (const queue of queues) {
+    queue.on("error", (error) => {
+      logger.error("Queue connection error", {
+        queue: queue.name,
+        error: extractErrorDetails(error),
       });
-    }
-  })();
+    });
+  }
+  for (const config of queueConfigs) {
+    workers.push(createConfiguredWorker(config));
+  }
 
-  // Race shutdown against timeout
-  const timeoutPromise = new Promise<void>((resolve) => {
-    setTimeout(() => {
-      logger.warn("Shutdown timeout reached, forcing exit");
-      resolve();
-    }, SHUTDOWN_TIMEOUT);
-  });
+  const intervalRaw = process.env.DB_POOL_STATS_INTERVAL_MS;
+  const parsedInterval = Number.parseInt(intervalRaw ?? "60000", 10);
+  const intervalMs = Number.isFinite(parsedInterval) ? parsedInterval : 60000;
+  if (intervalMs > 0) {
+    poolStatsInterval = setInterval(() => {
+      logger.info("Worker DB pool stats", { pool: getWorkerPoolStats() });
+    }, intervalMs);
+    poolStatsInterval.unref();
+  } else {
+    logger.info("Worker DB pool stats logging disabled", {
+      configuredIntervalMs: intervalRaw ?? "0",
+    });
+  }
 
-  await Promise.race([shutdownPromise, timeoutPromise]);
-  process.exit(0);
-};
+  await Promise.all([
+    checkWorkerHealth(),
+    ...queues.map(async (queue) => {
+      redisClients.push(await queue.waitUntilReady());
+    }),
+    ...workers.map(async (worker) => {
+      const clients = await Promise.all([
+        worker.client,
+        worker.waitUntilReady(),
+      ]);
+      redisClients.push(...clients);
+    }),
+  ]);
+  if (signal.aborted) return;
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+  await registerStaticSchedulers();
+  if (signal.aborted) return;
 
-/**
- * Unhandled exception and rejection handlers
- * See: https://docs.bullmq.io/guide/going-to-production#unhandled-exceptions-and-rejections
- */
-process.on("uncaughtException", (err) => {
-  logger.error("Uncaught exception", {
-    error: err.message,
-    stack: err.stack,
-    errorDetails: extractErrorDetails(err),
-  });
-  Sentry.captureException(err, {
-    tags: { errorType: "uncaught_exception" },
-  });
-  // Don't exit - let the process manager (Railway) handle restarts
-});
-
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled rejection", {
-    reason: reason instanceof Error ? reason.message : String(reason),
-    stack: reason instanceof Error ? reason.stack : undefined,
-    errorDetails: extractErrorDetails(reason),
-  });
-  Sentry.captureException(
-    reason instanceof Error ? reason : new Error(String(reason)),
-    {
-      tags: { errorType: "unhandled_rejection" },
-    },
-  );
-  // Don't exit - let the process manager (Railway) handle restarts
+  for (const worker of workers) {
+    const failed = (error: unknown) => {
+      if (
+        lifecycle.getPhase() === "draining" ||
+        lifecycle.getPhase() === "stopped"
+      )
+        return;
+      logger.error("Worker run loop stopped", {
+        worker: worker.name,
+        error: extractErrorDetails(error),
+      });
+      Sentry.captureException(error, {
+        tags: { workerName: worker.name, errorType: "worker_run" },
+      });
+      void lifecycle.shutdown(`worker:${worker.name} stopped`, 1);
+    };
+    void worker
+      .run()
+      .then(
+        () => failed(new Error("Worker run loop exited unexpectedly")),
+        failed,
+      );
+  }
 });

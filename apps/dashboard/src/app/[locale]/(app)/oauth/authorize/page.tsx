@@ -9,7 +9,7 @@ import { getQueryClient, HydrateClient, trpc } from "@/trpc/server";
 import { categorizeOAuthError, validateOAuthParams } from "@/utils/oauth-utils";
 
 export const metadata: Metadata = {
-  title: "Authorize API Access | Midday",
+  title: "Authorize API Access | AGSaaS",
 };
 
 type Props = {

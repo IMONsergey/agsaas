@@ -1,15 +1,23 @@
-# Base image with Bun
-FROM oven/bun:1.3.10 AS base
+# Bun remains the package manager and health/test tool; Next runs on native Node.
+FROM oven/bun:1.3.11 AS bun-tools
+FROM node:24.21.0-trixie-slim AS base
+COPY --from=bun-tools /usr/local/bin/bun /usr/local/bin/bun
+ENV BUN_INSTALL_BIN=/usr/local/bin
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx \
+    && node -e 'if (process.versions.bun || process.versions.node !== "24.21.0") throw new Error("Native Node 24.21.0 is required")' \
+    && test "$(bun --version)" = "1.3.11"
 
 # Install turbo CLI globally using Bun
 FROM base AS turbo-cli
-RUN bun add -g turbo
+RUN bun add -g turbo@2.11.10
 
 # Builder stage - prune dashboard workspace
 FROM turbo-cli AS builder
 WORKDIR /app
 # Copy all files
 COPY . .
+ARG GIT_COMMIT_SHA=""
+RUN if [ -n "$GIT_COMMIT_SHA" ] || [ ! -f .git-commit-sha ]; then printf '%s' "$GIT_COMMIT_SHA" > .git-commit-sha; fi
 # Prune dashboard workspace
 RUN turbo prune @midday/dashboard --docker
 
@@ -22,10 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Copy package.json files from pruned workspace
 COPY --from=builder /app/out/json/ .
+COPY --from=builder /app/out/bun.lock ./bun.lock
 COPY bunfig.toml .
 
 # Install dependencies
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy full source from pruned workspace
 COPY --from=builder /app/out/full/ .
@@ -58,8 +67,7 @@ ARG SENTRY_PROJECT
 ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 ENV NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 
-# Git SHA stamped by CI (echo "$GITHUB_SHA" > .git-commit-sha) before `railway up`.
-# The file lives at repo root, so the builder stage has it after COPY . .
+# The builder accepts a GIT_COMMIT_SHA build arg, a legacy CI stamp, or no stamp.
 COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 
 ENV CI=true
@@ -72,8 +80,8 @@ RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     export SENTRY_RELEASE="$GIT_COMMIT_SHA"; \
     bunx turbo run build --filter=@midday/dashboard --only
 
-# Runner stage - clean bun image, no turbo
-FROM oven/bun:1.3.10 AS runner
+# Runner stage - native Node plus Bun health/test tools, no turbo
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -92,11 +100,13 @@ COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/public ./apps/da
 # set GIT_COMMIT_SHA / SENTRY_RELEASE when Railway doesn't provide them.
 COPY --from=installer /tmp/git-sha.txt /tmp/git-sha.txt
 COPY --from=builder /app/scripts/docker-entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# The non-root runner must be able to read this root-owned shell script.
+# chmod +x alone leaves a private 0700 checkout unreadable as mode 0711.
+RUN chmod 0755 /app/entrypoint.sh
 
 USER nextjs
 
 EXPOSE 3000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["bun", "apps/dashboard/server.js"]
+CMD ["node", "apps/dashboard/server.js"]

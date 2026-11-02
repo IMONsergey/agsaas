@@ -224,30 +224,51 @@ const baseDraftInvoiceSchema = z.object({
     description: "Issue date of the invoice in ISO 8601 format",
     example: "2024-06-01T00:00:00.000Z",
   }),
-  invoiceNumber: z.string().optional().openapi({
-    description:
-      "Invoice number as shown to the customer (auto-generated if not provided)",
-    example: "INV-2024-001",
-  }),
+  invoiceNumber: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine(
+      (value) =>
+        !Array.from(value).some(
+          (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+        ),
+      "Invoice number must not contain control characters",
+    )
+    .optional()
+    .openapi({
+      description:
+        "Invoice number as shown to the customer (auto-generated if not provided)",
+      example: "INV-2024-001",
+    }),
   logoUrl: z.string().optional().nullable().openapi({
     description: "URL of the logo to display on the invoice",
     example: "https://example.com/logo.png",
   }),
   vat: z.number().nullable().optional().openapi({
-    description: "VAT amount for the invoice",
+    description:
+      "VAT amount for amount-only invoices. Recalculated by the server from line items and template rates for itemized invoices, rounded to two decimals.",
     example: 150.0,
   }),
   tax: z.number().nullable().optional().openapi({
-    description: "Tax amount for the invoice",
+    description:
+      "Tax amount for amount-only invoices. Itemized invoices use the server-calculated invoice or per-line tax, rounded to two decimals.",
     example: 50.0,
   }),
   discount: z.number().nullable().optional().openapi({
-    description: "Discount applied to the invoice",
+    description:
+      "Fixed discount applied after VAT and tax, rounded to two decimals. Monetary fields must fit numeric(10,2).",
     example: 100.0,
   }),
   amount: z.number().nullable().optional().openapi({
-    description: "Total amount of the invoice",
+    description:
+      "Total amount for amount-only invoices (no line items). When line items are present the server derives the total, VAT and tax; client totals are not authoritative. Monetary fields must be finite and fit numeric(10,2).",
     example: 1500.75,
+  }),
+  subtotal: z.number().nullable().optional().openapi({
+    description:
+      "Server-calculated subtotal for itemized invoices; derived from amount, VAT, tax and discount for amount-only invoices. An incomplete draft without amount may supply a subtotal. Must be finite and fit numeric(10,2).",
   }),
   token: z.string().optional().openapi({
     description:
@@ -278,7 +299,8 @@ export const draftInvoiceSchema = baseDraftInvoiceSchema.extend({
     description: "Custom content block to display at the bottom of the invoice",
   }),
   lineItems: z.array(draftLineItemSchema).optional().openapi({
-    description: "List of line items for the invoice",
+    description:
+      "Invoice line items. Incomplete draft rows contribute zero for missing price or quantity. Omit on update to preserve existing items; an empty list supports an amount-only invoice.",
   }),
 });
 
@@ -717,7 +739,10 @@ export const remindInvoiceSchema = z.object({
         name: "id",
       },
     }),
-  date: z.string(),
+  date: z.string().optional().openapi({
+    description:
+      "Deprecated compatibility field; ignored. The delivery worker records the provider acceptance timestamp.",
+  }),
 });
 
 export const updateScheduledInvoiceSchema = z.object({
@@ -820,25 +845,41 @@ export const createInvoiceRequestSchema = z
         "Issue date of the invoice in ISO 8601 format. Defaults to current date if not provided.",
       example: "2024-06-01T00:00:00.000Z",
     }),
-    invoiceNumber: z.string().optional().openapi({
-      description:
-        "Invoice number as shown to the customer (auto-generated if not provided)",
-      example: "INV-2024-001",
-    }),
+    invoiceNumber: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) =>
+          !Array.from(value).some(
+            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+          ),
+        "Invoice number must not contain control characters",
+      )
+      .optional()
+      .openapi({
+        description:
+          "Invoice number as shown to the customer (auto-generated if not provided)",
+        example: "INV-2024-001",
+      }),
     logoUrl: z.string().optional().nullable().openapi({
       description: "URL of the logo to display on the invoice",
       example: "https://example.com/logo.png",
     }),
     vat: z.number().nullable().optional().openapi({
-      description: "VAT amount for the invoice",
+      description:
+        "VAT amount for amount-only invoices. The server recalculates VAT from line items and template rates for itemized invoices, rounded to two decimals.",
       example: 150.0,
     }),
     tax: z.number().nullable().optional().openapi({
-      description: "Tax amount for the invoice",
+      description:
+        "Tax amount for amount-only invoices. Itemized invoices use server-calculated invoice-level or per-line tax, rounded to two decimals.",
       example: 50.0,
     }),
     discount: z.number().nullable().optional().openapi({
-      description: "Discount applied to the invoice",
+      description:
+        "Fixed discount after VAT and tax, rounded to two decimals. Monetary fields must fit numeric(10,2).",
       example: 100.0,
     }),
     topBlock: editorFieldSchema.openapi({
@@ -850,11 +891,17 @@ export const createInvoiceRequestSchema = z
         "Custom content block to display at the bottom of the invoice in TipTap JSONContent format",
     }),
     amount: z.number().nullable().optional().openapi({
-      description: "Total amount of the invoice",
+      description:
+        "Total for amount-only invoices with no line items. When items exist, the server calculates total, VAT and tax; client totals are not authoritative. Monetary fields must be finite and fit numeric(10,2).",
       example: 1500.75,
     }),
+    subtotal: z.number().nullable().optional().openapi({
+      description:
+        "Server-calculated subtotal. For amount-only invoices it is derived from amount, VAT, tax and discount. Must be finite and fit numeric(10,2).",
+    }),
     lineItems: z.array(restDraftLineItemSchema).optional().openapi({
-      description: "List of line items for the invoice",
+      description:
+        "Optional itemized invoice lines. Missing price or quantity contributes zero in incomplete drafts. Omit or supply an empty list for amount-only invoices.",
     }),
     deliveryType: z.enum(["create", "create_and_send", "scheduled"]).openapi({
       description:
@@ -1253,11 +1300,24 @@ export const invoiceResponseSchema = z
       description: "Issue date of the invoice in ISO 8601 format",
       example: "2024-06-01T00:00:00.000Z",
     }),
-    invoiceNumber: z.string().optional().openapi({
-      description:
-        "Invoice number as shown to the customer (auto-generated if not provided)",
-      example: "INV-2024-001",
-    }),
+    invoiceNumber: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) =>
+          !Array.from(value).some(
+            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+          ),
+        "Invoice number must not contain control characters",
+      )
+      .optional()
+      .openapi({
+        description:
+          "Invoice number as shown to the customer (auto-generated if not provided)",
+        example: "INV-2024-001",
+      }),
     amount: z.number().nullable().openapi({
       description: "Total amount of the invoice, or null if not yet calculated",
       example: 1500.75,

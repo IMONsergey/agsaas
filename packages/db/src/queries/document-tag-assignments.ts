@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../client";
 import { documentTagAssignments } from "../schema";
+import { assertTeamOwnership } from "../utils/tenant-ownership";
 
 export type CreateDocumentTagAssignmentParams = {
   documentId: string;
@@ -12,16 +13,25 @@ export const createDocumentTagAssignment = async (
   db: Database,
   params: CreateDocumentTagAssignmentParams,
 ) => {
-  const [result] = await db
-    .insert(documentTagAssignments)
-    .values({
-      documentId: params.documentId,
-      tagId: params.tagId,
-      teamId: params.teamId,
-    })
-    .returning();
+  return db.transaction(async (tx) => {
+    await assertTeamOwnership(tx, params.teamId, "documents", [
+      params.documentId,
+    ]);
+    await assertTeamOwnership(tx, params.teamId, "documentTags", [
+      params.tagId,
+    ]);
 
-  return result;
+    const [result] = await tx
+      .insert(documentTagAssignments)
+      .values({
+        documentId: params.documentId,
+        tagId: params.tagId,
+        teamId: params.teamId,
+      })
+      .returning();
+
+    return result;
+  });
 };
 
 export type DeleteDocumentTagAssignmentParams = {
@@ -62,11 +72,42 @@ export const upsertDocumentTagAssignments = async (
     return [];
   }
 
-  return db
-    .insert(documentTagAssignments)
-    .values(params)
-    .onConflictDoNothing({
-      target: [documentTagAssignments.documentId, documentTagAssignments.tagId],
-    })
-    .returning();
+  const assignmentsByTeam = new Map<
+    string,
+    UpsertDocumentTagAssignmentParams[]
+  >();
+  for (const assignment of params) {
+    const assignments = assignmentsByTeam.get(assignment.teamId) ?? [];
+    assignments.push(assignment);
+    assignmentsByTeam.set(assignment.teamId, assignments);
+  }
+
+  return db.transaction(async (tx) => {
+    // Validate the complete batch, including every team, before the first insert.
+    for (const [teamId, assignments] of assignmentsByTeam) {
+      await assertTeamOwnership(
+        tx,
+        teamId,
+        "documents",
+        assignments.map((assignment) => assignment.documentId),
+      );
+      await assertTeamOwnership(
+        tx,
+        teamId,
+        "documentTags",
+        assignments.map((assignment) => assignment.tagId),
+      );
+    }
+
+    return tx
+      .insert(documentTagAssignments)
+      .values(params)
+      .onConflictDoNothing({
+        target: [
+          documentTagAssignments.documentId,
+          documentTagAssignments.tagId,
+        ],
+      })
+      .returning();
+  });
 };

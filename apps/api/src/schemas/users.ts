@@ -1,3 +1,4 @@
+import { isOwnPublicAvatarUrl } from "@api/utils/public-avatar-url";
 import { z } from "@hono/zod-openapi";
 import { isValidTimezone } from "@midday/location/timezones";
 
@@ -13,14 +14,15 @@ export const updateUserSchema = z.object({
   avatarUrl: z
     .string()
     .url()
-    .refine((url) => url.includes("midday.ai"), {
-      message: "avatarUrl must be a midday.ai domain URL",
+    .refine((url) => isOwnPublicAvatarUrl(url), {
+      message: "avatarUrl must be a public avatar URL from this installation",
     })
     .optional()
     .openapi({
       description:
-        "URL to the user's avatar image. Must be hosted on midday.ai domain",
-      example: "https://cdn.midday.ai/avatars/jane-doe.jpg",
+        "Public avatar object URL from this installation's Supabase storage",
+      example:
+        "https://storage.example.com/storage/v1/object/public/avatars/user-id/avatar.jpg",
     }),
   locale: z.string().optional().openapi({
     description:
@@ -84,7 +86,8 @@ export const userSchema = z.object({
   }),
   avatarUrl: z.string().url().nullable().openapi({
     description: "URL to the user's avatar image",
-    example: "https://cdn.midday.ai/avatars/jane-doe.jpg",
+    example:
+      "https://storage.example.com/storage/v1/object/public/avatars/user-id/avatar.jpg",
   }),
   locale: z.string().nullable().openapi({
     description:
@@ -124,11 +127,10 @@ export const userSchema = z.object({
         "null",
       ],
     }),
-  fileKey: z.string().nullable().openapi({
+  fileKey: z.null().openapi({
     description:
-      "Team file key (JWT token) for proxy/download access to team files. This compact JWT token contains the team ID and is shared by all team members. Use this token as the `fk` query parameter when accessing file endpoints (proxy, download). The token is team-scoped and provides access to files belonging to the user's team. Returns null if the user has no team.",
-    example:
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0ZWFtSWQiOiIxMjM0NTY3OC05YWJjLWRlZmctMTIzNC01Njc4OTBhYmNkZWYifQ.signature",
+      "Always null. Profile scopes do not grant file access. Use the original Bearer credential on file endpoints with documents.read or invoices.read as appropriate.",
+    example: null,
   }),
   team: z
     .object({

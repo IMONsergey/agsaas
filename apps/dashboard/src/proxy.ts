@@ -18,13 +18,10 @@ export async function proxy(request: NextRequest) {
 
   const nextUrl = request.nextUrl;
 
-  const pathnameLocale = nextUrl.pathname.split("/", 2)?.[1];
-
-  const pathnameWithoutLocale = pathnameLocale
-    ? nextUrl.pathname.slice(pathnameLocale.length + 1)
-    : nextUrl.pathname;
-
-  const newUrl = new URL(pathnameWithoutLocale || "/", ORIGIN);
+  const pathnameWithoutLocale = nextUrl.pathname.replace(/^\/en(?=\/|$)/, "");
+  const newUrl = new URL(ORIGIN);
+  newUrl.pathname = pathnameWithoutLocale || "/";
+  newUrl.search = nextUrl.search;
 
   const encodedSearchParams = `${newUrl?.pathname?.substring(1)}${
     newUrl.search
@@ -33,6 +30,8 @@ export async function proxy(request: NextRequest) {
   if (
     !isAuthenticated &&
     newUrl.pathname !== "/login" &&
+    newUrl.pathname !== "/forgot-password" &&
+    newUrl.pathname !== "/reset-password" &&
     !newUrl.pathname.includes("/i/") &&
     !newUrl.pathname.includes("/p/") &&
     !newUrl.pathname.includes("/s/") &&

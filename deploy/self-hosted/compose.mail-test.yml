@@ -1,0 +1,88 @@
+# OPTIONAL, CLOSED STAGE ONLY. Add explicitly after the platform/app layers.
+# Captures real GoTrue SMTP messages locally; it never proves external delivery.
+# Never include this overlay in a public production deployment.
+services:
+  auth:
+    depends_on:
+      db:
+        condition: service_healthy
+      templates-server:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    environment:
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "false"
+      GOTRUE_SMTP_HOST: mailpit
+      GOTRUE_SMTP_PORT: "1025"
+      GOTRUE_SMTP_USER: ""
+      GOTRUE_SMTP_PASS: ""
+      GOTRUE_SMTP_ADMIN_EMAIL: no-reply@agsaas.invalid
+      GOTRUE_SMTP_SENDER_NAME: AGSaaS private stage
+      # Auth fetches HTML over HTTP. It does NOT load templates from its filesystem.
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://templates-server:8080/otp.html
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://templates-server:8080/otp.html
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: "AGSaaS private stage: confirm your sign-in code"
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: "AGSaaS private stage: your sign-in code"
+
+  templates-server:
+    image: "${AGSAAS_CADDY_IMAGE:?Pin the approved Caddy image for private template serving}"
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The official Caddy binary has cap_net_bind_service as a file capability.
+    # Keep only that capability in its bounding set so exec succeeds, even on 8080.
+    cap_add:
+      - NET_BIND_SERVICE
+    command: [caddy, file-server, -r, /templates, --listen, ":8080"]
+    # Paths are relative to the FIRST Compose file: the installed Supabase snapshot.
+    volumes:
+      - type: bind
+        source: ./volumes/templates
+        target: /templates
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/otp.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mailpit:
+    # Official v1.32.0, verified by the server preparer before selecting this digest.
+    image: axllent/mailpit@sha256:0790692be935ea4420d085694f7985b1f692ca6a8771ab0e0bd8ba75ac180498
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    ports:
+      - "127.0.0.1:3825:8025/tcp"
+    # No SMTP 1025 host binding, relay/forward configuration, webhook, or volume.
+    # Mailpit's default temporary database is deleted when the process exits.
+    environment:
+      MP_LABEL: AGSaaS private stage - captured test mail only
+      MP_MAX_MESSAGES: "1000"
+      MP_MAX_MESSAGE_SIZE: "1"
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+      MP_SMTP_RELAY_ALL: "false"
+      MP_BLOCK_REMOTE_CSS_AND_FONTS: "true"
+      MP_QUIET: "true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

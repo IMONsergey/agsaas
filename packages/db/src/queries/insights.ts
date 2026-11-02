@@ -415,7 +415,7 @@ async function getTrackerActivityStats(
     .select({
       duration: trackerEntries.duration,
       billed: trackerEntries.billed,
-      rate: trackerProjects.rate,
+      rate: sql<number>`COALESCE(${trackerEntries.rate}, ${trackerProjects.rate}, 0)`,
     })
     .from(trackerEntries)
     .leftJoin(trackerProjects, eq(trackerEntries.projectId, trackerProjects.id))
@@ -1159,8 +1159,8 @@ export async function getUnbilledHoursDetails(
       projectId: trackerProjects.id,
       projectName: trackerProjects.name,
       customerName: customers.name,
-      rate: trackerProjects.rate,
-      currency: trackerProjects.currency,
+      currency: sql<string>`COALESCE(${trackerEntries.currency}, ${trackerProjects.currency}, 'USD')`,
+      amount: sql<number>`COALESCE(SUM(${trackerEntries.duration} / 3600.0 * COALESCE(${trackerEntries.rate}, ${trackerProjects.rate}, 0)), 0)::float`,
       totalSeconds: sql<number>`COALESCE(SUM(${trackerEntries.duration}), 0)::int`,
     })
     .from(trackerEntries)
@@ -1173,14 +1173,15 @@ export async function getUnbilledHoursDetails(
       and(
         eq(trackerEntries.teamId, teamId),
         eq(trackerEntries.billed, false),
-        currency ? eq(trackerProjects.currency, currency) : sql`true`,
+        currency
+          ? sql`COALESCE(${trackerEntries.currency}, ${trackerProjects.currency}, 'USD') = ${currency}`
+          : sql`true`,
       ),
     )
     .groupBy(
       trackerProjects.id,
       trackerProjects.name,
-      trackerProjects.rate,
-      trackerProjects.currency,
+      sql`COALESCE(${trackerEntries.currency}, ${trackerProjects.currency}, 'USD')`,
       customers.name,
     )
     .having(sql`SUM(${trackerEntries.duration}) > 0`);
@@ -1188,8 +1189,9 @@ export async function getUnbilledHoursDetails(
   return result
     .map((row) => {
       const hours = Math.round((row.totalSeconds / 3600) * 10) / 10;
-      const rate = Number(row.rate ?? 0);
-      const billableAmount = Math.round(hours * rate * 100) / 100;
+      const billableAmount = Math.round(Number(row.amount) * 100) / 100;
+      const rate =
+        row.totalSeconds > 0 ? billableAmount / (row.totalSeconds / 3600) : 0;
 
       return {
         projectId: row.projectId,

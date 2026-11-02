@@ -2,81 +2,40 @@ import {
   connectInboxAccountSchema,
   deleteInboxAccountSchema,
   exchangeCodeForAccountSchema,
-  // initialSetupInboxAccountSchema,
   syncInboxAccountSchema,
 } from "@api/schemas/inbox-accounts";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
 import {
   deleteInboxAccount,
   getInboxAccountById,
   getInboxAccounts,
 } from "@midday/db/queries";
-import { InboxConnector } from "@midday/inbox/connector";
-import { encryptOAuthState } from "@midday/inbox/utils";
-import { createLoggerWithContext } from "@midday/logger";
-import { schedules, tasks } from "@trigger.dev/sdk";
+import { removeInboxSyncScheduler, triggerJob } from "@midday/job-client";
+import { logger } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
-
-const logger = createLoggerWithContext("trpc:inbox-accounts");
 
 export const inboxAccountsRouter = createTRPCRouter({
   get: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
     return getInboxAccounts(db, teamId!);
   }),
 
-  connect: protectedProcedure
-    .input(connectInboxAccountSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
-      if (!teamId) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Team not found",
-        });
-      }
-
-      try {
-        // Encrypt state to prevent tampering with teamId
-        const state = encryptOAuthState({
-          teamId,
-          provider: input.provider,
-          source: "inbox",
-          redirectPath: input.redirectPath,
-        });
-
-        const connector = new InboxConnector(input.provider, db);
-        return connector.connect(state);
-      } catch (error) {
-        logger.error("Failed to connect to inbox account", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to connect to inbox account",
-        });
-      }
-    }),
+  connect: protectedProcedure.input(connectInboxAccountSchema).mutation(() => {
+    // Streaming tRPC responses cannot reliably set a callback nonce cookie.
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Start the inbox connection from the browser handshake",
+    });
+  }),
 
   exchangeCodeForAccount: protectedProcedure
     .input(exchangeCodeForAccountSchema)
-    .query(async ({ ctx: { db, teamId }, input }) => {
-      try {
-        const connector = new InboxConnector(input.provider, db);
-
-        const account = await connector.exchangeCodeForAccount({
-          code: input.code,
-          teamId: teamId!,
-        });
-
-        return account;
-      } catch (error) {
-        logger.error("Failed to exchange code for account", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to exchange code for account",
-        });
-      }
+    .query(() => {
+      // All codes must pass the durable intent + browser-cookie boundary.
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Complete the inbox connection through its browser callback",
+      });
     }),
 
   delete: protectedProcedure
@@ -87,11 +46,20 @@ export const inboxAccountsRouter = createTRPCRouter({
         teamId: teamId!,
       });
 
-      if (data?.scheduleId) {
-        await schedules.del(data.scheduleId);
+      if (!data) return data;
+      try {
+        // The row was deleted with a tenant predicate. Its UUID determines our
+        // own Redis scheduler; scheduleId may still contain a legacy cloud ID.
+        await removeInboxSyncScheduler(data.id);
+        return { ...data, schedulerCleanupPending: false };
+      } catch {
+        // Credentials are already removed. A persisted scheduler self-removes
+        // when its next worker run observes the missing account after recovery.
+        logger.warn("Inbox account removed; scheduler cleanup deferred", {
+          accountId: data.id,
+        });
+        return { ...data, schedulerCleanupPending: true };
       }
-
-      return data;
     }),
 
   sync: protectedProcedure
@@ -110,25 +78,23 @@ export const inboxAccountsRouter = createTRPCRouter({
         });
       }
 
-      const event = await tasks.trigger("sync-inbox-account", {
-        id: input.id,
-        manualSync: input.manualSync || false,
-      });
+      if (!getInstanceCapabilities().integrations[account.provider]?.enabled) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "This email provider is not configured for this installation",
+        });
+      }
+      const event = await triggerJob(
+        "sync-scheduler",
+        {
+          id: input.id,
+          teamId: teamId!,
+          manualSync: input.manualSync || false,
+        },
+        "inbox-provider",
+      );
 
       return event;
     }),
-
-  // initialSetup: protectedProcedure
-  //   .input(initialSetupInboxAccountSchema)
-  //   .mutation(async ({ input }) => {
-  //     const job = await triggerJob(
-  //       "initial-setup",
-  //       {
-  //         inboxAccountId: input.inboxAccountId,
-  //       },
-  //       "inbox-provider",
-  //     );
-
-  //     return { id: job.id };
-  //   }),
 });

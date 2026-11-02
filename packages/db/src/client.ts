@@ -6,7 +6,7 @@ import type { PgTransaction } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import { createDrizzleLogger, instrumentPool } from "./instrument";
 import { withReplicas } from "./replicas";
-import * as schema from "./schema";
+import { runtimeSchema as schema } from "./runtime-schema";
 
 const logger = createLoggerWithContext("db");
 

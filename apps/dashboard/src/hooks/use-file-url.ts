@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useUserQuery } from "@/hooks/use-user";
+import { authenticatedFileUrl } from "@/utils/authenticated-file-url";
 
 type FileUrlOptions =
   | {
@@ -11,6 +12,7 @@ type FileUrlOptions =
       type: "invoice";
       invoiceId: string;
       isReceipt?: boolean;
+      preview?: boolean;
     }
   | {
       type: "url";
@@ -26,47 +28,31 @@ type FileUrlOptions =
  */
 export function useFileUrl(options: FileUrlOptions | null) {
   const { data: user, isLoading } = useUserQuery();
+  const fileKey =
+    user?.fileKey && user.fileKeyExpiresAt && user.fileKeyExpiresAt > Date.now()
+      ? user.fileKey
+      : null;
 
   const result = useMemo(() => {
     if (!options) {
       return {
         url: null as string | null,
         isLoading,
-        hasFileKey: !!user?.fileKey,
+        hasFileKey: !!fileKey,
       };
     }
 
     if (options.type === "url") {
-      // Handle relative URLs (starting with /) differently from absolute URLs
-      if (options.url.startsWith("/")) {
-        const [pathname, search] = options.url.split("?");
-        const params = new URLSearchParams(search);
-        if (user?.fileKey) {
-          params.set("fk", user.fileKey);
-        }
-        const queryString = params.toString();
-        return {
-          url: queryString ? `${pathname}?${queryString}` : pathname,
-          isLoading: false,
-          hasFileKey: !!user?.fileKey,
-        };
-      }
-
-      // Absolute URL - use full URL construction
-      const url = new URL(options.url);
-      // Add fileKey to all URLs that need authentication
-      if (user?.fileKey) {
-        url.searchParams.set("fk", user.fileKey);
-      }
-      return {
-        url: url.toString(),
-        isLoading: false,
-        hasFileKey: !!user?.fileKey,
-      };
+      const url = authenticatedFileUrl(
+        options.url,
+        process.env.NEXT_PUBLIC_API_URL,
+        fileKey,
+      );
+      return { url, isLoading, hasFileKey: !!url };
     }
 
     // For other types, we need fileKey
-    if (!user?.fileKey) {
+    if (!fileKey) {
       return {
         url: null as string | null,
         isLoading,
@@ -79,9 +65,12 @@ export function useFileUrl(options: FileUrlOptions | null) {
       const baseUrl = `${process.env.NEXT_PUBLIC_API_URL}/files/download/invoice`;
       const url = new URL(baseUrl);
       url.searchParams.set("id", options.invoiceId);
-      url.searchParams.set("fk", user.fileKey);
+      url.searchParams.set("fk", fileKey);
       if (options.isReceipt) {
         url.searchParams.set("type", "receipt");
+      }
+      if (options.preview) {
+        url.searchParams.set("preview", "true");
       }
       return {
         url: url.toString(),
@@ -105,14 +94,14 @@ export function useFileUrl(options: FileUrlOptions | null) {
       url.searchParams.set("filePath", filePath);
     }
 
-    url.searchParams.set("fk", user.fileKey);
+    url.searchParams.set("fk", fileKey);
 
     return {
       url: url.toString(),
       isLoading: false,
       hasFileKey: true,
     };
-  }, [options, user?.fileKey, isLoading]);
+  }, [options, fileKey, isLoading]);
 
   return result;
 }

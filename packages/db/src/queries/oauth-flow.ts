@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { hash } from "@midday/encryption";
-import { and, desc, eq, gt, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lte, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   oauthAccessTokens,
   oauthApplications,
   oauthAuthorizationCodes,
   users,
+  usersOnTeam,
 } from "../schema";
 
 export type CreateAuthorizationCodeParams = {
@@ -69,7 +70,8 @@ export async function createAuthorizationCode(
   return result;
 }
 
-// Exchange authorization code for access token
+// Consume and issue in one primary transaction. A row lock makes concurrent
+// exchange single-use; a failed token insert rolls the consumption back.
 export async function exchangeAuthorizationCode(
   db: Database,
   code: string,
@@ -77,101 +79,103 @@ export async function exchangeAuthorizationCode(
   applicationId: string,
   codeVerifier?: string,
 ) {
-  // Get the authorization code
-  const [authCode] = await db
-    .select({
-      id: oauthAuthorizationCodes.id,
-      applicationId: oauthAuthorizationCodes.applicationId,
-      userId: oauthAuthorizationCodes.userId,
-      teamId: oauthAuthorizationCodes.teamId,
-      scopes: oauthAuthorizationCodes.scopes,
-      redirectUri: oauthAuthorizationCodes.redirectUri,
-      expiresAt: oauthAuthorizationCodes.expiresAt,
-      used: oauthAuthorizationCodes.used,
-      codeChallenge: oauthAuthorizationCodes.codeChallenge,
-      codeChallengeMethod: oauthAuthorizationCodes.codeChallengeMethod,
-      createdAt: oauthAuthorizationCodes.createdAt,
-    })
-    .from(oauthAuthorizationCodes)
-    .where(eq(oauthAuthorizationCodes.code, code))
-    .limit(1);
+  const outcome = await db.transaction(async (tx) => {
+    const [authCode] = await tx
+      .select({
+        id: oauthAuthorizationCodes.id,
+        applicationId: oauthAuthorizationCodes.applicationId,
+        userId: oauthAuthorizationCodes.userId,
+        teamId: oauthAuthorizationCodes.teamId,
+        scopes: oauthAuthorizationCodes.scopes,
+        redirectUri: oauthAuthorizationCodes.redirectUri,
+        expiresAt: oauthAuthorizationCodes.expiresAt,
+        used: oauthAuthorizationCodes.used,
+        codeChallenge: oauthAuthorizationCodes.codeChallenge,
+        createdAt: oauthAuthorizationCodes.createdAt,
+      })
+      .from(oauthAuthorizationCodes)
+      .innerJoin(users, eq(oauthAuthorizationCodes.userId, users.id))
+      .innerJoin(
+        usersOnTeam,
+        and(
+          eq(usersOnTeam.userId, oauthAuthorizationCodes.userId),
+          eq(usersOnTeam.teamId, oauthAuthorizationCodes.teamId),
+        ),
+      )
+      .innerJoin(
+        oauthApplications,
+        eq(oauthApplications.id, oauthAuthorizationCodes.applicationId),
+      )
+      .where(
+        and(
+          eq(oauthAuthorizationCodes.code, code),
+          eq(oauthApplications.active, true),
+          isNull(users.deletionStartedAt),
+        ),
+      )
+      .limit(1)
+      .for("update", { of: oauthAuthorizationCodes });
 
-  if (!authCode) {
-    throw new Error("Invalid authorization code");
-  }
+    if (!authCode) throw new Error("Invalid authorization code");
+    if (authCode.applicationId !== applicationId) {
+      throw new Error("Authorization code does not belong to this application");
+    }
+    if (new Date(authCode.expiresAt).getTime() <= Date.now()) {
+      throw new Error("Authorization code expired");
+    }
+    if (authCode.redirectUri !== redirectUri) {
+      throw new Error("Invalid redirect URI");
+    }
+    // A caller must prove the original PKCE binding even on the replay path.
+    if (authCode.codeChallenge) {
+      if (!codeVerifier) {
+        throw new Error(
+          "Code verifier is required when code challenge is present",
+        );
+      }
+      const computedChallenge = createHash("sha256")
+        .update(codeVerifier)
+        .digest("base64url");
+      if (computedChallenge !== authCode.codeChallenge) {
+        throw new Error("Invalid code verifier");
+      }
+    }
 
-  // Validate that the authorization code belongs to the same application
-  if (authCode.applicationId !== applicationId) {
-    throw new Error("Authorization code does not belong to this application");
-  }
+    if (authCode.used) {
+      await revokeTokensByAuthorizationCode(tx, {
+        applicationId: authCode.applicationId,
+        userId: authCode.userId,
+        teamId: authCode.teamId,
+        createdAt: authCode.createdAt,
+      });
+      // Return the rejection so replay revocation commits. Throwing inside the
+      // transaction would silently roll back this security side effect.
+      return {
+        error: "Authorization code already used - related tokens revoked",
+      } as const;
+    }
 
-  // SECURITY CRITICAL: Check for authorization code reuse
-  if (authCode.used) {
-    // RFC 6819: When an authorization code is used more than once,
-    // all tokens issued for that authorization code MUST be revoked
-    const revokedTokens = await revokeTokensByAuthorizationCode(db, {
+    await tx
+      .update(oauthAuthorizationCodes)
+      .set({ used: true })
+      .where(eq(oauthAuthorizationCodes.id, authCode.id));
+
+    const accessToken = await createAccessToken(tx, {
       applicationId: authCode.applicationId,
       userId: authCode.userId,
       teamId: authCode.teamId,
-      createdAt: authCode.createdAt,
+      scopes: authCode.scopes,
     });
-
-    console.warn(
-      `[SECURITY] Authorization code reuse detected for application ${authCode.applicationId}. ` +
-        `Revoked ${revokedTokens.length} potentially related tokens.`,
-    );
-
-    throw new Error(
-      "Authorization code already used - all related tokens have been revoked for security",
-    );
-  }
-
-  if (new Date() > new Date(authCode.expiresAt)) {
-    throw new Error("Authorization code expired");
-  }
-
-  if (authCode.redirectUri !== redirectUri) {
-    throw new Error("Invalid redirect URI");
-  }
-
-  // Verify PKCE code verifier if code challenge exists
-  if (authCode.codeChallenge) {
-    if (!codeVerifier) {
-      throw new Error(
-        "Code verifier is required when code challenge is present",
-      );
-    }
-
-    // Always use S256 method since it's the only supported method
-    const computedChallenge = createHash("sha256")
-      .update(codeVerifier)
-      .digest("base64url");
-
-    if (computedChallenge !== authCode.codeChallenge) {
-      throw new Error("Invalid code verifier");
-    }
-  }
-
-  // Mark the authorization code as used
-  await db
-    .update(oauthAuthorizationCodes)
-    .set({ used: true })
-    .where(eq(oauthAuthorizationCodes.id, authCode.id));
-
-  // Create access token
-  const accessToken = await createAccessToken(db, {
-    applicationId: authCode.applicationId,
-    userId: authCode.userId,
-    teamId: authCode.teamId,
-    scopes: authCode.scopes,
+    return { accessToken } as const;
   });
 
-  return accessToken;
+  if ("error" in outcome) throw new Error(outcome.error);
+  return outcome.accessToken;
 }
 
 // Create access token
 export async function createAccessToken(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: CreateAccessTokenParams,
 ) {
   const token = `mid_access_token_${nanoid(32)}`;
@@ -226,10 +230,14 @@ export async function createAccessToken(
 
 // Validate access token
 export async function validateAccessToken(db: Database, token: string) {
+  // A retained application is company-owned, but each grant is still personal.
+  // Membership removal and pending deletion must not be hidden by replica lag.
+  const primaryOnly = db.usePrimaryOnly;
+  const authorizationDb = primaryOnly ? primaryOnly.call(db) : db;
   // Hash the incoming token to compare with stored hash
   const tokenHash = hash(token);
 
-  const [result] = await db
+  const [result] = await authorizationDb
     .select({
       id: oauthAccessTokens.id,
       token: oauthAccessTokens.token,
@@ -253,8 +261,15 @@ export async function validateAccessToken(db: Database, token: string) {
       },
     })
     .from(oauthAccessTokens)
-    .leftJoin(users, eq(oauthAccessTokens.userId, users.id))
-    .leftJoin(
+    .innerJoin(users, eq(oauthAccessTokens.userId, users.id))
+    .innerJoin(
+      usersOnTeam,
+      and(
+        eq(usersOnTeam.userId, oauthAccessTokens.userId),
+        eq(usersOnTeam.teamId, oauthAccessTokens.teamId),
+      ),
+    )
+    .innerJoin(
       oauthApplications,
       eq(oauthAccessTokens.applicationId, oauthApplications.id),
     )
@@ -263,6 +278,7 @@ export async function validateAccessToken(db: Database, token: string) {
         eq(oauthAccessTokens.token, tokenHash), // Compare with hashed token
         eq(oauthAccessTokens.revoked, false),
         gt(oauthAccessTokens.expiresAt, new Date().toISOString()),
+        isNull(users.deletionStartedAt),
       ),
     )
     .limit(1);
@@ -276,7 +292,7 @@ export async function validateAccessToken(db: Database, token: string) {
   }
 
   // Update last used timestamp
-  await db
+  await authorizationDb
     .update(oauthAccessTokens)
     .set({ lastUsedAt: new Date().toISOString() })
     .where(eq(oauthAccessTokens.id, result.id));
@@ -284,91 +300,80 @@ export async function validateAccessToken(db: Database, token: string) {
   return result;
 }
 
-// Refresh access token
+// Rotate the old grant and insert its replacement atomically on primary.
 export async function refreshAccessToken(
   db: Database,
   params: RefreshAccessTokenParams,
 ) {
   const { refreshToken, applicationId, scopes } = params;
-
-  // Hash the incoming refresh token to compare with stored hash
   const refreshTokenHash = hash(refreshToken);
 
-  // Get the existing token
-  const [existingToken] = await db
-    .select({
-      id: oauthAccessTokens.id,
-      userId: oauthAccessTokens.userId,
-      teamId: oauthAccessTokens.teamId,
-      scopes: oauthAccessTokens.scopes,
-      refreshTokenExpiresAt: oauthAccessTokens.refreshTokenExpiresAt,
-      revoked: oauthAccessTokens.revoked,
-    })
-    .from(oauthAccessTokens)
-    .where(
-      and(
-        eq(oauthAccessTokens.refreshToken, refreshTokenHash), // Compare with hashed refresh token
-        eq(oauthAccessTokens.applicationId, applicationId),
-        eq(oauthAccessTokens.revoked, false),
-      ),
-    )
-    .limit(1);
+  return db.transaction(async (tx) => {
+    const [existingToken] = await tx
+      .select({
+        id: oauthAccessTokens.id,
+        userId: oauthAccessTokens.userId,
+        teamId: oauthAccessTokens.teamId,
+        scopes: oauthAccessTokens.scopes,
+        refreshTokenExpiresAt: oauthAccessTokens.refreshTokenExpiresAt,
+      })
+      .from(oauthAccessTokens)
+      .innerJoin(users, eq(oauthAccessTokens.userId, users.id))
+      .innerJoin(
+        usersOnTeam,
+        and(
+          eq(usersOnTeam.userId, oauthAccessTokens.userId),
+          eq(usersOnTeam.teamId, oauthAccessTokens.teamId),
+        ),
+      )
+      .innerJoin(
+        oauthApplications,
+        eq(oauthApplications.id, oauthAccessTokens.applicationId),
+      )
+      .where(
+        and(
+          eq(oauthAccessTokens.refreshToken, refreshTokenHash),
+          eq(oauthAccessTokens.applicationId, applicationId),
+          eq(oauthAccessTokens.revoked, false),
+          eq(oauthApplications.active, true),
+          isNull(users.deletionStartedAt),
+        ),
+      )
+      .limit(1)
+      .for("update", { of: oauthAccessTokens });
 
-  if (!existingToken) {
-    throw new Error("Invalid refresh token");
-  }
-
-  if (existingToken.revoked) {
-    throw new Error("Refresh token revoked");
-  }
-
-  if (
-    existingToken.refreshTokenExpiresAt &&
-    new Date() > new Date(existingToken.refreshTokenExpiresAt)
-  ) {
-    throw new Error("Refresh token expired");
-  }
-
-  // Validate scopes if provided
-  let validatedScopes = existingToken.scopes;
-  if (scopes && scopes.length > 0) {
-    // Ensure requested scopes are a subset of the original token's scopes
-    const originalScopes = new Set(existingToken.scopes);
-    const requestedScopes = new Set(scopes);
-
-    for (const scope of requestedScopes) {
-      if (!originalScopes.has(scope)) {
-        throw new Error(
-          `Requested scope '${scope}' is not authorized for this token`,
-        );
-      }
+    if (!existingToken) throw new Error("Invalid refresh token");
+    if (
+      !existingToken.refreshTokenExpiresAt ||
+      new Date(existingToken.refreshTokenExpiresAt).getTime() <= Date.now()
+    ) {
+      throw new Error("Refresh token expired");
     }
 
-    // Use the validated subset of scopes
-    validatedScopes = scopes;
-  }
+    let validatedScopes = existingToken.scopes;
+    if (scopes && scopes.length > 0) {
+      const originalScopes = new Set(existingToken.scopes);
+      if (scopes.some((scope) => !originalScopes.has(scope))) {
+        throw new Error("Requested scope is not authorized for this token");
+      }
+      validatedScopes = scopes;
+    }
 
-  // Revoke the old token
-  await db
-    .update(oauthAccessTokens)
-    .set({
-      revoked: true,
-      revokedAt: new Date().toISOString(),
-    })
-    .where(eq(oauthAccessTokens.id, existingToken.id));
+    await tx
+      .update(oauthAccessTokens)
+      .set({ revoked: true, revokedAt: new Date().toISOString() })
+      .where(eq(oauthAccessTokens.id, existingToken.id));
 
-  // Create new access token
-  const newToken = await createAccessToken(db, {
-    applicationId,
-    userId: existingToken.userId,
-    teamId: existingToken.teamId,
-    scopes: validatedScopes,
+    return createAccessToken(tx, {
+      applicationId,
+      userId: existingToken.userId,
+      teamId: existingToken.teamId,
+      scopes: validatedScopes,
+    });
   });
-
-  return newToken;
 }
 
-// Revoke access token
+// Revoke either member of an access/refresh pair with client binding.
 export async function revokeAccessToken(
   db: Database,
   params: RevokeTokenParams,
@@ -379,7 +384,10 @@ export async function revokeAccessToken(
   const tokenHash = hash(token);
 
   const whereConditions = [
-    eq(oauthAccessTokens.token, tokenHash), // Compare with hashed token
+    or(
+      eq(oauthAccessTokens.token, tokenHash),
+      eq(oauthAccessTokens.refreshToken, tokenHash),
+    ),
     eq(oauthAccessTokens.revoked, false),
   ];
 
@@ -487,7 +495,7 @@ export async function revokeUserApplicationTokens(
 // SECURITY: Revoke tokens potentially related to an authorization code
 // This is used when authorization code reuse is detected
 export async function revokeTokensByAuthorizationCode(
-  db: Database,
+  db: DatabaseOrTransaction,
   authCode: {
     applicationId: string;
     userId: string;

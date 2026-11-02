@@ -27,6 +27,11 @@ import {
   updateOAuthApplication,
   updateOAuthApplicationstatus,
 } from "@midday/db/queries";
+import {
+  getProductEmailConfig,
+  getProductEmailReviewRecipient,
+  requireProductEmailReceipt,
+} from "@midday/email/config";
 import { AppInstalledEmail } from "@midday/email/emails/app-installed";
 import { AppReviewRequestEmail } from "@midday/email/emails/app-review-request";
 import { render } from "@midday/email/render";
@@ -188,6 +193,7 @@ export const oauthApplicationsRouter = createTRPCRouter({
           const userTeam = userTeams.find((team) => team.id === teamId);
 
           if (userTeam && session.user.email) {
+            const config = getProductEmailConfig();
             const html = await render(
               AppInstalledEmail({
                 email: session.user.email,
@@ -196,12 +202,15 @@ export const oauthApplicationsRouter = createTRPCRouter({
               }),
             );
 
-            await resend.emails.send({
-              from: "Midday <middaybot@midday.ai>",
-              to: session.user.email,
-              subject: "An app has been added to your team",
-              html,
-            });
+            requireProductEmailReceipt(
+              await resend.emails.send({
+                from: config.from,
+                replyTo: config.replyTo,
+                to: session.user.email,
+                subject: "An app has been added to your team",
+                html,
+              }),
+            );
           }
         }
       } catch (error) {
@@ -356,6 +365,8 @@ export const oauthApplicationsRouter = createTRPCRouter({
           const currentTeam = userTeams?.find((team) => team.id === teamId);
 
           if (currentTeam && session.user.email) {
+            const config = getProductEmailConfig();
+            const reviewRecipient = getProductEmailReviewRecipient();
             const html = await render(
               AppReviewRequestEmail({
                 applicationName: application.name,
@@ -365,12 +376,15 @@ export const oauthApplicationsRouter = createTRPCRouter({
               }),
             );
 
-            await resend.emails.send({
-              from: "Midday <middaybot@midday.ai>",
-              to: "pontus@midday.ai",
-              subject: `Application Review Request - ${application.name}`,
-              html,
-            });
+            requireProductEmailReceipt(
+              await resend.emails.send({
+                from: config.from,
+                replyTo: config.replyTo,
+                to: reviewRecipient,
+                subject: `Application Review Request - ${application.name}`,
+                html,
+              }),
+            );
           }
         } catch (error) {
           // Log error but don't fail the mutation

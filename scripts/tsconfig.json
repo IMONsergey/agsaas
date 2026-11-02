@@ -1,0 +1,11 @@
+{
+  "extends": "../packages/tsconfig/base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "typeRoots": ["../node_modules/@types"]
+  },
+  "include": ["./*.ts", "./*.mts", "../deploy/self-hosted/config.test.ts"]
+}

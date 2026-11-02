@@ -6,6 +6,7 @@ import { FormProvider } from "react-hook-form";
 import { z } from "zod/v3";
 import { useZodForm } from "@/hooks/use-zod-form";
 import { useInvoiceEditorStore } from "@/store/invoice-editor";
+import { getInvoiceEditorTemplate } from "./utils/summary-values";
 
 export const invoiceTemplateSchema = z.object({
   id: z.string().uuid().optional(),
@@ -260,21 +261,27 @@ export function FormContext({
   });
 
   useEffect(() => {
-    form.reset({
+    const values = {
       ...(defaultSettings ?? {}),
       ...(data ?? {}),
-      // @ts-expect-error
-      template: {
-        ...(defaultSettings?.template ?? {}),
-        ...(data?.template ?? {}),
-      },
+      template: getInvoiceEditorTemplate(
+        defaultSettings?.template,
+        data ? { template: data.template, currency: data.currency } : undefined,
+      ),
       customerId: data?.customerId ?? defaultSettings?.customerId ?? undefined,
-    });
+    };
+    // @ts-expect-error - Server editor JSON and partial defaults are hydrated here.
+    form.reset(values);
 
     // Signal that a reset happened. The auto-save effect will capture the
     // baseline snapshot on the first debounce tick — after all child effects
     // (Summary, etc.) have finished normalizing values.
-    useInvoiceEditorStore.getState().markReset();
+    if (values.id)
+      useInvoiceEditorStore.getState().markReset({
+        ...values,
+        id: values.id,
+        template: values.template as InvoiceFormValues["template"],
+      });
   }, [data, defaultSettings]);
 
   return <FormProvider {...form}>{children}</FormProvider>;

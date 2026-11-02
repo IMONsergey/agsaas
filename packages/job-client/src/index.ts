@@ -3,8 +3,13 @@ import { getQueue } from "./queues";
 import type { JobStatus, JobStatusResponse, JobTriggerResponse } from "./types";
 import { decodeJobId, encodeJobId } from "./utils";
 
+export {
+  inboxSyncSchedulerId,
+  removeInboxSyncScheduler,
+} from "./inbox-scheduler";
 // Re-export utilities
-export { getQueue } from "./queues";
+export { closeQueues, getQueue } from "./queues";
+export { parseRedisQueueUrl, RedisQueueUrlError } from "./redis-url";
 export { decodeJobId, encodeJobId } from "./utils";
 
 // Create logger with job-client context

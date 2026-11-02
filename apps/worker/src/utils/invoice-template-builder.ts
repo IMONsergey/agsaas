@@ -27,7 +27,8 @@ export type InvoiceLineItem = {
  */
 export interface RecurringInvoiceData {
   teamId: string;
-  userId: string;
+  // Historical creator, not the identity authorizing team automation.
+  userId: string | null;
   customerId: string | null;
   customerName: string | null;
   template: unknown;
@@ -255,8 +256,11 @@ export function validateRecurringDataIntegrity(
   if (!recurring.teamId) {
     errors.push("Missing teamId");
   }
-  if (!recurring.userId) {
-    errors.push("Missing userId");
+  if (
+    recurring.userId !== null &&
+    (typeof recurring.userId !== "string" || recurring.userId.length === 0)
+  ) {
+    errors.push("Invalid userId");
   }
   if (!recurring.timezone) {
     errors.push("Missing timezone");

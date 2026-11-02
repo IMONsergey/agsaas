@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { customers } from "../schema";
 
@@ -21,6 +21,11 @@ export type CustomerForEnrichment = {
 };
 
 export type CustomerEnrichmentUpdateData = {
+  addressLine1?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zipCode?: string | null;
+  country?: string | null;
   description?: string | null;
   industry?: string | null;
   companyType?: string | null;
@@ -108,8 +113,8 @@ export async function updateCustomerEnrichmentStatus(
 }
 
 /**
- * Update customer with enrichment data
- * Only updates fields that are provided (non-undefined)
+ * Apply known, non-null enrichment fields. Address and VAT values only fill
+ * empty columns at write time, preserving manual edits made during the lookup.
  */
 export async function updateCustomerEnrichment(
   db: Database,
@@ -123,11 +128,51 @@ export async function updateCustomerEnrichment(
     enrichedAt: new Date().toISOString(),
   };
 
-  // Only include fields that are explicitly set (not undefined)
-  for (const [key, value] of Object.entries(data)) {
-    if (value !== undefined) {
+  // The provider result has a different shape from the customer row. Never
+  // spread arbitrary keys into an UPDATE, or let missing data erase old values.
+  const enrichmentFields = [
+    "description",
+    "industry",
+    "companyType",
+    "employeeCount",
+    "foundedYear",
+    "estimatedRevenue",
+    "fundingStage",
+    "totalFunding",
+    "headquartersLocation",
+    "timezone",
+    "linkedinUrl",
+    "twitterUrl",
+    "instagramUrl",
+    "facebookUrl",
+    "ceoName",
+    "financeContact",
+    "financeContactEmail",
+    "primaryLanguage",
+    "fiscalYearEnd",
+  ] as const;
+  for (const key of enrichmentFields) {
+    const value = data[key];
+    if (value !== undefined && value !== null) {
       updateData[key] = value;
     }
+  }
+
+  const customerFields = [
+    ["addressLine1", "addressLine1"],
+    ["city", "city"],
+    ["state", "state"],
+    ["country", "country"],
+    ["zipCode", "zip"],
+    ["vatNumber", "vatNumber"],
+  ] as const;
+  for (const [source, target] of customerFields) {
+    const value = data[source];
+    if (typeof value !== "string" || value.trim() === "") continue;
+    const column = customers[target];
+    updateData[target] = sql`CASE
+      WHEN nullif(btrim(${column}), '') IS NULL THEN ${value.trim()}
+      ELSE ${column} END`;
   }
 
   await db

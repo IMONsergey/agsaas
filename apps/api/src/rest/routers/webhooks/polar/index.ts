@@ -1,13 +1,9 @@
 import type { Context } from "@api/rest/types";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import {
-  getTeamById,
-  getTeamOwnerContact,
-  updateTeamById,
-} from "@midday/db/queries";
-import { triggerJob } from "@midday/job-client";
+import { BillingSubscriptionEventError } from "@midday/db/billing-subscription";
+import { applyBillingSubscriptionEvent } from "@midday/db/queries";
 import { logger } from "@midday/logger";
-import { getPlanByProductId } from "@midday/plans";
+import { getPlans } from "@midday/plans";
 import {
   validateEvent,
   WebhookVerificationError,
@@ -57,7 +53,7 @@ app.openapi(
       });
     }
 
-    let event: any;
+    let event: ReturnType<typeof validateEvent>;
 
     const rawBody = await c.req.text();
     const webhookHeaders = {
@@ -76,13 +72,9 @@ app.openapi(
         throw new HTTPException(400, { message: "Invalid webhook signature" });
       }
 
-      // Signature was already verified by standardwebhooks inside
-      // validateEvent — the SDK just can't parse this event type yet.
-      // Fall back to the raw JSON so our own switch-case can handle it.
-      logger.warn("Polar SDK could not parse event, using raw payload", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      event = JSON.parse(rawBody);
+      // Treat malformed/unsupported payloads as unverified. No raw-payload
+      // fallback may update entitlements after a verification exception.
+      throw new HTTPException(400, { message: "Invalid webhook payload" });
     }
 
     logger.info("Polar webhook received", {
@@ -90,191 +82,31 @@ app.openapi(
     });
 
     try {
-      switch (event.type) {
-        case "subscription.created": {
-          const teamId = event.data.metadata?.teamId as string | undefined;
+      const result = await applyBillingSubscriptionEvent(db, {
+        event,
+        products: Object.values(getPlans()).map((product) => ({
+          id: product.id,
+          plan: product.key,
+        })),
+      });
+      logger.info("Polar subscription event processed", {
+        type: event.type,
+        outcome: result.state,
+      });
 
-          if (!teamId) {
-            logger.warn("Subscription created event missing teamId metadata");
-            break;
-          }
-
-          if (event.data.status === "trialing") {
-            await updateTeamById(db, {
-              id: teamId,
-              data: {
-                email: event.data.customer.email ?? undefined,
-                plan: getPlanByProductId(event.data.productId),
-                subscriptionStatus: "trialing",
-                canceledAt: null,
-              },
-            });
-
-            logger.info("Team trial subscription created", {
-              teamId,
-              plan: getPlanByProductId(event.data.productId),
-            });
-          }
-
-          break;
-        }
-
-        case "subscription.active": {
-          const teamId = event.data.metadata?.teamId as string | undefined;
-
-          if (!teamId) {
-            logger.warn("Subscription active event missing teamId metadata");
-            break;
-          }
-
-          await updateTeamById(db, {
-            id: teamId,
-            data: {
-              email: event.data.customer.email ?? undefined,
-              plan: getPlanByProductId(event.data.productId),
-              canceledAt: null,
-              subscriptionStatus: "active",
-            },
-          });
-
-          logger.info("Team plan activated", {
-            teamId,
-            plan: getPlanByProductId(event.data.productId),
-          });
-
-          break;
-        }
-
-        case "subscription.canceled": {
-          const teamId = event.data.metadata?.teamId as string | undefined;
-
-          if (!teamId) {
-            logger.warn("Subscription canceled event missing teamId metadata");
-            break;
-          }
-
-          // subscription.canceled fires immediately when the user cancels --
-          // the subscription is still active/trialing with cancel_at_period_end: true.
-          // Only record the cancellation intent; the actual plan downgrade
-          // happens on subscription.revoked when the period ends.
-          await updateTeamById(db, {
-            id: teamId,
-            data: {
-              canceledAt: new Date().toISOString(),
-            },
-          });
-
-          logger.info("Team subscription scheduled for cancellation", {
-            teamId,
-          });
-
-          break;
-        }
-
-        case "subscription.past_due": {
-          const teamId = event.data?.metadata?.teamId as string | undefined;
-
-          if (!teamId) {
-            logger.warn("Subscription past_due event missing teamId metadata");
-            break;
-          }
-
-          await updateTeamById(db, {
-            id: teamId,
-            data: {
-              subscriptionStatus: "past_due",
-            },
-          });
-
-          logger.info("Team subscription past due", { teamId });
-
-          try {
-            const [owner, team] = await Promise.all([
-              getTeamOwnerContact(db, teamId),
-              getTeamById(db, teamId),
-            ]);
-
-            if (owner?.email && team) {
-              await triggerJob(
-                "payment-issue",
-                {
-                  teamId,
-                  email: owner.email,
-                  fullName: owner.fullName ?? "there",
-                  teamName: team.name ?? "Midday",
-                },
-                "teams",
-                { jobId: `payment-issue-${teamId}` },
-              );
-            }
-          } catch (err) {
-            logger.error("Failed to trigger payment issue email", {
-              teamId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-
-          break;
-        }
-
-        case "subscription.revoked": {
-          const teamId = event.data.metadata?.teamId as string | undefined;
-
-          if (!teamId) {
-            logger.warn("Subscription revoked event missing teamId metadata");
-            break;
-          }
-
-          // Check if this is a past_due status (payment pending) vs actual revocation
-          // Polar may send subscription.revoked events with status === "past_due" for
-          // backward compatibility, even though there's now a dedicated subscription.past_due event
-          if (event.data.status === "past_due") {
-            // Keep the plan active but mark subscription as past_due
-            // User keeps access while they fix their payment method
-            await updateTeamById(db, {
-              id: teamId,
-              data: {
-                subscriptionStatus: "past_due",
-              },
-            });
-
-            logger.info("Team subscription past due (via revoked event)", {
-              teamId,
-            });
-          } else {
-            // Wind-down mode: subscription has definitively ended, but we keep
-            // the team on its current plan so existing customers retain access
-            // (bank schedulers, insights, etc.) after Midday stops billing.
-            // Only the subscription state is cleared.
-            await updateTeamById(db, {
-              id: teamId,
-              data: {
-                canceledAt: new Date().toISOString(),
-                subscriptionStatus: null,
-              },
-            });
-
-            logger.info(
-              "Team subscription revoked; plan preserved for wind-down",
-              {
-                teamId,
-              },
-            );
-          }
-          break;
-        }
-
-        default:
-          logger.debug("Unhandled Polar webhook event type", {
-            type: event.type,
-          });
-      }
+      // Payment-issue intent commits with the entitlement transition. Existing
+      // SQL notification recovery owns dispatch even when Redis is unavailable.
     } catch (err) {
+      if (err instanceof BillingSubscriptionEventError) {
+        throw new HTTPException(400, {
+          message: "Invalid billing subscription event",
+        });
+      }
       logger.error("Error processing Polar webhook", {
         error: err instanceof Error ? err.message : String(err),
         eventType: event.type,
       });
-      // Re-throw to return 5xx, allowing Polar to retry on transient failures
+      // Re-throw to return 5xx, allowing Polar to retry on transient failures.
       throw new HTTPException(500, {
         message: "Failed to process webhook event",
       });

@@ -58,6 +58,7 @@ export class InboxConnector extends Connector {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token ?? "",
       teamId: params.teamId,
+      actorUserId: params.actorUserId,
       expiryDate: new Date(tokens.expiry_date!).toISOString(),
     });
 
@@ -178,6 +179,7 @@ export class InboxConnector extends Connector {
     accessToken: string;
     refreshToken: string;
     teamId: string;
+    actorUserId: string;
     expiryDate: string;
   }) {
     if (!params.teamId || !this.#provider) {
@@ -192,6 +194,7 @@ export class InboxConnector extends Connector {
 
     const data = await upsertInboxAccount(this.#db, {
       teamId: params.teamId,
+      actorUserId: params.actorUserId,
       provider: this.#providerName,
       accessToken: encrypt(params.accessToken),
       refreshToken: encrypt(params.refreshToken),

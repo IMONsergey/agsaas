@@ -514,76 +514,110 @@ export type MarkInvoiceGeneratedParams = {
   teamId: string;
 };
 
+/** Hold this row lock until invoice, dispatch intent and series advancement commit. */
+export async function lockDueInvoiceRecurring(
+  db: DatabaseOrTransaction,
+  params: {
+    id: string;
+    teamId: string;
+    nextSequence: number;
+    nextScheduledAt: string | null;
+  },
+) {
+  if (!params.nextScheduledAt) return null;
+  const [current] = await db
+    .select()
+    .from(invoiceRecurring)
+    .where(
+      and(
+        eq(invoiceRecurring.id, params.id),
+        eq(invoiceRecurring.teamId, params.teamId),
+        eq(invoiceRecurring.status, "active"),
+        eq(invoiceRecurring.invoicesGenerated, params.nextSequence - 1),
+        eq(invoiceRecurring.nextScheduledAt, params.nextScheduledAt),
+        lte(invoiceRecurring.nextScheduledAt, sql`clock_timestamp()`),
+      ),
+    )
+    .for("update");
+  return current ?? null;
+}
+
 export async function markInvoiceGenerated(
   db: DatabaseOrTransaction,
   params: MarkInvoiceGeneratedParams,
 ) {
   const { id, teamId } = params;
 
-  // Get current recurring invoice data
-  const [current] = await db
-    .select()
-    .from(invoiceRecurring)
-    .where(
-      and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
+  return db.transaction(async (tx) => {
+    // Get current recurring invoice data
+    const [current] = await tx
+      .select()
+      .from(invoiceRecurring)
+      .where(
+        and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
+      )
+      .for("update");
+
+    if (!current) {
+      return null;
+    }
+
+    const now = new Date();
+    const newInvoicesGenerated = current.invoicesGenerated + 1;
+
+    // Calculate next scheduled date
+    const recurringParams: RecurringInvoiceParams = {
+      frequency: current.frequency,
+      frequencyDay: current.frequencyDay,
+      frequencyWeek: current.frequencyWeek,
+      frequencyInterval: current.frequencyInterval,
+      timezone: current.timezone,
+    };
+
+    // Use the original scheduled time as the base to preserve the intended schedule pattern
+    // (e.g., biweekly invoices stay on the same weekday, monthly on the same date)
+    const baseDate = current.nextScheduledAt
+      ? new Date(current.nextScheduledAt)
+      : now;
+
+    const initialNextDate = calculateNextScheduledDate(
+      recurringParams,
+      baseDate,
     );
 
-  if (!current) {
-    return null;
-  }
+    // Advance to future if scheduler ran late (prevents catch-up loop)
+    const { date: nextScheduledAt } = advanceToFutureDate(
+      recurringParams,
+      initialNextDate,
+      now,
+    );
 
-  const now = new Date();
-  const newInvoicesGenerated = current.invoicesGenerated + 1;
+    // Check if series should be completed
+    const isCompleted = shouldMarkCompleted(
+      current.endType,
+      current.endDate ? new Date(current.endDate) : null,
+      current.endCount,
+      newInvoicesGenerated,
+      nextScheduledAt,
+    );
 
-  // Calculate next scheduled date
-  const recurringParams: RecurringInvoiceParams = {
-    frequency: current.frequency,
-    frequencyDay: current.frequencyDay,
-    frequencyWeek: current.frequencyWeek,
-    frequencyInterval: current.frequencyInterval,
-    timezone: current.timezone,
-  };
+    const [result] = await tx
+      .update(invoiceRecurring)
+      .set({
+        invoicesGenerated: newInvoicesGenerated,
+        consecutiveFailures: 0, // Reset failures on successful generation
+        lastGeneratedAt: now.toISOString(),
+        nextScheduledAt: isCompleted ? null : nextScheduledAt.toISOString(),
+        status: isCompleted ? "completed" : "active",
+        updatedAt: now.toISOString(),
+      })
+      .where(
+        and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
+      )
+      .returning();
 
-  // Use the original scheduled time as the base to preserve the intended schedule pattern
-  // (e.g., biweekly invoices stay on the same weekday, monthly on the same date)
-  const baseDate = current.nextScheduledAt
-    ? new Date(current.nextScheduledAt)
-    : now;
-
-  const initialNextDate = calculateNextScheduledDate(recurringParams, baseDate);
-
-  // Advance to future if scheduler ran late (prevents catch-up loop)
-  const { date: nextScheduledAt } = advanceToFutureDate(
-    recurringParams,
-    initialNextDate,
-    now,
-  );
-
-  // Check if series should be completed
-  const isCompleted = shouldMarkCompleted(
-    current.endType,
-    current.endDate ? new Date(current.endDate) : null,
-    current.endCount,
-    newInvoicesGenerated,
-    nextScheduledAt,
-  );
-
-  const [result] = await db
-    .update(invoiceRecurring)
-    .set({
-      invoicesGenerated: newInvoicesGenerated,
-      consecutiveFailures: 0, // Reset failures on successful generation
-      lastGeneratedAt: now.toISOString(),
-      nextScheduledAt: isCompleted ? null : nextScheduledAt.toISOString(),
-      status: isCompleted ? "completed" : "active",
-      updatedAt: now.toISOString(),
-    })
-    .where(
-      and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
-    )
-    .returning();
-
-  return result;
+    return result;
+  });
 }
 
 /**
@@ -597,8 +631,13 @@ const MAX_CONSECUTIVE_FAILURES = 3;
  * @returns Object with updated record and whether it was auto-paused
  */
 export async function recordInvoiceGenerationFailure(
-  db: Database,
-  params: { id: string; teamId: string },
+  db: DatabaseOrTransaction,
+  params: {
+    id: string;
+    teamId: string;
+    expectedSequence?: number;
+    expectedNextScheduledAt?: string | null;
+  },
 ): Promise<{
   result: typeof invoiceRecurring.$inferSelect | null;
   autoPaused: boolean;
@@ -610,8 +649,22 @@ export async function recordInvoiceGenerationFailure(
     .select()
     .from(invoiceRecurring)
     .where(
-      and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
-    );
+      and(
+        eq(invoiceRecurring.id, id),
+        eq(invoiceRecurring.teamId, teamId),
+        eq(invoiceRecurring.status, "active"),
+        params.expectedSequence === undefined
+          ? undefined
+          : eq(invoiceRecurring.invoicesGenerated, params.expectedSequence - 1),
+        params.expectedNextScheduledAt == null
+          ? undefined
+          : eq(
+              invoiceRecurring.nextScheduledAt,
+              params.expectedNextScheduledAt,
+            ),
+      ),
+    )
+    .for("update");
 
   if (!current) {
     return { result: null, autoPaused: false };
@@ -819,8 +872,12 @@ export async function getUpcomingInvoices(
  * - Skip entirely (if already sent/paid)
  */
 export async function checkInvoiceExists(
-  db: Database,
-  params: { invoiceRecurringId: string; recurringSequence: number },
+  db: DatabaseOrTransaction,
+  params: {
+    teamId: string;
+    invoiceRecurringId: string;
+    recurringSequence: number;
+  },
 ) {
   const { invoiceRecurringId, recurringSequence } = params;
 
@@ -833,6 +890,7 @@ export async function checkInvoiceExists(
     .from(invoices)
     .where(
       and(
+        eq(invoices.teamId, params.teamId),
         eq(invoices.invoiceRecurringId, invoiceRecurringId),
         eq(invoices.recurringSequence, recurringSequence),
       ),
@@ -1011,9 +1069,9 @@ export async function getUpcomingDueRecurringByTeam(
  */
 export async function markUpcomingNotificationSent(
   db: Database,
-  params: { id: string; teamId: string },
+  params: { id: string; teamId: string; expectedNextScheduledAt: string },
 ) {
-  const { id, teamId } = params;
+  const { id, teamId, expectedNextScheduledAt } = params;
 
   const [result] = await db
     .update(invoiceRecurring)
@@ -1022,7 +1080,11 @@ export async function markUpcomingNotificationSent(
       updatedAt: new Date().toISOString(),
     })
     .where(
-      and(eq(invoiceRecurring.id, id), eq(invoiceRecurring.teamId, teamId)),
+      and(
+        eq(invoiceRecurring.id, id),
+        eq(invoiceRecurring.teamId, teamId),
+        eq(invoiceRecurring.nextScheduledAt, expectedNextScheduledAt),
+      ),
     )
     .returning();
 

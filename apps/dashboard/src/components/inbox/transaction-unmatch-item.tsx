@@ -45,10 +45,12 @@ export function TransactionUnmatchItem() {
         const previousInboxItem = queryClient.getQueryData(queryKey);
 
         if (previousInboxItem) {
-          queryClient.setQueryData(queryKey, {
-            ...previousInboxItem,
-            transactionId: null,
-            transaction: null,
+          queryClient.setQueryData(queryKey, (current) => {
+            if (!current) return current;
+            const updated = { ...current };
+            updated.transactionId = null;
+            updated.transaction = null;
+            return updated;
           });
         }
 

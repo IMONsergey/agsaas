@@ -4,57 +4,106 @@ import {
   getBillingOrdersSchema,
 } from "@api/schemas/billing";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
 import { api } from "@api/utils/polar";
-import { getTeamById, updateTeamById } from "@midday/db/queries";
+import {
+  getTeamById,
+  getTeamMemberRole,
+  updateTeamById,
+} from "@midday/db/queries";
 import { createLoggerWithContext } from "@midday/logger";
-import { getPlanIntervalByProductId } from "@midday/plans";
+import { getPlanIntervalByProductId, getPlanProductId } from "@midday/plans";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 const logger = createLoggerWithContext("trpc:billing");
 
-async function resolvePolarCustomer(
-  db: Parameters<typeof getTeamById>[0],
-  teamId: string,
-): Promise<{ id: string }> {
-  try {
-    return await api.customers.getExternal({ externalId: teamId });
-  } catch {
-    // externalId may belong to a different team (same user, multiple teams).
-    // Fall back to the team's stored email which matches the Polar customer.
-    // team.email is set by the subscription webhook, so it's always available
-    // by the time billing management endpoints are called.
-    const team = await getTeamById(db, teamId);
-    if (!team?.email) {
-      logger.error("Cannot resolve Polar customer: team has no email", {
-        teamId,
-      });
-      throw new Error("Failed to resolve Polar customer");
-    }
-
-    logger.info("Resolving Polar customer by email fallback", { teamId });
-
-    const result = await api.customers.list({ email: team.email, limit: 1 });
-    if (!result.result.items.length) {
-      throw new Error("Failed to resolve Polar customer");
-    }
-
-    return result.result.items[0]!;
+function requireBilling() {
+  if (!getInstanceCapabilities().billing.enabled) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Subscriptions are not configured for this installation.",
+    });
   }
 }
 
+const billingOwnerProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+  const db = ctx.db.usePrimaryOnly ? ctx.db.usePrimaryOnly() : ctx.db;
+  if (
+    (await getTeamMemberRole(db, ctx.teamId!, ctx.session.user.id)) !== "owner"
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only a team owner can manage subscriptions.",
+    });
+  }
+  requireBilling();
+  return next();
+});
+
+async function resolvePolarCustomer(
+  _db: Parameters<typeof getTeamById>[0],
+  teamId: string,
+): Promise<{ id: string }> {
+  requireBilling();
+  // Email addresses can be shared across teams. Only the team's immutable
+  // external customer ID is sufficient for billing portal authorization.
+  return api.customers.getExternal({ externalId: teamId });
+}
+
 export const billingRouter = createTRPCRouter({
-  createCheckout: protectedProcedure
+  createCheckout: billingOwnerProcedure
     .input(createCheckoutSchema)
-    .mutation(async () => {
-      // Wind-down: Midday is shutting down billing. New subscriptions and
-      // trials are no longer accepted. Existing customers keep access via
-      // their current plan; the Polar webhook preserves the plan when the
-      // subscription is revoked at period end.
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "New subscriptions are no longer available.",
+    .mutation(async ({ input, ctx: { db, teamId, session } }) => {
+      const dashboardUrl =
+        process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_URL;
+      if (!dashboardUrl)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "The workspace address is not configured.",
+        });
+      const origin = new URL(dashboardUrl).origin;
+      if (new URL(input.embedOrigin).origin !== origin)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Invalid checkout origin.",
+        });
+      const yearly =
+        input.planType === "yearly" ||
+        input.planType === "year" ||
+        input.planType?.endsWith("_yearly") === true;
+      const productId = getPlanProductId(input.plan, yearly);
+      const primary = db.usePrimaryOnly ? db.usePrimaryOnly() : db;
+      const team = await getTeamById(primary, teamId!);
+      if (!team)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Workspace not found.",
+        });
+      if (
+        team.plan !== "trial" ||
+        ["active", "trialing", "past_due"].includes(
+          team.subscriptionStatus ?? "",
+        )
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Manage your existing subscription in the billing portal.",
+        });
+      }
+      const checkout = await api.checkouts.create({
+        products: [productId],
+        externalCustomerId: teamId!,
+        customerName: team?.name ?? undefined,
+        customerEmail: session.user.email,
+        metadata: { teamId: teamId! },
+        customerMetadata: { teamId: teamId! },
+        successUrl: `${origin}/settings/billing?checkout=complete`,
+        returnUrl: `${origin}/settings/billing`,
+        embedOrigin: origin,
+        allowTrial: false,
       });
+      return { url: checkout.url };
     }),
 
   orders: protectedProcedure
@@ -112,7 +161,7 @@ export const billingRouter = createTRPCRouter({
       }
     }),
 
-  getInvoice: protectedProcedure
+  getInvoice: billingOwnerProcedure
     .input(z.string())
     .mutation(async ({ input: orderId, ctx: { teamId } }) => {
       try {
@@ -237,16 +286,18 @@ export const billingRouter = createTRPCRouter({
     },
   ),
 
-  getPortalUrl: protectedProcedure.mutation(async ({ ctx: { db, teamId } }) => {
-    const customer = await resolvePolarCustomer(db, teamId!);
-    const result = await api.customerSessions.create({
-      customerId: customer.id,
-    });
+  getPortalUrl: billingOwnerProcedure.mutation(
+    async ({ ctx: { db, teamId } }) => {
+      const customer = await resolvePolarCustomer(db, teamId!);
+      const result = await api.customerSessions.create({
+        customerId: customer.id,
+      });
 
-    return { url: result.customerPortalUrl };
-  }),
+      return { url: result.customerPortalUrl };
+    },
+  ),
 
-  cancelSubscription: protectedProcedure
+  cancelSubscription: billingOwnerProcedure
     .input(cancelSubscriptionSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
       const customer = await resolvePolarCustomer(db, teamId!);
@@ -313,7 +364,7 @@ export const billingRouter = createTRPCRouter({
       return { success: true };
     }),
 
-  reactivateSubscription: protectedProcedure.mutation(
+  reactivateSubscription: billingOwnerProcedure.mutation(
     async ({ ctx: { db, teamId } }) => {
       const customer = await resolvePolarCustomer(db, teamId!);
       const subscriptions = await api.subscriptions.list({

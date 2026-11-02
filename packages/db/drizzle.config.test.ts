@@ -1,13 +1,12 @@
 import { defineConfig } from "drizzle-kit";
+import { getTestDatabaseUrl } from "./src/test/helpers/test-database-config";
 
 export default defineConfig({
   schema: "./src/test/helpers/test-schema.ts",
   dialect: "postgresql",
   casing: "snake_case",
   dbCredentials: {
-    url:
-      process.env.TEST_DATABASE_URL ||
-      "postgres://postgres:postgres@localhost:5433/midday_test",
+    url: getTestDatabaseUrl(),
   },
   verbose: true,
 });

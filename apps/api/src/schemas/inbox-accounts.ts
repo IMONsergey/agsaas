@@ -10,10 +10,10 @@ export const exchangeCodeForAccountSchema = z.object({
   provider: z.enum(["gmail", "outlook"]),
 });
 
-export const deleteInboxAccountSchema = z.object({ id: z.string() });
+export const deleteInboxAccountSchema = z.object({ id: z.string().uuid() });
 
 export const syncInboxAccountSchema = z.object({
-  id: z.string(),
+  id: z.string().uuid(),
   manualSync: z.boolean().optional(),
 });
 

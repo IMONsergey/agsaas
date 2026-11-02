@@ -399,7 +399,10 @@ const createNewEvent = (
   selectedProjectId: string | null,
   selectedDate?: string | null,
   projects?: RouterOutputs["trackerProjects"]["get"]["data"],
-  user?: { timezone?: string | null },
+  user?: {
+    timezone?: string | null;
+    team?: { baseCurrency?: string | null } | null;
+  },
 ): TrackerRecord => {
   // Get base date for event
   let baseDate: Date;
@@ -446,6 +449,13 @@ const createNewEvent = (
     date: dateStr,
     description: null,
     duration: 15 * 60,
+    rate: selectedProject?.billable ? Number(selectedProject.rate ?? 0) : 0,
+    currency: (
+      selectedProject?.currency ??
+      user?.team?.baseCurrency ??
+      "USD"
+    ).toUpperCase(),
+    billingSnapshotSource: "recorded",
     start: startDate.toISOString(),
     stop: endDate.toISOString(),
     user: null,

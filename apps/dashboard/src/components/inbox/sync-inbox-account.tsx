@@ -9,10 +9,11 @@ import {
 
 type Props = {
   disabled: boolean;
+  disabledReason?: string;
   onClick: () => void;
 };
 
-export function SyncInboxAccount({ onClick, disabled }: Props) {
+export function SyncInboxAccount({ onClick, disabled, disabledReason }: Props) {
   return (
     <TooltipProvider delayDuration={70}>
       <Tooltip>
@@ -29,7 +30,7 @@ export function SyncInboxAccount({ onClick, disabled }: Props) {
         </TooltipTrigger>
 
         <TooltipContent className="px-3 py-1.5 text-xs" sideOffset={10}>
-          Synchronize
+          {disabledReason ?? "Synchronize"}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

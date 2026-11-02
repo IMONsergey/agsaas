@@ -1,5 +1,6 @@
 import { ActivityNotificationFlushProcessor } from "./activity-notification-flush";
 import { NotificationProcessor } from "./notification";
+import { ReconcileNotificationDispatchesProcessor } from "./reconcile-notification-dispatches";
 
 /**
  * Export all notification processors (for type imports)
@@ -14,4 +15,6 @@ export { NotificationProcessor } from "./notification";
 export const notificationProcessors = {
   "activity-notification-flush": new ActivityNotificationFlushProcessor(),
   notification: new NotificationProcessor(),
+  "reconcile-notification-dispatches":
+    new ReconcileNotificationDispatchesProcessor(),
 };

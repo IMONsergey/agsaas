@@ -1,3 +1,4 @@
+import type { ImportParseProfile } from "@midday/import";
 import { createContext, useContext } from "react";
 import type { Control, UseFormSetValue, UseFormWatch } from "react-hook-form";
 import { z } from "zod/v3";
@@ -36,6 +37,15 @@ export const importSchema = z
     description: z.string().optional(),
     counterparty: z.string().optional(),
     inverted: z.boolean(),
+    parseProfile: z
+      .object({
+        dateOrder: z.enum(["auto", "day-first", "month-first"]).optional(),
+        amountFormat: z
+          .enum(["auto", "decimal-comma", "decimal-dot"])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     table: z.array(z.record(z.string(), z.string())).optional(),
   })
   .refine((data) => !!data.description || !!data.counterparty, {
@@ -53,6 +63,7 @@ export type ImportCsvFormData = {
   description?: string;
   counterparty?: string;
   inverted: boolean;
+  parseProfile?: ImportParseProfile;
   table?: Record<string, string>[];
 };
 

@@ -1,4 +1,5 @@
 import { LogEvents } from "@midday/events/events";
+import type { InvoiceMoneyInput } from "@midday/invoice/calculate";
 import { isDateInFutureUTC } from "@midday/invoice/recurring";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
@@ -17,14 +18,14 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { differenceInDays } from "date-fns";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { useDebounceValue } from "usehooks-ts";
+import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { useUserQuery } from "@/hooks/use-user";
 import { useInvoiceEditorStore } from "@/store/invoice-editor";
 import { useTRPC } from "@/trpc/client";
-import { getUrl } from "@/utils/environment";
 import { SavingBar } from "../saving-bar";
 import { CustomerDetails } from "./customer-details";
 import { EditBlock } from "./edit-block";
@@ -48,12 +49,20 @@ export function Form() {
   const { track } = useOpenPanel();
 
   const form = useFormContext();
-  const token = form.watch("token");
+  const documentId = form.watch("id") as string | undefined;
+  const { url: previewUrl } = useFileUrl(
+    documentId
+      ? { type: "invoice", invoiceId: documentId, preview: true }
+      : null,
+  );
   const deliveryType = form.watch("template.deliveryType");
 
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const lastAttempt = useRef<{ epoch: number; serialized: string } | null>(
+    null,
+  );
 
   // Track in-flight template upsert mutations (fired by SettingsMenu, labels, etc.)
   // so the SavingBar reacts immediately instead of waiting for the 500ms debounce.
@@ -62,21 +71,7 @@ export function Form() {
   });
 
   const draftInvoiceMutation = useMutation(
-    trpc.invoice.draft.mutationOptions({
-      onSuccess: (data) => {
-        if (!invoiceId && data?.id) {
-          setParams({ invoiceType: "edit", invoiceId: data.id });
-        }
-
-        queryClient.invalidateQueries({
-          queryKey: trpc.invoice.get.infiniteQueryKey(),
-        });
-
-        queryClient.invalidateQueries({
-          queryKey: trpc.invoice.invoiceSummary.queryKey(),
-        });
-      },
-    }),
+    trpc.invoice.draft.mutationOptions(),
   );
 
   const createInvoiceMutation = useMutation(
@@ -231,6 +226,13 @@ export function Form() {
 
     if (!store.hasChanged(currentFormValues)) return;
     if (!currentFormValues.customerId || !invoiceNumberValid) return;
+    // Serialize one editor's writes. In-flight form edits remain in RHF and are
+    // flushed when pending changes below; they never race an older DB write.
+    if (
+      draftInvoiceMutation.isPending ||
+      updateRecurringTemplateMutation.isPending
+    )
+      return;
 
     // Serialize now — getValues() returns a shallow copy so nested objects
     // (e.g. template) are shared mutable refs into the form's internal state.
@@ -238,13 +240,26 @@ export function Form() {
     // JSON.stringify would capture the unsaved mutation, causing the next
     // hasChanged() check to silently skip the save.
     const serialized = JSON.stringify(currentFormValues);
+    // A failed unchanged payload must not loop on every pending -> error edge.
+    // A subsequent user edit (or reset generation) can retry normally.
+    if (
+      (draftInvoiceMutation.isError ||
+        updateRecurringTemplateMutation.isError) &&
+      lastAttempt.current?.epoch === store.epoch &&
+      lastAttempt.current.serialized === serialized
+    )
+      return;
+    const ticket = store.beginSave(currentFormValues.id);
+    if (!ticket) return;
+    lastAttempt.current = { epoch: ticket.epoch, serialized };
+    const submittedValues = JSON.parse(serialized) as InvoiceFormValues;
 
     // If invoice is part of a recurring series, both the draft AND the
     // recurring template must save successfully before we mark the snapshot
     // as saved. Otherwise a recurring-template failure would be masked by
     // the draft's onSuccess updating the snapshot, and hasChanged() would
     // return false on the next tick — silently dropping the retry.
-    const { invoiceRecurringId } = currentFormValues;
+    const { invoiceRecurringId } = submittedValues;
     const needsRecurringUpdate = !!invoiceRecurringId;
 
     // Track which mutations have completed for this save cycle
@@ -253,41 +268,56 @@ export function Form() {
 
     const maybeCommitSnapshot = () => {
       if (draftOk && recurringOk) {
-        store.setSnapshot(serialized);
+        store.setSnapshot(serialized, ticket);
       }
     };
 
-    draftInvoiceMutation.mutate(
-      // @ts-expect-error
-      transformFormValuesToDraft(currentFormValues),
-      {
-        onSuccess: () => {
-          draftOk = true;
-          maybeCommitSnapshot();
-        },
+    draftInvoiceMutation.mutate(transformFormValuesToDraft(submittedValues), {
+      onSuccess: (data) => {
+        // Advance the financial baseline immediately after the invoice write,
+        // even if its separate recurring-template write later fails. Do not
+        // reset the form: it may already contain newer unsaved source edits.
+        if (
+          !data ||
+          !store.acknowledgeSave(ticket, {
+            ...data,
+            lineItems: data.lineItems as InvoiceMoneyInput["lineItems"],
+            template: data.template as InvoiceMoneyInput["template"],
+          })
+        )
+          return;
+        draftOk = true;
+        maybeCommitSnapshot();
+        if (!invoiceId) setParams({ invoiceType: "edit", invoiceId: data.id });
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoice.get.infiniteQueryKey(),
+        });
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoice.invoiceSummary.queryKey(),
+        });
       },
-    );
+    });
 
     if (needsRecurringUpdate) {
       // Remove deliveryType from template since "recurring" is not a valid API deliveryType
       const { deliveryType: _, ...templateWithoutDeliveryType } =
-        currentFormValues.template;
+        submittedValues.template;
 
       updateRecurringTemplateMutation.mutate(
         {
           id: invoiceRecurringId,
-          lineItems: currentFormValues.lineItems,
+          lineItems: submittedValues.lineItems,
           template: templateWithoutDeliveryType,
-          paymentDetails: currentFormValues.paymentDetails,
-          fromDetails: currentFormValues.fromDetails,
-          noteDetails: currentFormValues.noteDetails,
-          vat: currentFormValues.vat,
-          tax: currentFormValues.tax,
-          discount: currentFormValues.discount,
-          subtotal: currentFormValues.subtotal,
-          topBlock: currentFormValues.topBlock,
-          bottomBlock: currentFormValues.bottomBlock,
-          amount: currentFormValues.amount,
+          paymentDetails: submittedValues.paymentDetails,
+          fromDetails: submittedValues.fromDetails,
+          noteDetails: submittedValues.noteDetails,
+          vat: submittedValues.vat,
+          tax: submittedValues.tax,
+          discount: submittedValues.discount,
+          subtotal: submittedValues.subtotal,
+          topBlock: submittedValues.topBlock,
+          bottomBlock: submittedValues.bottomBlock,
+          amount: submittedValues.amount,
         },
         {
           onSuccess: () => {
@@ -295,11 +325,17 @@ export function Form() {
             maybeCommitSnapshot();
           },
           // onError intentionally omitted — recurringOk stays false,
-          // snapshot is never committed, and the next debounce tick retries.
+          // snapshot is never committed. A later user edit can retry without
+          // an unbounded pending -> error -> immediate retry loop.
         },
       );
     }
-  }, [debouncedValue, invoiceNumberValid]);
+  }, [
+    debouncedValue,
+    invoiceNumberValid,
+    draftInvoiceMutation.isPending,
+    updateRecurringTemplateMutation.isPending,
+  ]);
 
   // Submit the form and the draft invoice
   const handleSubmit = async (values: InvoiceFormValues) => {
@@ -472,8 +508,15 @@ export function Form() {
         </div>
 
         <SavingBar
-          isPending={draftInvoiceMutation.isPending || templateUpsertCount > 0}
-          isError={draftInvoiceMutation.isError}
+          isPending={
+            draftInvoiceMutation.isPending ||
+            updateRecurringTemplateMutation.isPending ||
+            templateUpsertCount > 0
+          }
+          isError={
+            draftInvoiceMutation.isError ||
+            updateRecurringTemplateMutation.isError
+          }
         />
       </ScrollArea>
 
@@ -509,7 +552,7 @@ export function Form() {
                   </Tooltip>
                 )}
 
-                {token && (
+                {previewUrl && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -517,7 +560,11 @@ export function Form() {
                         size="icon"
                         type="button"
                         onClick={() => {
-                          window.open(`${getUrl()}/i/${token}`, "_blank");
+                          window.open(
+                            previewUrl,
+                            "_blank",
+                            "noopener,noreferrer",
+                          );
                         }}
                       >
                         <Icons.ExternalLink className="size-3" />

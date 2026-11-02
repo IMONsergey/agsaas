@@ -14,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   companyName: string;
@@ -28,9 +29,9 @@ interface Props {
 
 export const InvoiceReminderEmail = ({
   companyName = "Customer",
-  teamName = "Midday",
+  teamName = "Your team",
   invoiceNumber = "INV-0001",
-  link = "https://app.midday.ai/i/1234567890",
+  link = `${getProductEmailConfig().appUrl}/invoices`,
   amount,
   currency,
   dueDate,

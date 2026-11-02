@@ -1,17 +1,9 @@
-import { verifyFileKey } from "@midday/encryption";
+import { requireFileAccess } from "@api/utils/file-access";
 import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { normalizeAndValidatePath } from "../routers/files/utils";
 
 export const withFileAuth: MiddlewareHandler = async (c, next) => {
-  const fk = c.req.query("fk");
-
-  if (!fk) {
-    throw new HTTPException(401, {
-      message: "File key (fk) query parameter is required for file access.",
-    });
-  }
-
   // Get filePath from query - this will be validated by the route schema
   const filePath = c.req.query("filePath") || c.req.query("path");
 
@@ -22,15 +14,16 @@ export const withFileAuth: MiddlewareHandler = async (c, next) => {
   }
 
   // Extract teamId from path
-  const { pathTeamId } = normalizeAndValidatePath(filePath);
-
-  // Verify JWT token and extract teamId
-  const tokenTeamId = await verifyFileKey(fk);
+  const { pathTeamId, pathArray } = normalizeAndValidatePath(filePath);
+  const access = await requireFileAccess(
+    c,
+    pathArray[1] === "invoices" ? "invoices.read" : "documents.read",
+  );
 
   // Validate the token's teamId matches the path teamId
-  if (!tokenTeamId || tokenTeamId !== pathTeamId) {
+  if (access.teamId !== pathTeamId) {
     throw new HTTPException(401, {
-      message: "Invalid file key.",
+      message: "No permission to access this file.",
     });
   }
 

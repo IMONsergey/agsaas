@@ -21,7 +21,7 @@ export async function updateBankConnection(
       reference_id: referenceId,
     })
     .eq("id", id)
-    .select()
+    .select("id")
     .single();
 }
 

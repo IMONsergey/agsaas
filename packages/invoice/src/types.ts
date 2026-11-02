@@ -32,6 +32,7 @@ export type Invoice = {
   invoiceNumber: string | null;
   createdAt: string;
   amount: number | null;
+  subtotal?: number | null;
   currency: string | null;
   lineItems: LineItem[];
   paymentDetails: EditorDoc | null;
@@ -39,7 +40,7 @@ export type Invoice = {
   reminderSentAt: string | null;
   updatedAt: string | null;
   note: string | null;
-  internalNote: string | null;
+  internalNote?: string | null;
   paidAt: string | null;
   vat: number | null;
   tax: number | null;
@@ -60,7 +61,7 @@ export type Invoice = {
   noteDetails: EditorDoc | null;
   customerName: string | null;
   token: string;
-  sentTo: string | null;
+  sentTo?: string | null;
   discount: number | null;
   topBlock: EditorDoc | null;
   bottomBlock: EditorDoc | null;

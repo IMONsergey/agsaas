@@ -116,16 +116,18 @@ export function MatchTransaction() {
         );
 
         if (previousInboxItem && selectedTransaction) {
-          queryClient.setQueryData(queryKey, {
-            ...previousInboxItem,
-            transactionId,
-            transaction: {
+          queryClient.setQueryData(queryKey, (current) => {
+            if (!current) return current;
+            const updated = { ...current };
+            updated.transactionId = transactionId;
+            updated.transaction = {
               id: selectedTransaction.transaction_id,
               name: selectedTransaction.name,
               date: selectedTransaction.transaction_date,
               amount: selectedTransaction.transaction_amount,
               currency: selectedTransaction.transaction_currency,
-            },
+            };
+            return updated;
           });
         }
 

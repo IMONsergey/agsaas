@@ -1,4 +1,3 @@
-import { getAppUrl } from "@midday/utils/envs";
 import {
   Body,
   Container,
@@ -15,6 +14,7 @@ import {
   getEmailInlineStyles,
   getEmailThemeClasses,
 } from "../components/theme";
+import { getProductEmailConfig } from "../config";
 
 interface Props {
   fullName: string;
@@ -24,8 +24,6 @@ interface Props {
   locale?: string;
   audioUrl?: string;
 }
-
-const baseAppUrl = getAppUrl();
 
 export const InsightsWeeklyEmail = ({
   fullName = "",
@@ -40,7 +38,7 @@ export const InsightsWeeklyEmail = ({
   const lightStyles = getEmailInlineStyles("light");
 
   const previewText = `${periodLabel}: ${title.slice(0, 100)}`;
-  const dashboardUrl = `${baseAppUrl}/?insight=${insightId}`;
+  const dashboardUrl = `${getProductEmailConfig().appUrl}/?insight=${insightId}`;
 
   return (
     <EmailThemeProvider preview={<Preview>{previewText}</Preview>}>

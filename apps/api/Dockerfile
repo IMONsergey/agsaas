@@ -1,14 +1,18 @@
 # Base image with Bun
-FROM oven/bun:1.3.10 AS base
+FROM oven/bun:1.3.11 AS base
 
 # Install turbo CLI globally
 FROM base AS turbo-cli
-RUN bun add -g turbo
+RUN bun add -g turbo@2.11.10
 
 # Builder stage - prune API workspace
 FROM turbo-cli AS builder
 WORKDIR /app
 COPY . .
+ARG GIT_COMMIT_SHA=""
+# Support both explicit build args and legacy CI stamps; an unstamped checkout
+# must still build. An empty stamp leaves runtime/build-id fallbacks intact.
+RUN if [ -n "$GIT_COMMIT_SHA" ] || [ ! -f .git-commit-sha ]; then printf '%s' "$GIT_COMMIT_SHA" > .git-commit-sha; fi
 RUN turbo prune @midday/api --docker
 
 # Installer stage - install deps and build
@@ -17,8 +21,9 @@ WORKDIR /app
 
 # Install dependencies
 COPY --from=builder /app/out/json/ .
+COPY --from=builder /app/out/bun.lock ./bun.lock
 COPY bunfig.toml .
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy full source
 COPY --from=builder /app/out/full/ .
@@ -27,7 +32,7 @@ COPY --from=builder /app/out/full/ .
 RUN cd packages/mcp-apps && bun run build
 
 # Runner stage - clean image
-FROM oven/bun:1.3.10 AS runner
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -42,7 +47,8 @@ COPY --from=installer /app/package.json ./package.json
 # Carry the git SHA into the runtime container (stamped by CI before `railway up`)
 COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 COPY --from=builder /app/scripts/docker-entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Normalize read/execute permissions even when the checkout used umask 0077.
+RUN chmod 0755 /app/entrypoint.sh
 
 WORKDIR /app/apps/api
 

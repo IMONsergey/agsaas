@@ -15,6 +15,7 @@ import {
   updateTransactionsSchema,
 } from "@api/schemas/transactions";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { FinancialOperationConflictError } from "@midday/db/financial-job";
 import {
   createTransaction,
   deleteTransactions,
@@ -130,32 +131,22 @@ export const transactionsRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createTransactionSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
-      const transaction = await createTransaction(db, {
-        ...input,
-        teamId: teamId!,
-      });
+      try {
+        const transaction = await createTransaction(db, {
+          ...input,
+          teamId: teamId!,
+        });
 
-      if (transaction?.id) {
-        await triggerJob(
-          "enrich-transactions",
-          {
-            transactionIds: [transaction.id],
-            teamId: teamId!,
-          },
-          "transactions",
-        );
-
-        await triggerJob(
-          "match-transactions-bidirectional",
-          {
-            teamId: teamId!,
-            newTransactionIds: [transaction.id],
-          },
-          "inbox",
-        );
+        return transaction;
+      } catch (error) {
+        if (error instanceof FinancialOperationConflictError)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: error.message,
+            cause: error,
+          });
+        throw error;
       }
-
-      return transaction;
     }),
 
   export: protectedProcedure
@@ -202,8 +193,19 @@ export const transactionsRouter = createTRPCRouter({
 
       if (account.manual) {
         const parsedBalance = input.currentBalance
-          ? formatAmountValue({ amount: input.currentBalance })
+          ? formatAmountValue({
+              amount: input.currentBalance,
+              amountFormat: input.parseProfile?.amountFormat,
+            })
           : null;
+
+        if (parsedBalance !== null && !Number.isFinite(parsedBalance)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Invalid or ambiguous balance. Choose the amount format in import settings.",
+          });
+        }
 
         const balance =
           parsedBalance !== null && Number.isFinite(parsedBalance)
@@ -227,6 +229,7 @@ export const transactionsRouter = createTRPCRouter({
           mappings: input.mappings,
           teamId,
           inverted: input.inverted,
+          parseProfile: input.parseProfile,
         },
         "transactions",
       );

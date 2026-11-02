@@ -22,12 +22,15 @@ import { useZodForm } from "@/hooks/use-zod-form";
 import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
-  invites: z.array(
-    z.object({
-      email: z.string().email(),
-      role: z.enum(["owner", "member"]),
-    }),
-  ),
+  invites: z
+    .array(
+      z.object({
+        email: z.string().trim().email().max(254),
+        role: z.enum(["owner", "member"]),
+      }),
+    )
+    .min(1)
+    .max(50),
 });
 
 type InviteFormProps = {
@@ -44,8 +47,8 @@ export function InviteForm({ onSuccess, skippable = true }: InviteFormProps) {
   const inviteMutation = useMutation(
     trpc.team.invite.mutationOptions({
       onSuccess: (data) => {
-        if (data.sent > 0) {
-          track(LogEvents.MemberInvited.name, { count: data.sent });
+        if (data.queued > 0) {
+          track(LogEvents.MemberInvited.name, { count: data.queued });
         }
 
         queryClient.invalidateQueries({
@@ -53,25 +56,32 @@ export function InviteForm({ onSuccess, skippable = true }: InviteFormProps) {
         });
 
         // Show appropriate feedback based on results
-        if (data.sent > 0 && data.skipped === 0) {
+        if (data.queued > 0 && data.skipped === 0) {
           toast({
-            title: "Invites sent",
-            description: `${data.sent} invite${data.sent > 1 ? "s" : ""} sent successfully`,
+            title: "Invitations queued",
+            description: `${data.queued} invite${data.queued > 1 ? "s" : ""} queued for email delivery`,
             variant: "success",
           });
-        } else if (data.sent > 0 && data.skipped > 0) {
+        } else if (data.queued > 0 && data.skipped > 0) {
           toast({
-            title: "Invites partially sent",
-            description: `${data.sent} invite${data.sent > 1 ? "s" : ""} sent, ${data.skipped} skipped (already members or invited)`,
+            title: "Invitations queued",
+            description: `${data.queued} invite${data.queued > 1 ? "s" : ""} queued, ${data.skipped} skipped (already members, invited, or repeated)`,
           });
-        } else if (data.sent === 0 && data.skipped > 0) {
+        } else if (data.queued === 0 && data.skipped > 0) {
           toast({
-            title: "No invites sent",
-            description: `All ${data.skipped} invite${data.skipped > 1 ? "s" : ""} were skipped (already members or invited)`,
+            title: "No new invitations",
+            description: `All ${data.skipped} invite${data.skipped > 1 ? "s" : ""} were skipped (already members, invited, or repeated)`,
           });
         }
 
         onSuccess?.();
+      },
+      onError: (error) => {
+        toast({
+          title: "Invitations were not queued",
+          description: error.message,
+          variant: "destructive",
+        });
       },
     }),
   );
@@ -154,6 +164,7 @@ export function InviteForm({ onSuccess, skippable = true }: InviteFormProps) {
           variant="outline"
           type="button"
           className="mt-4 border-none bg-[#F2F1EF] text-[11px] dark:bg-[#1D1D1D]"
+          disabled={fields.length >= 50 || inviteMutation.isPending}
           onClick={() => append({ email: "", role: "member" })}
         >
           Add more

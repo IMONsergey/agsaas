@@ -178,6 +178,7 @@ export function createMalformedTransactionResponse() {
 }
 
 interface TransactionInput {
+  operationId: string;
   name: string;
   amount: number;
   currency: string;
@@ -192,6 +193,7 @@ export function createTransactionInput(
   overrides: Partial<TransactionInput> = {},
 ): TransactionInput {
   return {
+    operationId: "d3eb8736-2188-418e-9e25-6d0f9feadf3d",
     name: "New Transaction",
     amount: 100.0,
     currency: "USD",

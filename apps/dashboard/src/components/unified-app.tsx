@@ -486,7 +486,7 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
             </CardTitle>
             {!app.active && (
               <span className="text-[#878787] bg-[#F2F1EF] text-[10px] dark:bg-[#1D1D1D] px-3 py-1 rounded-full font-mono">
-                Coming soon
+                {app.unavailableReason ? "Not configured" : "Coming soon"}
               </span>
             )}
             {app.active && app.beta && (
@@ -498,6 +498,9 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
         </CardHeader>
         <CardContent className="text-xs text-[#878787] pb-4">
           <p>{app.short_description}</p>
+          {app.unavailableReason && (
+            <p className="mt-2">{app.unavailableReason}</p>
+          )}
         </CardContent>
 
         <div className="px-6 pb-6 flex gap-2 mt-auto">
@@ -710,19 +713,14 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
 
               <div className="shrink-0 pt-4 border-t border-border">
                 <p className="text-[10px] text-[#878787]">
-                  All apps on the Midday App Store are open-source and
-                  peer-reviewed. Midday Labs AB maintains high standards but
-                  doesn't endorse third-party apps. Apps published by Midday are
-                  officially certified. Report any concerns about app content or
-                  behavior.
+                  Review each app's permissions before connecting it to your
+                  workspace.
                 </p>
 
-                <a
-                  href="mailto:support@midday.dev"
-                  className="text-[10px] text-red-500"
-                >
-                  Report app
-                </a>
+                <p className="mt-2 text-[10px] text-[#878787]">
+                  For questions or concerns about an app, contact your workspace
+                  owner.
+                </p>
               </div>
             </div>
           </SheetHeader>

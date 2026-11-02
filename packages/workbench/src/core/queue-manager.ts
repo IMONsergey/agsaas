@@ -1,5 +1,17 @@
-import { FlowProducer, type Job, type Queue } from "bullmq";
+import {
+  type FlowJob,
+  FlowProducer,
+  type Job,
+  type JobNode,
+  type Queue,
+} from "bullmq";
 import { LRUCache } from "lru-cache";
+import {
+  matchesJobTags,
+  matchesJobText,
+  parseSearchQuery,
+  searchableJobData,
+} from "./job-search";
 import type {
   ActivityBucket,
   ActivityStatsResponse,
@@ -24,6 +36,22 @@ import type {
   TestJobRequest,
 } from "./types";
 
+// Workbench sorts a bounded recent-job window for non-timestamp fields.
+// Keep it independent of the page offset so later pages do not shift earlier
+// ranks, duplicate jobs, or imply a global sort of the complete Redis archive.
+const SORT_CANDIDATES_PER_STATE = 1000;
+
+// The portable BullMQ client exposes custom commands, but not score-range
+// overloads. Keep this read-only query bounded and scoped to one queue key.
+const FINISHED_RANGE_COMMAND = "workbenchFinishedRangeV1";
+const FINISHED_RANGE_LUA = `
+if ARGV[4] == 'asc' then
+  return redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[2], 'LIMIT', 0, ARGV[3])
+end
+return redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[2], ARGV[1], 'LIMIT', 0, ARGV[3])
+`;
+const rangeCommandClients = new WeakSet<object>();
+
 /**
  * Manages queue operations for the Workbench dashboard
  */
@@ -31,14 +59,15 @@ export class QueueManager {
   private queues: Map<string, Queue> = new Map();
   private tagFields: string[] = [];
   private flowProducer: FlowProducer | null = null;
+  private closing: Promise<void> | undefined;
 
   // LRU cache for expensive operations
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private cache = new LRUCache<string, any>({
+  private cacheVersion = 0;
+  private cache = new LRUCache<string, object>({
     max: 100, // Max 100 entries
     ttl: 1000 * 60, // Default 1 minute TTL
     allowStale: false, // Don't return stale entries
-    updateAgeOnGet: true, // Reset TTL on access
+    updateAgeOnGet: false, // Polling must not keep worker-updated data stale forever
   });
 
   private readonly CACHE_TTL = {
@@ -60,15 +89,37 @@ export class QueueManager {
     if (firstQueue) {
       const connection = firstQueue.opts?.connection;
       if (connection) {
-        this.flowProducer = new FlowProducer({ connection });
+        this.flowProducer = new FlowProducer({
+          connection,
+          prefix: firstQueue.opts.prefix,
+        });
+        this.flowProducer.on("error", (error) => {
+          // Reconnectable Redis failures must not become unhandled process errors.
+          console.error(
+            "Workbench FlowProducer connection error",
+            error.message,
+          );
+        });
       }
     }
+  }
+
+  /** Release only the FlowProducer owned here; callers own the supplied queues. */
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    const producer = this.flowProducer;
+    this.flowProducer = null;
+    this.clearCache();
+    this.closing = Promise.resolve().then(async () => {
+      await producer?.close();
+    });
+    return this.closing;
   }
 
   /**
    * Get cached value or compute and cache
    */
-  private async cached<T>(
+  private async cached<T extends object>(
     key: string,
     ttl: number,
     compute: () => Promise<T>,
@@ -78,8 +129,12 @@ export class QueueManager {
       return cached as T;
     }
 
+    const version = this.cacheVersion;
     const data = await compute();
-    this.cache.set(key, data, { ttl });
+    // A mutation may invalidate this entry while compute() is in flight.
+    if (version === this.cacheVersion) {
+      this.cache.set(key, data, { ttl });
+    }
     return data;
   }
 
@@ -114,34 +169,37 @@ export class QueueManager {
     startTime: number,
     endTime: number,
     limit: number,
+    ascending = false,
   ): Promise<Job[]> {
     try {
-      // Access BullMQ's Redis client
-      const client = (queue as any).client;
-      if (!client) {
-        // Fallback to regular getJobs if client not available
-        const jobs = await queue.getJobs([status], 0, limit * 2);
-        return jobs.filter(
-          (job) =>
-            job.finishedOn &&
-            job.finishedOn >= startTime &&
-            job.finishedOn <= endTime,
-        );
+      // BullMQ exposes a promise, and the queue owns its configured prefix.
+      const client = await queue.client;
+      const queueKey = queue.toKey(status);
+      if (!rangeCommandClients.has(client)) {
+        client.defineCommand(FINISHED_RANGE_COMMAND, {
+          numberOfKeys: 1,
+          lua: FINISHED_RANGE_LUA,
+          readOnly: true,
+        });
+        rangeCommandClients.add(client);
       }
-
-      // BullMQ stores jobs in sorted sets: bull:queueName:completed, bull:queueName:failed
-      // The score is the finishedOn timestamp
-      const queueKey = `bull:${queue.name}:${status}`;
-      const jobIds = await client.zrangebyscore(
+      // Select candidates in the requested order before LIMIT. Sorting an
+      // ascending, truncated range later cannot recover the newest jobs.
+      const jobIds: unknown = await client.runCommand(FINISHED_RANGE_COMMAND, [
         queueKey,
         startTime,
         endTime,
-        "LIMIT",
-        0,
         limit,
-      );
+        ascending ? "asc" : "desc",
+      ]);
+      if (
+        !Array.isArray(jobIds) ||
+        !jobIds.every((jobId: unknown) => typeof jobId === "string")
+      ) {
+        throw new Error("Invalid Redis range response");
+      }
 
-      if (!jobIds || jobIds.length === 0) {
+      if (jobIds.length === 0) {
         return [];
       }
 
@@ -155,10 +213,10 @@ export class QueueManager {
       );
     } catch (_error) {
       // Fallback to regular getJobs on error
-      const jobs = await queue.getJobs([status], 0, limit * 2);
+      const jobs = await queue.getJobs([status], 0, limit * 2 - 1, ascending);
       return jobs.filter(
         (job) =>
-          job.finishedOn &&
+          job.finishedOn !== undefined &&
           job.finishedOn >= startTime &&
           job.finishedOn <= endTime,
       );
@@ -197,8 +255,11 @@ export class QueueManager {
       return cached;
     }
 
+    const version = this.cacheVersion;
     const counts = await queue.getJobCounts();
-    this.countCache.set(cacheKey, counts);
+    if (version === this.cacheVersion) {
+      this.countCache.set(cacheKey, counts);
+    }
     return counts;
   }
 
@@ -209,24 +270,31 @@ export class QueueManager {
     // Invalidate count cache for the queue
     this.countCache.delete(queueName);
 
-    // Invalidate job state cache if jobId provided
+    // A queue-wide mutation can affect every cached state in that queue.
     if (jobId) {
       const stateCacheKey = `${queueName}:${jobId}`;
       this.jobStateCache.delete(stateCacheKey);
+    } else {
+      for (const key of this.jobStateCache.keys()) {
+        if (key.startsWith(`${queueName}:`)) {
+          this.jobStateCache.delete(key);
+        }
+      }
     }
 
     // Invalidate main cache entries that might be affected
     // These are expensive to recompute, so we invalidate them
     // to ensure accuracy after mutations
-    this.cache.delete("metrics");
-    this.cache.delete("overview");
-    this.cache.delete("activity");
+    // Counts, queue summaries, flows and metrics all depend on job mutations.
+    this.cacheVersion++;
+    this.cache.clear();
   }
 
   /**
    * Clear cache (useful after mutations)
    */
   clearCache(prefix?: string): void {
+    this.cacheVersion++;
     if (prefix) {
       for (const key of this.cache.keys()) {
         if (key.startsWith(prefix)) {
@@ -235,6 +303,8 @@ export class QueueManager {
       }
     } else {
       this.cache.clear();
+      this.countCache.clear();
+      this.jobStateCache.clear();
     }
   }
 
@@ -388,6 +458,7 @@ export class QueueManager {
       throw new Error(`Queue "${queueName}" not found`);
     }
     await queue.pause();
+    this.invalidateJobCache(queueName);
   }
 
   /**
@@ -399,6 +470,7 @@ export class QueueManager {
       throw new Error(`Queue "${queueName}" not found`);
     }
     await queue.resume();
+    this.invalidateJobCache(queueName);
   }
 
   /**
@@ -848,11 +920,11 @@ export class QueueManager {
     sort?: SortOptions,
   ): Promise<PaginatedResponse<JobInfo>> {
     const queue = this.queues.get(queueName);
-    if (!queue) {
+    if (!queue || status === "unknown") {
       return { data: [], total: 0, hasMore: false };
     }
 
-    const types = status
+    const types: Exclude<JobStatus, "unknown">[] = status
       ? [status]
       : ["waiting", "active", "completed", "failed", "delayed"];
 
@@ -864,7 +936,14 @@ export class QueueManager {
     let total = 0;
 
     for (const type of types) {
-      const typeJobs = await queue.getJobs(type as any, start, start + limit);
+      // Pagination applies to the merged list, not separately to each state.
+      const typeJobs = await queue.getJobs(
+        type,
+        types.length === 1 ? start : 0,
+        start + limit - 1,
+        (sort?.field ?? "timestamp") === "timestamp" &&
+          sort?.direction === "asc",
+      );
       jobsWithState.push(
         ...typeJobs.map((job) => ({ job, state: type as JobStatus })),
       );
@@ -891,7 +970,8 @@ export class QueueManager {
     });
 
     // Take only the requested limit
-    const data = jobInfos.slice(0, limit);
+    const pageStart = types.length === 1 ? 0 : start;
+    const data = jobInfos.slice(pageStart, pageStart + limit);
 
     return {
       data,
@@ -960,66 +1040,6 @@ export class QueueManager {
   }
 
   /**
-   * Parse search query for field:value filters
-   * Returns { filters: { field: value }, text: remainingText }
-   */
-  private parseSearchQuery(query: string): {
-    filters: Record<string, string>;
-    text: string;
-  } {
-    const filters: Record<string, string> = {};
-    const textParts: string[] = [];
-    const len = query.length;
-    let i = 0;
-
-    while (i < len) {
-      while (i < len && query[i] === " ") i++;
-      if (i >= len) break;
-
-      let j = i;
-      while (j < len && /\w/.test(query[j]!)) j++;
-
-      if (j > i && j < len && query[j] === ":") {
-        const field = query.slice(i, j);
-        j++;
-
-        let value: string;
-        if (j < len && query[j] === '"') {
-          j++;
-          const closeQuote = query.indexOf('"', j);
-          if (closeQuote !== -1) {
-            value = query.slice(j, closeQuote);
-            j = closeQuote + 1;
-          } else {
-            value = query.slice(j);
-            j = len;
-          }
-        } else {
-          const valueStart = j;
-          while (j < len && query[j] !== " ") j++;
-          value = query.slice(valueStart, j);
-        }
-
-        if (value) {
-          filters[field] = value;
-        } else {
-          textParts.push(`${field}:`);
-        }
-        i = j;
-      } else {
-        const start = i;
-        while (i < len && query[i] !== " ") i++;
-        textParts.push(query.slice(start, i));
-      }
-    }
-
-    return {
-      filters,
-      text: textParts.filter(Boolean).join(" "),
-    };
-  }
-
-  /**
    * Check if a raw job matches all provided filters (before conversion)
    * This is more efficient than converting to JobInfo first
    */
@@ -1047,67 +1067,15 @@ export class QueueManager {
     }
 
     // Check tag filters (extract only needed fields from job.data)
-    if (filters.tags && Object.keys(filters.tags).length > 0) {
-      if (!job.data || typeof job.data !== "object") {
-        return false;
-      }
-      const dataObj = job.data as Record<string, unknown>;
-      for (const [field, value] of Object.entries(filters.tags)) {
-        const jobValue = dataObj[field];
-        if (jobValue === undefined || jobValue === null) {
-          return false;
-        }
-        // Case-insensitive comparison for strings
-        const strJobValue = String(jobValue).toLowerCase();
-        const strFilterValue = value.toLowerCase();
-        if (!strJobValue.includes(strFilterValue)) {
-          return false;
-        }
-      }
+    if (filters.tags && !matchesJobTags(job.data, filters.tags)) {
+      return false;
     }
 
     // Check text search (only stringify if needed)
-    if (filters.text) {
-      const lowerText = filters.text.toLowerCase();
-      const matchesId = job.id?.toLowerCase().includes(lowerText);
-      const matchesName = job.name?.toLowerCase().includes(lowerText);
-
-      if (!matchesId && !matchesName) {
-        // Only stringify job.data if ID and name don't match
-        const stringifiedData = JSON.stringify(job.data).toLowerCase();
-        if (!stringifiedData.includes(lowerText)) {
-          return false;
-        }
-      }
+    if (filters.text && !matchesJobText(job, filters.text)) {
+      return false;
     }
 
-    return true;
-  }
-
-  /**
-   * Check if a job matches the given tag filters
-   */
-  private jobMatchesFilters(
-    job: Job,
-    filters: Record<string, string>,
-  ): boolean {
-    if (!job.data || typeof job.data !== "object") {
-      return Object.keys(filters).length === 0;
-    }
-
-    const dataObj = job.data as Record<string, unknown>;
-    for (const [field, value] of Object.entries(filters)) {
-      const jobValue = dataObj[field];
-      if (jobValue === undefined || jobValue === null) {
-        return false;
-      }
-      // Case-insensitive comparison for strings
-      const strJobValue = String(jobValue).toLowerCase();
-      const strFilterValue = value.toLowerCase();
-      if (!strJobValue.includes(strFilterValue)) {
-        return false;
-      }
-    }
     return true;
   }
 
@@ -1117,7 +1085,7 @@ export class QueueManager {
    * Optimized with parallel processing, early exits, and count checks
    */
   async search(query: string, limit = 20): Promise<SearchResult[]> {
-    const { filters, text } = this.parseSearchQuery(query);
+    const { filters, text } = parseSearchQuery(query);
     const lowerText = text.toLowerCase();
     const hasFilters = Object.keys(filters).length > 0;
     const hasText = lowerText.length > 0;
@@ -1148,7 +1116,13 @@ export class QueueManager {
     }
 
     // Process all queues in parallel instead of sequentially
-    const types = ["waiting", "active", "completed", "failed", "delayed"];
+    const types = [
+      "waiting",
+      "active",
+      "completed",
+      "failed",
+      "delayed",
+    ] as const;
     const fetchLimit = Math.min(limit * 2, 50); // Reduced from 100 - only fetch what we need
 
     // WeakMap for caching stringified job data
@@ -1161,12 +1135,12 @@ export class QueueManager {
         const typeResults = await Promise.all(
           types.map(async (type) => {
             try {
-              const jobs = await queue.getJobs(type as any, 0, fetchLimit);
+              const jobs = await queue.getJobs(type, 0, fetchLimit);
               const matches: SearchResult[] = [];
 
               for (const job of jobs) {
                 // Check field:value filters first
-                if (hasFilters && !this.jobMatchesFilters(job, filters)) {
+                if (hasFilters && !matchesJobTags(job.data, filters)) {
                   continue;
                 }
 
@@ -1183,7 +1157,7 @@ export class QueueManager {
                     // Use cached stringified data if available
                     let stringifiedData = stringifiedDataCache.get(job);
                     if (!stringifiedData) {
-                      stringifiedData = JSON.stringify(job.data).toLowerCase();
+                      stringifiedData = searchableJobData(job.data);
                       stringifiedDataCache.set(job, stringifiedData);
                     }
                     matchesData = stringifiedData.includes(lowerText);
@@ -1240,6 +1214,7 @@ export class QueueManager {
     if (!queue) return 0;
 
     const removed = await queue.clean(grace, 1000, status);
+    this.invalidateJobCache(queueName);
     return removed.length;
   }
 
@@ -1263,10 +1238,12 @@ export class QueueManager {
 
     // Fetch a small number of recent jobs from each queue
     // We need enough to fill the page after sorting by timestamp
-    const perQueueFetch = Math.max(5, Math.ceil((limit + 10) / numQueues) + 2);
+    // Any one queue may contain the entire next page. Include the offset and
+    // one lookahead item instead of assuming jobs are distributed evenly.
+    const perQueueFetch = start + limit + 1;
 
     // Fetch from all queues in parallel - single call per queue with all types
-    const allTypes: JobStatus[] = [
+    const allTypes: Exclude<JobStatus, "unknown">[] = [
       "waiting",
       "active",
       "completed",
@@ -1277,7 +1254,7 @@ export class QueueManager {
     const results = await Promise.all(
       queueEntries.map(async ([queueName, queue]) => {
         // Single getJobs call with all types - much faster than 5 separate calls
-        const jobs = await queue.getJobs(allTypes as any, 0, perQueueFetch);
+        const jobs = await queue.getJobs(allTypes, 0, perQueueFetch - 1);
         return jobs.map((job) => ({ job, queueName }));
       }),
     );
@@ -1288,7 +1265,8 @@ export class QueueManager {
       const timeDiff = (b.job.timestamp || 0) - (a.job.timestamp || 0);
       if (timeDiff !== 0) return timeDiff;
       // Secondary sort for stability
-      return a.queueName.localeCompare(b.queueName);
+      const queueDiff = a.queueName.localeCompare(b.queueName);
+      return queueDiff || (a.job.id || "").localeCompare(b.job.id || "");
     });
 
     // Apply pagination
@@ -1338,6 +1316,10 @@ export class QueueManager {
       timeRange?: { start: number; end: number };
     },
   ): Promise<PaginatedResponse<RunInfoList>> {
+    if (filters?.status === "unknown") {
+      return { data: [], total: 0, hasMore: false };
+    }
+
     const sortField = sort?.field ?? "timestamp";
     const sortDir = sort?.direction === "asc" ? 1 : -1;
     const hasFilters = !!(
@@ -1358,7 +1340,7 @@ export class QueueManager {
     const queueEntries = Array.from(this.queues.entries());
 
     // Determine which job types to fetch based on status filter
-    const types = filters?.status
+    const types: Exclude<JobStatus, "unknown">[] = filters?.status
       ? [filters.status]
       : ["waiting", "active", "completed", "failed", "delayed"];
 
@@ -1374,12 +1356,11 @@ export class QueueManager {
       };
     }
 
-    // For filtered queries, fetch enough to likely fill one page after filtering
-    // Reduced from 50 to be smarter about distribution
-    const baseFetchPerQueue = Math.max(
-      Math.ceil((limit * 2) / numQueues) + 3,
-      5,
-    );
+    // Include the requested offset for filtered pages too. Filtering can still
+    // reduce this bounded candidate window; counts remain intentionally unknown.
+    const baseFetchPerQueue = isTimestampSort
+      ? Math.max(start + limit + 1, Math.ceil((limit * 2) / numQueues) + 3, 5)
+      : SORT_CANDIDATES_PER_STATE;
 
     let allJobs: { job: Job; queueName: string; state: JobStatus }[] = [];
 
@@ -1401,6 +1382,7 @@ export class QueueManager {
             filters.timeRange.start,
             filters.timeRange.end,
             fetchCount,
+            isTimestampSort && sortDir === 1,
           );
           timeRangeJobs.push(
             ...completedJobs.map((job) => ({
@@ -1417,6 +1399,7 @@ export class QueueManager {
             filters.timeRange.start,
             filters.timeRange.end,
             fetchCount,
+            isTimestampSort && sortDir === 1,
           );
           timeRangeJobs.push(
             ...failedJobs.map((job) => ({
@@ -1433,7 +1416,12 @@ export class QueueManager {
         if (otherTypes.length > 0) {
           const otherJobArrays = await Promise.all(
             otherTypes.map(async (type) => {
-              const jobs = await queue.getJobs(type as any, 0, fetchCount);
+              const jobs = await queue.getJobs(
+                type,
+                0,
+                fetchCount - 1,
+                isTimestampSort && sortDir === 1,
+              );
               return jobs.map((job) => ({ job, state: type as JobStatus }));
             }),
           );
@@ -1449,7 +1437,12 @@ export class QueueManager {
 
       // For status filter, only fetch that type
       if (filters?.status) {
-        const jobs = await queue.getJobs(filters.status as any, 0, fetchCount);
+        const jobs = await queue.getJobs(
+          types[0],
+          0,
+          fetchCount - 1,
+          isTimestampSort && sortDir === 1,
+        );
         return jobs.map((job) => ({
           job,
           queueName,
@@ -1460,7 +1453,12 @@ export class QueueManager {
       // Regular fetching for all types - track state for each type
       const jobArrays = await Promise.all(
         types.map(async (type) => {
-          const jobs = await queue.getJobs(type as any, 0, fetchCount);
+          const jobs = await queue.getJobs(
+            type,
+            0,
+            fetchCount - 1,
+            isTimestampSort && sortDir === 1,
+          );
           return jobs.map((job) => ({ job, state: type as JobStatus }));
         }),
       );
@@ -1499,6 +1497,19 @@ export class QueueManager {
         // Tertiary sort by job ID for complete stability
         return (a.job.id || "").localeCompare(b.job.id || "");
       });
+    } else {
+      // Sort the complete candidate window before taking a page, not just
+      // whichever items happened to occupy that page in Redis fetch order.
+      allJobs.sort((a, b) => {
+        const aVal = this.getRunSortValue(a, sortField);
+        const bVal = this.getRunSortValue(b, sortField);
+        if (aVal < bVal) return -1 * sortDir;
+        if (aVal > bVal) return 1 * sortDir;
+        return (
+          a.queueName.localeCompare(b.queueName) ||
+          (a.job.id || "").localeCompare(b.job.id || "")
+        );
+      });
     }
 
     // Apply pagination
@@ -1511,17 +1522,6 @@ export class QueueManager {
         return { ...info, queueName } as RunInfoList;
       }),
     );
-
-    // For non-timestamp sorting, sort after conversion
-    if (!isTimestampSort) {
-      runInfos.sort((a, b) => {
-        const aVal = this.getSortValueForList(a, sortField);
-        const bVal = this.getSortValueForList(b, sortField);
-        if (aVal < bVal) return -1 * sortDir;
-        if (aVal > bVal) return 1 * sortDir;
-        return 0;
-      });
-    }
 
     // Build cursor for next page
     const hasMore = allJobs.length > start + limit;
@@ -1627,6 +1627,7 @@ export class QueueManager {
       attempts: request.opts?.attempts,
     });
 
+    this.invalidateJobCache(request.queueName, job.id);
     return { id: job.id || "" };
   }
 
@@ -1665,14 +1666,20 @@ export class QueueManager {
     limit = 50,
   ): Promise<{ value: string; count: number }[]> {
     const valueMap = new Map<string, number>();
-    const types = ["waiting", "active", "completed", "failed", "delayed"];
+    const types = [
+      "waiting",
+      "active",
+      "completed",
+      "failed",
+      "delayed",
+    ] as const;
 
     // Fetch jobs from all queues in parallel
     const queueEntries = Array.from(this.queues.entries());
     const queueResults = await Promise.all(
       queueEntries.map(async ([, queue]) => {
         const jobArrays = await Promise.all(
-          types.map((type) => queue.getJobs(type as any, 0, 100)),
+          types.map((type) => queue.getJobs(type, 0, 100)),
         );
         return jobArrays.flat();
       }),
@@ -1729,25 +1736,27 @@ export class QueueManager {
   /**
    * Get sortable value from RunInfoList (lightweight version)
    */
-  private getSortValueForList(
-    item: RunInfoList,
+  private getRunSortValue(
+    item: { job: Job; queueName: string; state: JobStatus },
     field: string,
   ): string | number {
     switch (field) {
       case "timestamp":
-        return item.timestamp ?? 0;
+        return item.job.timestamp ?? 0;
       case "name":
-        return item.name.toLowerCase();
+        return item.job.name.toLowerCase();
       case "status":
-        return item.status;
+        return item.state;
       case "duration":
-        return item.duration ?? 0;
+        return item.job.finishedOn && item.job.processedOn
+          ? item.job.finishedOn - item.job.processedOn
+          : 0;
       case "queueName":
         return item.queueName.toLowerCase();
       case "processedOn":
-        return item.processedOn ?? 0;
+        return item.job.processedOn ?? 0;
       default:
-        return item.timestamp ?? 0;
+        return item.job.timestamp ?? 0;
     }
   }
 
@@ -1813,8 +1822,11 @@ export class QueueManager {
       const cacheKey = `${job.queueName}:${job.id}`;
       state = this.jobStateCache.get(cacheKey);
       if (!state) {
+        const version = this.cacheVersion;
         state = (await job.getState()) as JobStatus;
-        this.jobStateCache.set(cacheKey, state);
+        if (version === this.cacheVersion) {
+          this.jobStateCache.set(cacheKey, state);
+        }
       }
     }
     const duration =
@@ -1838,8 +1850,7 @@ export class QueueManager {
     if (job.parent?.id) {
       parent = {
         id: job.parent.id,
-        queueName:
-          job.parent.queueKey?.split(":")[1] || job.parent.queueKey || "",
+        queueName: job.parent.queueKey?.split(":").at(-1) || "",
       };
     } else if (job.parentKey) {
       // parentKey format: "bull:queueName:jobId"
@@ -2051,11 +2062,11 @@ export class QueueManager {
               "completed",
               "failed",
               "delayed",
-            ];
+            ] as const;
             const otherJobArrays = await Promise.all(
               otherTypes.map(async (type) => {
                 try {
-                  return await queue.getJobs(type as any, 0, 30); // Reduced from 100
+                  return await queue.getJobs(type, 0, 30); // Reduced from 100
                 } catch {
                   return [];
                 }
@@ -2117,6 +2128,7 @@ export class QueueManager {
               const flowTree = await this.flowProducer!.getFlow({
                 id: job.id!,
                 queueName,
+                prefix: this.queues.get(queueName)?.opts.prefix,
               });
 
               if (flowTree?.children && flowTree.children.length > 0) {
@@ -2168,6 +2180,7 @@ export class QueueManager {
       const flowTree = await this.flowProducer.getFlow({
         id: jobId,
         queueName,
+        prefix: this.queues.get(queueName)?.opts.prefix,
       });
 
       if (!flowTree) {
@@ -2191,6 +2204,7 @@ export class QueueManager {
     const flowJob = this.buildFlowJob(request);
     const result = await this.flowProducer.add(flowJob);
 
+    this.clearCache();
     return { id: result.job.id || "" };
   }
 
@@ -2199,10 +2213,11 @@ export class QueueManager {
    */
   private buildFlowJob(
     request: CreateFlowRequest | CreateFlowChildRequest,
-  ): any {
-    const result: any = {
+  ): FlowJob {
+    const result: FlowJob = {
       name: request.name,
       queueName: request.queueName,
+      prefix: this.queues.get(request.queueName)?.opts.prefix,
       data: request.data || {},
     };
 
@@ -2218,7 +2233,7 @@ export class QueueManager {
   /**
    * Convert BullMQ flow tree to our FlowNode structure
    */
-  private async convertFlowTree(tree: any): Promise<FlowNode> {
+  private async convertFlowTree(tree: JobNode): Promise<FlowNode> {
     const job = tree.job;
     const state = await job.getState();
     const duration =
@@ -2238,7 +2253,7 @@ export class QueueManager {
       progress:
         typeof job.progress === "number"
           ? job.progress
-          : typeof job.progress === "object"
+          : typeof job.progress === "object" && job.progress !== null
             ? job.progress
             : 0,
       attemptsMade: job.attemptsMade || 0,
@@ -2262,7 +2277,7 @@ export class QueueManager {
 
     return {
       job: jobInfo,
-      queueName: job.queueName || tree.queueName || "",
+      queueName: job.queueName || "",
       children: children.length > 0 ? children : undefined,
     };
   }
@@ -2270,7 +2285,7 @@ export class QueueManager {
   /**
    * Count statistics for a flow tree
    */
-  private countFlowStats(tree: any): {
+  private countFlowStats(tree: JobNode): {
     total: number;
     completed: number;
     failed: number;

@@ -2,9 +2,11 @@
 
 import { isDesktopApp } from "@midday/desktop-client/platform";
 import { createClient } from "@midday/supabase/client";
+import { useToast } from "@midday/ui/use-toast";
 import type { Provider } from "@supabase/supabase-js";
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { runAuthRequest } from "@/utils/auth-flow";
 import { getUrl } from "@/utils/environment";
 
 export type OAuthProvider = "google" | "apple" | "github" | "azure";
@@ -49,13 +51,15 @@ const OAUTH_PROVIDERS: Record<OAuthProvider, ProviderConfig> = {
 
 export function useOAuthSignIn(provider: OAuthProvider) {
   const [isLoading, setLoading] = useState(false);
+  const pending = useRef(false);
+  const { toast } = useToast();
   const supabase = createClient();
   const searchParams = useSearchParams();
   const returnTo = searchParams.get("return_to");
   const config = OAUTH_PROVIDERS[provider];
 
   const handleSignIn = async () => {
-    setLoading(true);
+    if (pending.current) return;
 
     const redirectTo = new URL("/api/auth/callback", getUrl());
     redirectTo.searchParams.append("provider", provider);
@@ -72,18 +76,29 @@ export function useOAuthSignIn(provider: OAuthProvider) {
       ? { ...config.queryParams, client: "desktop" }
       : config.queryParams;
 
-    await supabase.auth.signInWithOAuth({
-      provider: provider as Provider,
-      options: {
-        redirectTo: redirectTo.toString(),
-        scopes: config.scopes,
-        queryParams,
+    await runAuthRequest({
+      request: () =>
+        supabase.auth.signInWithOAuth({
+          provider: provider as Provider,
+          options: {
+            redirectTo: redirectTo.toString(),
+            scopes: config.scopes,
+            queryParams,
+          },
+        }),
+      setPending: (value) => {
+        pending.current = value;
+        setLoading(value);
+      },
+      onError: () => {
+        toast({
+          title: "Unable to sign in",
+          description:
+            "Please try again or use another available sign-in method.",
+          variant: "error",
+        });
       },
     });
-
-    setTimeout(() => {
-      setLoading(false);
-    }, 2000);
   };
 
   return { handleSignIn, isLoading, config };

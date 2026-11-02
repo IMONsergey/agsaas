@@ -1,35 +1,57 @@
-import { PaymentIssueEmail } from "@midday/email/emails/payment-issue";
-import { render } from "@midday/email/render";
+import { EmailService } from "@midday/notifications/email-service";
 import type { Job } from "bullmq";
-import { Resend } from "resend";
-import type { PaymentIssuePayload } from "../../schemas/teams";
+import {
+  type PaymentIssuePayload,
+  paymentIssueSchema,
+} from "../../schemas/teams";
+import { getDb } from "../../utils/db";
+import { NonRetryableError } from "../../utils/error-classification";
+import { dispatchNotificationEmail } from "../../utils/notification-dispatch";
 import { BaseProcessor } from "../base";
 
-const resend = new Resend(process.env.RESEND_API_KEY!);
-
 export class PaymentIssueProcessor extends BaseProcessor<PaymentIssuePayload> {
-  async process(job: Job<PaymentIssuePayload>): Promise<void> {
-    const { teamId, email, fullName, teamName } = job.data;
-
-    this.logger.info("Sending payment issue email", {
+  async process(job: Job<PaymentIssuePayload>) {
+    const parsed = paymentIssueSchema.safeParse(job.data);
+    if (!parsed.success || !job.id)
+      throw new NonRetryableError(
+        "Invalid payment issue notification identity",
+        undefined,
+        "validation",
+      );
+    const payload = parsed.data;
+    const db = getDb();
+    const emailService = new EmailService(db);
+    const result = await dispatchNotificationEmail({
+      db,
+      kind: "payment-issue",
+      sourceJobId: job.id,
+      payload,
+      send: async () => ({
+        type: "payment_issue",
+        activities: 0,
+        emails: await emailService.sendBulk(
+          [
+            {
+              user: {
+                id: "system",
+                team_id: payload.teamId,
+                email: payload.email,
+              },
+              to: payload.email,
+              template: "payment-issue",
+              subject: "Your payment didn't go through",
+              data: { fullName: payload.fullName, teamName: payload.teamName },
+            },
+          ],
+          "payment_issue",
+        ),
+      }),
+    });
+    this.logger.info("Payment issue email dispatch recorded", {
       jobId: job.id,
-      teamId,
-      email,
+      teamId: payload.teamId,
+      ...result,
     });
-
-    const html = await render(PaymentIssueEmail({ fullName, teamName }));
-
-    await resend.emails.send({
-      from: "Middaybot <middaybot@midday.ai>",
-      replyTo: "pontus@midday.ai",
-      to: email,
-      subject: "Your payment didn't go through",
-      html,
-    });
-
-    this.logger.info("Payment issue email sent", {
-      jobId: job.id,
-      teamId,
-    });
+    return result;
   }
 }

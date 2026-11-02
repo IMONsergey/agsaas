@@ -13,10 +13,15 @@ import {
 } from "@midday/inbox/errors";
 import { triggerJob } from "@midday/job-client";
 import { createClient } from "@midday/supabase/job";
-import { ensureFileExtension } from "@midday/utils";
 import type { Job } from "bullmq";
-import type { InboxProviderSyncAccountPayload } from "../../schemas/inbox";
+import { unregisterDynamicScheduler } from "../../schedulers/registry";
+import {
+  type InboxProviderSyncAccountPayload,
+  inboxProviderSyncAccountSchema,
+} from "../../schemas/inbox";
 import { getDb } from "../../utils/db";
+import { NonRetryableError } from "../../utils/error-classification";
+import { inboxAttachmentStorageKey } from "../../utils/inbox-storage-key";
 import { processBatch } from "../../utils/process-batch";
 import { BaseProcessor } from "../base";
 
@@ -28,13 +33,19 @@ const BATCH_SIZE = 5;
  * Receives inbox account ID and syncs attachments from the provider
  */
 export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccountPayload> {
+  protected override getPayloadSchema() {
+    return inboxProviderSyncAccountSchema;
+  }
   async process(job: Job<InboxProviderSyncAccountPayload>): Promise<{
     accountId: string;
     attachmentsProcessed: number;
     syncedAt: string;
   }> {
-    const { id: inboxAccountId, manualSync = false } = job.data;
-    const supabase = createClient();
+    const {
+      id: inboxAccountId,
+      teamId,
+      manualSync = false,
+    } = this.validatePayload(job);
     const db = getDb();
 
     if (!inboxAccountId) {
@@ -45,8 +56,36 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
     const accountRow = await getInboxAccountInfo(db, { id: inboxAccountId });
 
     if (!accountRow) {
-      throw new Error("Account not found");
+      await unregisterDynamicScheduler("inbox-sync-scheduler", inboxAccountId);
+      throw new NonRetryableError("Inbox account was removed");
     }
+    if (teamId && teamId !== accountRow.teamId)
+      throw new NonRetryableError(
+        "Inbox job scope mismatch",
+        undefined,
+        "unauthorized",
+      );
+    if (accountRow.status === "disconnected") {
+      await unregisterDynamicScheduler("inbox-sync-scheduler", inboxAccountId);
+      throw new NonRetryableError("Inbox account requires reconnection");
+    }
+
+    const stillConnected = async () => {
+      const current = await getInboxAccountInfo(db, { id: inboxAccountId });
+      if (
+        !current ||
+        current.teamId !== accountRow.teamId ||
+        current.status === "disconnected"
+      ) {
+        if (!current || current.teamId === accountRow.teamId)
+          await unregisterDynamicScheduler(
+            "inbox-sync-scheduler",
+            inboxAccountId,
+          );
+        throw new NonRetryableError("Inbox account changed during sync");
+      }
+    };
+    const supabase = createClient();
 
     const connector = new InboxConnector(accountRow.provider, db);
 
@@ -67,6 +106,7 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
         lastAccessed: accountRow.lastAccessed,
         fullSync: manualSync,
       });
+      await stillConnected();
 
       this.logger.info("Fetched attachments from provider", {
         accountId: inboxAccountId,
@@ -198,18 +238,23 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
         async (batch) => {
           const results = [];
           for (const item of batch) {
-            // Ensure filename has proper extension as final safety check
-            const safeFilename = ensureFileExtension(
-              item.filename,
-              item.mimeType,
-            );
-
-            const { data: uploadData } = await supabase.storage
-              .from("vault")
-              .upload(`${accountRow.teamId}/inbox/${safeFilename}`, item.data, {
-                contentType: item.mimeType,
-                upsert: true,
-              });
+            await stillConnected();
+            const objectKey = inboxAttachmentStorageKey({
+              teamId: accountRow.teamId,
+              accountId: inboxAccountId,
+              referenceId: item.referenceId,
+              filename: item.filename,
+              mimeType: item.mimeType,
+            });
+            const { data: uploadData, error: uploadError } =
+              await supabase.storage
+                .from("vault")
+                .upload(objectKey, item.data, {
+                  contentType: item.mimeType,
+                  upsert: true,
+                });
+            if (uploadError || !uploadData)
+              throw new Error("Inbox attachment upload failed");
 
             if (uploadData) {
               results.push({
@@ -237,6 +282,7 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
       });
 
       if (uploadedAttachments.length > 0) {
+        await stillConnected();
         this.logger.info("Triggering document processing", {
           accountId: inboxAccountId,
           attachmentCount: uploadedAttachments.length,
@@ -280,6 +326,7 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
       }
 
       // Update account with successful sync - mark as connected and clear errors
+      await stillConnected();
       await updateInboxAccount(db, {
         id: inboxAccountId,
         lastAccessed: new Date().toISOString(),

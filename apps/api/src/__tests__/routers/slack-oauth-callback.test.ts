@@ -4,9 +4,11 @@ import { mocks } from "../setup";
 
 const initializeMock = mock(() => Promise.resolve());
 const setInstallationMock = mock(() => Promise.resolve());
-const getAdapterMock = mock(() => ({
-  setInstallation: setInstallationMock,
-}));
+const getAdapterMock = mock(
+  (): { setInstallation: typeof setInstallationMock } | undefined => ({
+    setInstallation: setInstallationMock,
+  }),
+);
 const verifyStateParamMock = mock(() =>
   Promise.resolve({
     metadata: JSON.stringify({
@@ -199,6 +201,22 @@ describe("REST: GET /apps/slack/oauth-callback", () => {
       "initialize",
       "setInstallation",
     ]);
+  });
+
+  test("a disabled Slack adapter fails before OAuth or database side effects", async () => {
+    getAdapterMock.mockReturnValueOnce(undefined);
+
+    const res = await app.request(
+      "/apps/slack/oauth-callback?code=test-code&state=test-state",
+    );
+
+    expect(res.status).toBe(503);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(verifyStateParamMock).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.createOrUpdatePlatformIdentity).not.toHaveBeenCalled();
+    expect(initializeMock).not.toHaveBeenCalled();
+    expect(setInstallationMock).not.toHaveBeenCalled();
   });
 
   test("does not store the Slack installation when app creation fails", async () => {

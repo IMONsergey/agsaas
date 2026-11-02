@@ -1,4 +1,4 @@
-import { tz } from "@date-fns/tz";
+import { TZDate, tz } from "@date-fns/tz";
 import {
   addDays,
   addMonths,
@@ -65,9 +65,9 @@ function getNthWeekdayOfMonth(
   week: number,
   timezone: string,
 ): Date {
-  const createTZDate = tz(timezone);
-  // Start from the first day of the month
-  let date = createTZDate(new Date(year, month, 1));
+  // Construct the calendar date in the invoice timezone, not the host timezone.
+  // Converting a system-local midnight can move it into the previous month.
+  let date = new TZDate(year, month, 1, timezone);
 
   // Find the first occurrence of the target weekday
   const currentDayOfWeek = getDay(date);

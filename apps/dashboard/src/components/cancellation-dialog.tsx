@@ -2,7 +2,6 @@
 
 import { track } from "@midday/events/client";
 import { LogEvents } from "@midday/events/events";
-import { getPlanPricing } from "@midday/plans";
 import { AnimatedSizeContainer } from "@midday/ui/animated-size-container";
 import { Button } from "@midday/ui/button";
 import { cn } from "@midday/ui/cn";
@@ -15,11 +14,10 @@ import {
 } from "@midday/ui/dialog";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { Textarea } from "@midday/ui/textarea";
-import { PolarEmbedCheckout } from "@polar-sh/checkout/embed";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@midday/ui/use-toast";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { useTheme } from "next-themes";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
 
@@ -63,44 +61,17 @@ export function CancellationDialog({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { data: user } = useUserQuery();
-  const plan = user?.team?.plan;
   const isTrialing = user?.team?.subscriptionStatus === "trialing";
-  const theme = useTheme().resolvedTheme === "dark" ? "dark" : "light";
-  const checkoutRef = useRef<Awaited<
-    ReturnType<typeof PolarEmbedCheckout.create>
-  > | null>(null);
-
-  useEffect(() => {
-    PolarEmbedCheckout.init();
-    return () => {
-      checkoutRef.current?.close();
-    };
-  }, []);
-
-  const { data: subscription } = useQuery(
-    trpc.billing.getActiveSubscription.queryOptions(),
-  );
-  const isYearly = subscription?.isYearly ?? false;
-
-  const [checkoutCurrency, setCheckoutCurrency] = useState<"USD" | "EUR">(
-    "USD",
-  );
-
-  useEffect(() => {
-    try {
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      if (tz?.startsWith("Europe/")) {
-        setCheckoutCurrency("EUR");
-      }
-    } catch {}
-  }, []);
-
-  const createCheckoutMutation = useMutation(
-    trpc.billing.createCheckout.mutationOptions(),
-  );
+  const { toast } = useToast();
 
   const cancelMutation = useMutation(
     trpc.billing.cancelSubscription.mutationOptions({
+      onError: (error) =>
+        toast({
+          title: "Cancellation failed",
+          description: error.message,
+          variant: "error",
+        }),
       onSuccess: () => {
         setStep("done");
 
@@ -139,47 +110,6 @@ export function CancellationDialog({
     [step, onOpenChange, reset, queryClient, trpc],
   );
 
-  const handleSwitchToAnnual = useCallback(async () => {
-    if (!plan || plan === "trial") return;
-
-    const yearlyPlanType = `${plan}_yearly`;
-
-    handleClose(false);
-
-    try {
-      const { url } = await createCheckoutMutation.mutateAsync({
-        plan,
-        planType: yearlyPlanType,
-        embedOrigin: window.location.origin,
-        currency: checkoutCurrency,
-      });
-
-      const checkout = await PolarEmbedCheckout.create(url, {
-        theme,
-      });
-      checkoutRef.current = checkout;
-
-      checkout.addEventListener("success", (event: any) => {
-        event.preventDefault();
-        track({
-          event: LogEvents.CheckoutCompleted.name,
-          channel: LogEvents.CheckoutCompleted.channel,
-          plan,
-          planType: yearlyPlanType,
-        });
-        queryClient.invalidateQueries({
-          queryKey: trpc.user.me.queryKey(),
-        });
-      });
-
-      checkout.addEventListener("close", () => {
-        checkoutRef.current = null;
-      });
-    } catch (error) {
-      console.error("Failed to open checkout", error);
-    }
-  }, [plan, theme, handleClose, checkoutCurrency]);
-
   const handleReasonSelect = useCallback((value: CancellationReason) => {
     setReason(value);
     setStep(2);
@@ -189,11 +119,6 @@ export function CancellationDialog({
     if (!reason) return;
     cancelMutation.mutate({ reason, comment: comment || undefined });
   }, [reason, comment, cancelMutation]);
-
-  const pricing = getPlanPricing(checkoutCurrency === "EUR" ? "EU" : undefined);
-
-  const planPricing = plan === "pro" ? pricing.pro : pricing.starter;
-  const annualSavings = (planPricing.monthly - planPricing.yearly) * 12;
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -213,10 +138,6 @@ export function CancellationDialog({
                     reason={reason}
                     comment={comment}
                     onCommentChange={setComment}
-                    annualSavings={annualSavings}
-                    currency={pricing.symbol}
-                    isYearly={isYearly}
-                    onSwitchToAnnual={handleSwitchToAnnual}
                     onStillCancel={() => setStep(3)}
                     onBack={() => {
                       setReason(null);
@@ -269,7 +190,7 @@ function StepOne({
           We'd love to understand why
         </DialogTitle>
         <DialogDescription>
-          Your feedback helps us improve Midday for everyone.
+          Your feedback helps us improve the workspace.
         </DialogDescription>
       </DialogHeader>
 
@@ -296,23 +217,25 @@ function StepTwo({
   reason,
   comment,
   onCommentChange,
-  annualSavings,
-  currency,
-  isYearly,
-  onSwitchToAnnual,
   onStillCancel,
   onBack,
 }: {
   reason: CancellationReason;
   comment: string;
   onCommentChange: (value: string) => void;
-  annualSavings: number;
-  currency: string;
-  isYearly: boolean;
-  onSwitchToAnnual: () => void;
   onStillCancel: () => void;
   onBack: () => void;
 }) {
+  const prompt: Record<CancellationReason, string> = {
+    too_expensive:
+      "You can share feedback about pricing before confirming cancellation.",
+    missing_features:
+      "What feature would have made the workspace more useful for you?",
+    unused: "What kept you from using the workspace?",
+    switched_service:
+      "Which tool are you switching to? This helps us understand where we can improve.",
+    other: "Is there anything else you would like us to know?",
+  };
   return (
     <div>
       <DialogHeader className="mb-6">
@@ -320,187 +243,23 @@ function StepTwo({
           Before you go
         </DialogTitle>
       </DialogHeader>
-
-      {reason === "too_expensive" && (
-        <div className="space-y-4">
-          {isYearly ? (
-            <p className="text-sm text-[#878787]">
-              We're sorry to hear that. You're already on annual billing — our
-              best rate. Is there anything else we could do to make it work?
-            </p>
-          ) : (
-            <p className="text-sm text-[#878787]">
-              You could save{" "}
-              <span className="text-foreground font-medium">
-                {currency}
-                {annualSavings}/year
-              </span>{" "}
-              by{" "}
-              <button
-                type="button"
-                onClick={onSwitchToAnnual}
-                className="text-foreground underline underline-offset-2 hover:text-foreground/80"
-              >
-                switching to annual billing
-              </button>
-              .
-            </p>
-          )}
-          <Textarea
-            placeholder="Tell us more..."
-            className="resize-none h-[60px]"
-            value={comment}
-            onChange={(e) => onCommentChange(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={onBack}>
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={onStillCancel}
-            >
-              Still cancel
-            </Button>
-          </div>
+      <div className="space-y-4">
+        <p className="text-sm text-[#878787]">{prompt[reason]}</p>
+        <Textarea
+          placeholder="Tell us more..."
+          className="resize-none h-[100px]"
+          value={comment}
+          onChange={(event) => onCommentChange(event.target.value)}
+        />
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={onBack}>
+            Back
+          </Button>
+          <Button variant="outline" className="flex-1" onClick={onStillCancel}>
+            Continue to cancellation
+          </Button>
         </div>
-      )}
-
-      {reason === "missing_features" && (
-        <div className="space-y-4">
-          <p className="text-sm text-[#878787]">
-            What feature would have made Midday work for you? We read every
-            response.
-          </p>
-          <Textarea
-            placeholder="Tell us what you need..."
-            className="resize-none h-[100px]"
-            value={comment}
-            onChange={(e) => onCommentChange(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={onBack}>
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={onStillCancel}
-            >
-              Still cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {reason === "unused" && (
-        <div className="space-y-4">
-          <p className="text-sm text-[#878787]">
-            A few things you might not have tried yet:
-          </p>
-          <ul className="space-y-2 text-sm">
-            <li className="flex gap-2">
-              <span className="text-[#878787] shrink-0">-</span>
-              <span>
-                <span className="text-foreground font-medium">Inbox</span>{" "}
-                <span className="text-[#878787]">
-                  — forward receipts from Gmail or Outlook and match them
-                  automatically
-                </span>
-              </span>
-            </li>
-            <li className="flex gap-2">
-              <span className="text-[#878787] shrink-0">-</span>
-              <span>
-                <span className="text-foreground font-medium">
-                  Financial metrics
-                </span>{" "}
-                <span className="text-[#878787]">
-                  — track revenue, burn rate, profit, expenses and runway at a
-                  glance
-                </span>
-              </span>
-            </li>
-            <li className="flex gap-2">
-              <span className="text-[#878787] shrink-0">-</span>
-              <span>
-                <span className="text-foreground font-medium">
-                  Time tracking
-                </span>{" "}
-                <span className="text-[#878787]">
-                  — track billable hours and turn them into invoices
-                </span>
-              </span>
-            </li>
-          </ul>
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={onBack}>
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={onStillCancel}
-            >
-              Still cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {reason === "switched_service" && (
-        <div className="space-y-4">
-          <p className="text-sm text-[#878787]">
-            Which tool are you switching to? This helps us understand where we
-            can improve.
-          </p>
-          <Textarea
-            placeholder="e.g. QuickBooks, Xero, Wave..."
-            className="resize-none h-[60px]"
-            value={comment}
-            onChange={(e) => onCommentChange(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={onBack}>
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={onStillCancel}
-            >
-              Submit and cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {reason === "other" && (
-        <div className="space-y-4">
-          <p className="text-sm text-[#878787]">
-            Anything you'd like us to know? We read every response.
-          </p>
-          <Textarea
-            placeholder="Tell us more..."
-            className="resize-none h-[100px]"
-            value={comment}
-            onChange={(e) => onCommentChange(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={onBack}>
-              Back
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={onStillCancel}
-            >
-              Submit and cancel
-            </Button>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -579,7 +338,7 @@ function StepDone({
         </DialogTitle>
         <DialogDescription>
           {isTrialing
-            ? "Your trial remains active until it ends. After that, you'll need to subscribe to continue using Midday. Your data will be kept safe."
+            ? "Your trial remains active until it ends. After that, you'll need to subscribe to continue using AGSaaS. Your data will be kept safe."
             : "Your plan remains active until the end of your billing period. Your data will be kept safe — you can resubscribe anytime."}
         </DialogDescription>
       </DialogHeader>

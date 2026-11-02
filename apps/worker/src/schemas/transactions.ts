@@ -68,6 +68,13 @@ export type EnrichTransactionsPayload = z.infer<
 
 export const importTransactionsSchema = z.object({
   inverted: z.boolean(),
+  parseProfile: z
+    .object({
+      dateOrder: z.enum(["auto", "day-first", "month-first"]).optional(),
+      amountFormat: z.enum(["auto", "decimal-comma", "decimal-dot"]).optional(),
+    })
+    .strict()
+    .optional(),
   filePath: z.array(z.string()).optional(),
   bankAccountId: z.string(),
   currency: z.string(),

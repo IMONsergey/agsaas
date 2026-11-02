@@ -1,6 +1,14 @@
-import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
+import { createSupabaseFetch } from "@midday/supabase/server-fetch";
+import {
+  createRemoteJWKSet,
+  customFetch,
+  type JWTPayload,
+  jwtVerify,
+} from "jose";
 
 export type Session = {
+  /** Trusted assurance claim from the verified Auth JWT, never user metadata. */
+  aal?: "aal1" | "aal2";
   user: {
     id: string;
     email?: string;
@@ -10,8 +18,8 @@ export type Session = {
 };
 
 type SupabaseJWTPayload = JWTPayload & {
+  email?: string;
   user_metadata?: {
-    email?: string;
     full_name?: string;
     [key: string]: string | undefined;
   };
@@ -21,6 +29,7 @@ type SupabaseJWTPayload = JWTPayload & {
 // keyset in memory so only the first call hits the network.
 const JWKS = createRemoteJWKSet(
   new URL(`${process.env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+  { [customFetch]: createSupabaseFetch(process.env.SUPABASE_URL!) },
 );
 
 // Fallback: HS256 shared secret for tokens issued before key rotation.
@@ -32,9 +41,12 @@ const HS256_SECRET = process.env.SUPABASE_JWT_SECRET
 function extractSession(payload: JWTPayload): Session {
   const p = payload as SupabaseJWTPayload;
   return {
+    aal: payload.aal === "aal2" ? "aal2" : "aal1",
     user: {
       id: p.sub!,
-      email: p.user_metadata?.email,
+      // User metadata is editable by the account holder. Only the auth
+      // service's top-level email claim can authorize email-bound invitations.
+      email: typeof p.email === "string" ? p.email : undefined,
       full_name: p.user_metadata?.full_name,
     },
   };

@@ -1,14 +1,21 @@
 import { createServerClient } from "@supabase/ssr";
 import type { NextRequest, NextResponse } from "next/server";
+import { getAuthCookieOptions } from "./cookie-options";
+import { createSupabaseFetch } from "./server-fetch";
 
 export async function updateSession(
   request: NextRequest,
   response: NextResponse,
 ) {
+  const publicUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    publicUrl,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
+      cookieOptions: getAuthCookieOptions(publicUrl),
+      global: {
+        fetch: createSupabaseFetch(publicUrl),
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();

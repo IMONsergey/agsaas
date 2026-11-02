@@ -21,9 +21,7 @@ import {
 import { parseInputValue } from "@api/utils/parse";
 import { UTCDate } from "@date-fns/utc";
 import {
-  deleteInvoice,
-  draftInvoice,
-  duplicateInvoice,
+  allocateTrackerEntriesToInvoice,
   getAverageDaysToPayment,
   getAverageInvoiceSize,
   getCustomerById,
@@ -36,15 +34,23 @@ import {
   getNewCustomersCount,
   getNextInvoiceNumber,
   getPaymentStatus,
+  getPublishedInvoiceById,
   getTeamById,
   getTopRevenueClient,
   getTrackerProjectById,
-  getTrackerRecordsByRange,
+  getUnbilledTrackerEntriesForInvoice,
   getUserById,
+  deleteInvoice as persistInvoiceDelete,
+  draftInvoice as persistInvoiceDraft,
+  duplicateInvoice as persistInvoiceDuplicate,
+  updateInvoice as persistInvoiceUpdate,
   searchInvoiceNumber,
-  updateInvoice,
 } from "@midday/db/queries";
 import { DEFAULT_TEMPLATE } from "@midday/invoice";
+import {
+  InvoiceAmountError,
+  InvoiceFinancialStateError,
+} from "@midday/invoice/calculate";
 import { verify } from "@midday/invoice/token";
 import { transformCustomerToContent } from "@midday/invoice/utils";
 import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
@@ -58,6 +64,54 @@ const logger = createLoggerWithContext("trpc:invoice");
 
 // Use the shared default template from @midday/invoice
 const defaultTemplate = DEFAULT_TEMPLATE;
+
+function invoiceWriteError(error: unknown): never {
+  if (
+    error instanceof InvoiceAmountError ||
+    error instanceof InvoiceFinancialStateError
+  ) {
+    throw new TRPCError({
+      code: error instanceof InvoiceAmountError ? "BAD_REQUEST" : "CONFLICT",
+      message: error.message,
+      cause: error,
+    });
+  }
+  throw error;
+}
+
+async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
+  try {
+    return await persistInvoiceDraft(...args);
+  } catch (error) {
+    return invoiceWriteError(error);
+  }
+}
+
+async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
+  try {
+    return await persistInvoiceUpdate(...args);
+  } catch (error) {
+    invoiceWriteError(error);
+  }
+}
+
+async function deleteInvoice(...args: Parameters<typeof persistInvoiceDelete>) {
+  try {
+    return await persistInvoiceDelete(...args);
+  } catch (error) {
+    invoiceWriteError(error);
+  }
+}
+
+async function duplicateInvoice(
+  ...args: Parameters<typeof persistInvoiceDuplicate>
+) {
+  try {
+    return await persistInvoiceDuplicate(...args);
+  } catch (error) {
+    return invoiceWriteError(error);
+  }
+}
 
 export const invoiceRouter = createTRPCRouter({
   get: protectedProcedure
@@ -96,9 +150,11 @@ export const invoiceRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND" });
       }
 
-      return getInvoiceById(db, {
-        id,
-      });
+      const invoice = await getPublishedInvoiceById(db, { id });
+      if (!invoice) {
+        throw new TRPCError({ code: "NOT_FOUND" });
+      }
+      return { ...invoice, token: input.token };
     }),
 
   paymentStatus: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
@@ -135,14 +191,11 @@ export const invoiceRouter = createTRPCRouter({
       const { projectId, dateFrom, dateTo } = input;
 
       // Get project data and tracker entries
-      const [projectData, trackerData] = await Promise.all([
+      const [projectData, team, template, user] = await Promise.all([
         getTrackerProjectById(db, { id: projectId, teamId: teamId! }),
-        getTrackerRecordsByRange(db, {
-          teamId: teamId!,
-          projectId,
-          from: dateFrom,
-          to: dateTo,
-        }),
+        getTeamById(db, teamId!),
+        getInvoiceTemplate(db, teamId!),
+        getUserById(db, session.user.id),
       ]);
 
       if (!projectData) {
@@ -152,128 +205,175 @@ export const invoiceRouter = createTRPCRouter({
         });
       }
 
-      // Check if project is billable
-      if (!projectData.billable) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "PROJECT_NOT_BILLABLE",
-        });
-      }
+      const fullCustomer = projectData.customerId
+        ? await getCustomerById(db, {
+            id: projectData.customerId,
+            teamId: teamId!,
+          })
+        : null;
+      return db
+        .transaction(async (tx) => {
+          const allEntries = await getUnbilledTrackerEntriesForInvoice(tx, {
+            teamId: teamId!,
+            projectId,
+            from: dateFrom,
+            to: dateTo,
+          });
+          const hasHistoricalRate = allEntries.some(
+            (entry) => (entry.rate ?? 0) > 0,
+          );
+          if (!projectData.billable && !hasHistoricalRate) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "PROJECT_NOT_BILLABLE",
+            });
+          }
+          if (
+            (!projectData.rate || projectData.rate <= 0) &&
+            !hasHistoricalRate
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "PROJECT_NO_RATE",
+            });
+          }
+          const rateGroups = new Map<
+            string,
+            { rate: number; currency: string; seconds: number }
+          >();
+          for (const entry of allEntries) {
+            const rate = Number(entry.rate ?? projectData.rate ?? 0);
+            const currency = (
+              entry.currency ??
+              projectData.currency ??
+              team?.baseCurrency ??
+              "USD"
+            ).toUpperCase();
+            if (rate <= 0 || !entry.duration) continue;
+            const key = `${currency}/${rate}`;
+            const group = rateGroups.get(key) ?? { rate, currency, seconds: 0 };
+            group.seconds += entry.duration;
+            rateGroups.set(key, group);
+          }
+          const groups = [...rateGroups.values()].filter(
+            (group) => Math.round(group.seconds / 36) > 0,
+          );
+          if (groups.length === 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "NO_TRACKED_HOURS",
+            });
+          }
+          if (new Set(groups.map((group) => group.currency)).size > 1) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "This work spans multiple currencies. Select a period in one currency for each invoice.",
+            });
+          }
 
-      // Check if project has a rate
-      if (!projectData.rate || projectData.rate <= 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "PROJECT_NO_RATE",
-        });
-      }
+          const nextInvoiceNumber = await getNextInvoiceNumber(tx, teamId!);
 
-      // Calculate total hours from tracker entries
-      const allEntries = Object.values(trackerData.result || {}).flat();
-      const totalDuration = allEntries.reduce(
-        (sum, entry) => sum + (entry.duration || 0),
-        0,
-      );
-      const totalHours = Math.round((totalDuration / 3600) * 100) / 100;
+          const invoiceId = uuidv4();
+          const currency = groups[0]!.currency;
+          const amount = groups.reduce(
+            (total, group) =>
+              total + (Math.round(group.seconds / 36) / 100) * group.rate,
+            0,
+          );
 
-      if (totalHours === 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "NO_TRACKED_HOURS",
-        });
-      }
+          // Get user's preferred date format
+          const userDateFormat =
+            template?.dateFormat ??
+            user?.dateFormat ??
+            defaultTemplate.dateFormat;
 
-      // Get default invoice settings and customer details
-      const [nextInvoiceNumber, template, team, fullCustomer, user] =
-        await Promise.all([
-          getNextInvoiceNumber(db, teamId!),
-          getInvoiceTemplate(db, teamId!),
-          getTeamById(db, teamId!),
-          projectData.customerId
-            ? getCustomerById(db, {
-                id: projectData.customerId,
-                teamId: teamId!,
-              })
-            : null,
-          getUserById(db, session.user.id),
-        ]);
+          // Format the date range for the line item description
+          // Use parseISO to avoid timezone shifts when parsing date strings
+          const formattedDateFrom = format(parseISO(dateFrom), userDateFormat);
+          const formattedDateTo = format(parseISO(dateTo), userDateFormat);
+          const dateRangeDescription = `${projectData.name} (${formattedDateFrom} - ${formattedDateTo})`;
 
-      const invoiceId = uuidv4();
-      const currency = projectData.currency || team?.baseCurrency || "USD";
-      const amount = totalHours * Number(projectData.rate);
+          // Create draft invoice with tracker data
+          const templateData = {
+            ...defaultTemplate,
+            ...(template
+              ? Object.fromEntries(
+                  Object.entries(template).map(([key, value]) => [
+                    key,
+                    value === null ? undefined : value,
+                  ]),
+                )
+              : {}),
+            // Project rates are denominated in the project currency. A default
+            // invoice template must not relabel them as another currency.
+            currency: currency.toUpperCase(),
+            size: (template?.size === "a4" || template?.size === "letter"
+              ? template.size
+              : defaultTemplate.size) as "a4" | "letter",
+            deliveryType: (template?.deliveryType === "create" ||
+            template?.deliveryType === "create_and_send"
+              ? template.deliveryType
+              : defaultTemplate.deliveryType) as
+              | "create"
+              | "create_and_send"
+              | undefined,
+          };
 
-      // Get user's preferred date format
-      const userDateFormat =
-        template?.dateFormat ?? user?.dateFormat ?? defaultTemplate.dateFormat;
+          const invoiceData = {
+            id: invoiceId,
+            teamId: teamId!,
+            userId: session.user.id,
+            customerId: projectData.customerId,
+            customerName: fullCustomer?.name,
+            invoiceNumber: nextInvoiceNumber,
+            currency: currency.toUpperCase(),
+            amount,
+            lineItems: groups.map((group) => ({
+              name: dateRangeDescription,
+              quantity: Math.round(group.seconds / 36) / 100,
+              price: group.rate,
+              vat: 0,
+            })),
+            issueDate: new Date().toISOString(),
+            dueDate: addDays(
+              new Date(),
+              template?.paymentTermsDays ?? 30,
+            ).toISOString(),
+            template: templateData,
+            fromDetails: (template?.fromDetails || null) as string | null,
+            paymentDetails: (template?.paymentDetails || null) as string | null,
+            customerDetails: fullCustomer
+              ? JSON.stringify(transformCustomerToContent(fullCustomer))
+              : null,
+            noteDetails: null,
+            topBlock: null,
+            bottomBlock: null,
+            vat: null,
+            tax: null,
+            discount: null,
+            subtotal: null,
+          };
 
-      // Format the date range for the line item description
-      // Use parseISO to avoid timezone shifts when parsing date strings
-      const formattedDateFrom = format(parseISO(dateFrom), userDateFormat);
-      const formattedDateTo = format(parseISO(dateTo), userDateFormat);
-      const dateRangeDescription = `${projectData.name} (${formattedDateFrom} - ${formattedDateTo})`;
-
-      // Create draft invoice with tracker data
-      const templateData = {
-        ...defaultTemplate,
-        currency: currency.toUpperCase(),
-        ...(template
-          ? Object.fromEntries(
-              Object.entries(template).map(([key, value]) => [
-                key,
-                value === null ? undefined : value,
-              ]),
+          const saved = await draftInvoice(tx, invoiceData);
+          const billedGroups = new Set(
+            groups.map((group) => `${group.currency}/${group.rate}`),
+          );
+          const entryIds = allEntries
+            .filter((entry) =>
+              billedGroups.has(
+                `${(entry.currency ?? currency).toUpperCase()}/${entry.rate ?? projectData.rate ?? 0}`,
+              ),
             )
-          : {}),
-        size: (template?.size === "a4" || template?.size === "letter"
-          ? template.size
-          : defaultTemplate.size) as "a4" | "letter",
-        deliveryType: (template?.deliveryType === "create" ||
-        template?.deliveryType === "create_and_send"
-          ? template.deliveryType
-          : defaultTemplate.deliveryType) as
-          | "create"
-          | "create_and_send"
-          | undefined,
-      };
-
-      const invoiceData = {
-        id: invoiceId,
-        teamId: teamId!,
-        userId: session.user.id,
-        customerId: projectData.customerId,
-        customerName: fullCustomer?.name,
-        invoiceNumber: nextInvoiceNumber,
-        currency: currency.toUpperCase(),
-        amount,
-        lineItems: [
-          {
-            name: dateRangeDescription,
-            quantity: totalHours,
-            price: Number(projectData.rate),
-            vat: 0,
-          },
-        ],
-        issueDate: new Date().toISOString(),
-        dueDate: addDays(
-          new Date(),
-          template?.paymentTermsDays ?? 30,
-        ).toISOString(),
-        template: templateData,
-        fromDetails: (template?.fromDetails || null) as string | null,
-        paymentDetails: (template?.paymentDetails || null) as string | null,
-        customerDetails: fullCustomer
-          ? JSON.stringify(transformCustomerToContent(fullCustomer))
-          : null,
-        noteDetails: null,
-        topBlock: null,
-        bottomBlock: null,
-        vat: null,
-        tax: null,
-        discount: null,
-        subtotal: null,
-      };
-
-      return draftInvoice(db, invoiceData);
+            .map((entry) => entry.id);
+          await allocateTrackerEntriesToInvoice(tx, {
+            teamId: teamId!,
+            invoiceId,
+            entryIds,
+          });
+          return saved;
+        })
+        .catch(invoiceWriteError);
     }),
 
   defaultSettings: protectedProcedure.query(
@@ -611,6 +711,21 @@ export const invoiceRouter = createTRPCRouter({
   remind: protectedProcedure
     .input(remindInvoiceSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
+      const invoice = await getInvoiceById(db, {
+        id: input.id,
+        teamId: teamId!,
+      });
+      if (!invoice)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found",
+        });
+      if (invoice.status !== "unpaid" && invoice.status !== "overdue") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Only unpaid or overdue invoices can receive reminders",
+        });
+      }
       await triggerJob(
         "send-invoice-reminder",
         {
@@ -619,11 +734,9 @@ export const invoiceRouter = createTRPCRouter({
         "invoices",
       );
 
-      return updateInvoice(db, {
-        id: input.id,
-        teamId: teamId!,
-        reminderSentAt: input.date,
-      });
+      // Queue acceptance is not email acceptance. Only the delivery worker
+      // records reminderSentAt, using the provider's accepted timestamp.
+      return invoice;
     }),
 
   duplicate: protectedProcedure

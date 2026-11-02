@@ -5,6 +5,9 @@ import { addSeconds, addYears } from "date-fns";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { getAuthOperationSession } from "@/utils/auth-flow";
+import { getEnabledAuthProviders } from "@/utils/auth-methods.server";
+import { getAuthRedirectUrl } from "@/utils/auth-redirect";
 import { Cookies } from "@/utils/constants";
 import { getUrl } from "@/utils/environment";
 import { isBlockedNewUser } from "@/utils/new-user-gate";
@@ -15,25 +18,30 @@ export const verifyOtpAction = actionClient
     z.object({
       token: z.string(),
       email: z.string(),
-      redirectTo: z.string(),
+      redirectTo: z.string().max(2048),
     }),
   )
   .action(async ({ parsedInput: { email, token, redirectTo } }) => {
+    if (!getEnabledAuthProviders().includes("email")) {
+      throw new Error(
+        "Unable to verify the code. Please try again or request a new code.",
+      );
+    }
+    const destination = getAuthRedirectUrl(redirectTo, getUrl());
     const supabase = await createClient();
 
-    await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: "email",
-    });
-
-    // Validate that the session was actually established (similar to OAuth callback)
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const session = await getAuthOperationSession(() =>
+      supabase.auth.verifyOtp({
+        email,
+        token,
+        type: "email",
+      }),
+    );
 
     if (!session) {
-      throw new Error("Failed to establish session after OTP verification");
+      throw new Error(
+        "Unable to verify the code. Please try again or request a new code.",
+      );
     }
 
     if (isBlockedNewUser(session.user.created_at)) {
@@ -56,5 +64,5 @@ export const verifyOtpAction = actionClient
       sameSite: "lax",
     });
 
-    redirect(redirectTo);
+    redirect(destination);
   });

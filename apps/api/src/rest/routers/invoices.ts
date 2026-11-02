@@ -17,8 +17,6 @@ import {
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  deleteInvoice,
-  draftInvoice,
   getCustomerById,
   getInvoiceById,
   getInvoiceSummary,
@@ -27,9 +25,15 @@ import {
   getNextInvoiceNumber,
   getPaymentStatus,
   isInvoiceNumberUsed,
-  updateInvoice,
+  deleteInvoice as persistInvoiceDelete,
+  draftInvoice as persistInvoiceDraft,
+  updateInvoice as persistInvoiceUpdate,
 } from "@midday/db/queries";
-import { calculateTotal } from "@midday/invoice/calculate";
+import {
+  getInvoiceSnapshotAmounts,
+  InvoiceAmountError,
+  InvoiceFinancialStateError,
+} from "@midday/invoice/calculate";
 import { transformCustomerToContent } from "@midday/invoice/utils";
 import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
 import { createLoggerWithContext } from "@midday/logger";
@@ -39,6 +43,44 @@ import { v4 as uuidv4 } from "uuid";
 import { withRequiredScope } from "../middleware";
 
 const logger = createLoggerWithContext("rest:invoices");
+
+async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
+  try {
+    return await persistInvoiceDraft(...args);
+  } catch (error) {
+    if (
+      error instanceof InvoiceAmountError ||
+      error instanceof InvoiceFinancialStateError
+    ) {
+      throw new HTTPException(error instanceof InvoiceAmountError ? 400 : 409, {
+        message: error.message,
+      });
+    }
+    throw error;
+  }
+}
+
+async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
+  try {
+    return await persistInvoiceUpdate(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError) {
+      throw new HTTPException(409, { message: error.message });
+    }
+    throw error;
+  }
+}
+
+async function deleteInvoice(...args: Parameters<typeof persistInvoiceDelete>) {
+  try {
+    return await persistInvoiceDelete(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError) {
+      throw new HTTPException(409, { message: error.message });
+    }
+    throw error;
+  }
+}
 
 const app = new OpenAPIHono<Context>();
 
@@ -85,41 +127,15 @@ app.openapi(
       data: result.data.map((invoice) => {
         const { token, ...invoiceWithoutToken } = invoice;
 
-        // Calculate amounts if lineItems exist
-        let calculatedAmounts = {};
-        if (
-          invoice.lineItems &&
-          Array.isArray(invoice.lineItems) &&
-          invoice.lineItems.length > 0
-        ) {
-          const {
-            subTotal,
-            total,
-            vat: calculatedVAT,
-            tax: calculatedTax,
-          } = calculateTotal({
-            lineItems: invoice.lineItems.map((item: any) => ({
-              price: item.price,
-              quantity: item.quantity,
-            })),
-            taxRate: (invoice.template as any)?.taxRate ?? 0,
-            vatRate: (invoice.template as any)?.vatRate ?? 0,
-            discount: invoice.discount ?? 0,
-            includeVat: (invoice.template as any)?.includeVat ?? true,
-            includeTax: (invoice.template as any)?.includeTax ?? true,
-          });
-
-          calculatedAmounts = {
-            subtotal: subTotal,
-            amount: total,
-            vat: calculatedVAT,
-            tax: calculatedTax,
-          };
-        }
-
         return {
           ...invoiceWithoutToken,
-          ...calculatedAmounts,
+          // Match the PDF, public HTML and payment amount. Reading an old
+          // invoice must never rewrite its financial snapshot implicitly.
+          subtotal:
+            invoice.subtotal ??
+            (invoice.amount == null
+              ? null
+              : getInvoiceSnapshotAmounts(invoice).subTotal),
           pdfUrl:
             token && process.env.MIDDAY_DASHBOARD_URL
               ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
@@ -248,41 +264,13 @@ app.openapi(
     // Add PDF download and preview URLs and serialize objects like tRPC does with superjson
     const { token, ...resultWithoutToken } = result;
 
-    // Calculate amounts if lineItems exist
-    let calculatedAmounts = {};
-    if (
-      result.lineItems &&
-      Array.isArray(result.lineItems) &&
-      result.lineItems.length > 0
-    ) {
-      const {
-        subTotal,
-        total,
-        vat: calculatedVAT,
-        tax: calculatedTax,
-      } = calculateTotal({
-        lineItems: result.lineItems.map((item: any) => ({
-          price: item.price,
-          quantity: item.quantity,
-        })),
-        taxRate: (result.template as any)?.taxRate ?? 0,
-        vatRate: (result.template as any)?.vatRate ?? 0,
-        discount: result.discount ?? 0,
-        includeVat: (result.template as any)?.includeVat ?? true,
-        includeTax: (result.template as any)?.includeTax ?? true,
-      });
-
-      calculatedAmounts = {
-        subtotal: subTotal,
-        amount: total,
-        vat: calculatedVAT,
-        tax: calculatedTax,
-      };
-    }
-
     const response = {
       ...resultWithoutToken,
-      ...calculatedAmounts,
+      subtotal:
+        result.subtotal ??
+        (result.amount == null
+          ? null
+          : getInvoiceSnapshotAmounts(result).subTotal),
       paymentDetails: result.paymentDetails
         ? JSON.stringify(result.paymentDetails)
         : null,
@@ -467,6 +455,7 @@ app.openapi(
       topBlock: input.topBlock,
       bottomBlock: input.bottomBlock,
       amount: input.amount,
+      subtotal: input.subtotal,
       lineItems: input.lineItems?.map((item) => ({
         ...item,
         name: JSON.stringify(item.name),

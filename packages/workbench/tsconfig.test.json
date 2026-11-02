@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "bun"]
+  },
+  "include": ["src/core/**/*.test.ts", "src/adapters/**/*.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}

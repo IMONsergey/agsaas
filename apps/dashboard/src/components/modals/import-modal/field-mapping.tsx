@@ -1,6 +1,12 @@
 "use client";
 
-import { formatAmountValue, formatDate } from "@midday/import";
+import {
+  formatAmountValue,
+  formatDate,
+  isValidTransactionAmount,
+  parseAmountValue,
+  parseDateValue,
+} from "@midday/import";
 import {
   Accordion,
   AccordionContent,
@@ -39,6 +45,7 @@ import { mappableFields, useCsvContext } from "./context";
 import {
   getBalanceFromLatestDate,
   isActiveRequest,
+  parseBalancePreview,
   shouldApplyMappedColumn,
 } from "./field-mapping.utils";
 
@@ -202,6 +209,65 @@ export function FieldMapping({ currencies }: { currencies: string[] }) {
           <AccordionTrigger className="text-sm">Settings</AccordionTrigger>
           <AccordionContent>
             <div className="flex flex-col gap-4">
+              <p className="text-sm text-[#606060]">
+                Auto accepts only unambiguous values. Choose a format for dates
+                such as 01/02/2024 or amounts such as 1,234. Dates require a
+                four-digit year.
+              </p>
+              <p className="text-sm text-[#606060]">
+                Balance previews use sample rows only. Importing does not update
+                your account balance from the CSV balance column.
+              </p>
+              <Controller
+                control={control}
+                name="parseProfile.dateOrder"
+                render={({ field: { onChange, value } }) => (
+                  <div className="space-y-1">
+                    <Label htmlFor="import-date-order">Date order</Label>
+                    <Select value={value ?? "auto"} onValueChange={onChange}>
+                      <SelectTrigger id="import-date-order">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">
+                          Auto (unambiguous only)
+                        </SelectItem>
+                        <SelectItem value="day-first">
+                          Day first (DD/MM/YYYY)
+                        </SelectItem>
+                        <SelectItem value="month-first">
+                          Month first (MM/DD/YYYY)
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              />
+              <Controller
+                control={control}
+                name="parseProfile.amountFormat"
+                render={({ field: { onChange, value } }) => (
+                  <div className="space-y-1">
+                    <Label htmlFor="import-amount-format">Amount format</Label>
+                    <Select value={value ?? "auto"} onValueChange={onChange}>
+                      <SelectTrigger id="import-amount-format">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">
+                          Auto (unambiguous only)
+                        </SelectItem>
+                        <SelectItem value="decimal-comma">
+                          Decimal comma (1 234,56)
+                        </SelectItem>
+                        <SelectItem value="decimal-dot">
+                          Decimal point (1,234.56)
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              />
               <Controller
                 control={control}
                 name="inverted"
@@ -309,6 +375,7 @@ function FieldRow({
   const value = useWatch({ control, name: field });
   const inverted = useWatch({ control, name: "inverted" });
   const dateColumn = useWatch({ control, name: "date" });
+  const parseProfile = useWatch({ control, name: "parseProfile" });
 
   const isLoading = isStreaming && !value;
 
@@ -317,7 +384,7 @@ function FieldRow({
   // For balance: use value from row with latest date (current balance)
   const balanceFromLatestDate =
     field === "balance" && value && dateColumn && firstRows
-      ? getBalanceFromLatestDate(firstRows, dateColumn, value)
+      ? getBalanceFromLatestDate(firstRows, dateColumn, value, parseProfile)
       : undefined;
 
   // For other fields, use first row; for balance use row with latest date
@@ -344,28 +411,45 @@ function FieldRow({
       : [];
 
   // Check if date field has valid parseable date
-  const isDateInvalid =
-    field === "date" && description && !formatDate(description);
+  const parsedDate = description
+    ? parseDateValue(description, parseProfile?.dateOrder)
+    : undefined;
+  const isDateInvalid = field === "date" && Boolean(parsedDate?.error);
 
   // Check if amount field has valid parseable number
   const parsedAmount = description
-    ? formatAmountValue({ amount: description, inverted })
+    ? parseAmountValue({
+        amount: description,
+        inverted,
+        amountFormat: parseProfile?.amountFormat,
+      })
     : null;
   const isAmountInvalid =
-    field === "amount" && description && Number.isNaN(parsedAmount);
+    (field === "amount" || field === "balance") && Boolean(parsedAmount?.error);
+  const isPrecisionInvalid =
+    field === "amount" &&
+    parsedAmount?.value !== undefined &&
+    !isValidTransactionAmount(
+      parsedAmount.value,
+      parsedAmount.normalizedDecimal,
+    );
 
   // Combined invalid state for styling
-  const isFieldInvalid = isDateInvalid || isAmountInvalid;
+  const isFieldInvalid = isDateInvalid || isAmountInvalid || isPrecisionInvalid;
 
   const formatDescription = (description?: string) => {
     if (!description) return;
 
     if (field === "date") {
-      return formatDate(description);
+      return formatDate(description, parseProfile?.dateOrder);
     }
 
     if (field === "amount") {
-      const amount = formatAmountValue({ amount: description, inverted });
+      const amount = formatAmountValue({
+        amount: description,
+        inverted,
+        amountFormat: parseProfile?.amountFormat,
+      });
 
       if (currency) {
         return formatAmount({ currency, amount, locale: user?.locale });
@@ -375,10 +459,8 @@ function FieldRow({
     }
 
     if (field === "balance") {
-      const amount = formatAmountValue({ amount: description });
-
-      // Balance is always displayed as positive (absolute value)
-      const balance = Math.abs(amount);
+      // Balance is not inverted: show the same signed value used by the API.
+      const balance = parseBalancePreview(description, parseProfile);
 
       if (currency) {
         return formatAmount({
@@ -400,6 +482,15 @@ function FieldRow({
 
   // Get appropriate error message for invalid fields
   const getErrorMessage = () => {
+    if (isPrecisionInvalid) {
+      return "Amount cannot be stored without rounding: at most two decimal places and 99999999.99 in magnitude";
+    }
+    if (isDateInvalid && parsedDate?.error === "ambiguous") {
+      return "Ambiguous date - choose Date order in Settings";
+    }
+    if (isAmountInvalid && parsedAmount?.error === "ambiguous") {
+      return "Ambiguous amount - choose Amount format in Settings";
+    }
     if (isDateInvalid) return "Invalid date format - cannot parse this date";
     if (isAmountInvalid) return "Invalid amount - cannot parse this number";
     return null;

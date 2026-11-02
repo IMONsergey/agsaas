@@ -2,27 +2,18 @@
 
 import { Icons } from "@midday/ui/icons";
 import { SubmitButton } from "@midday/ui/submit-button";
-import { useMutation } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
-import { useTRPC } from "@/trpc/client";
+import { useInboxOAuth } from "@/hooks/use-inbox-oauth";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 
 type Props = {
   redirectPath?: string;
 };
 
 export function ConnectGmail({ redirectPath }: Props) {
-  const trpc = useTRPC();
-  const router = useRouter();
+  const { data: capabilities } = useInstanceCapabilities();
+  const configured = capabilities?.integrations.gmail?.enabled === true;
 
-  const connectMutation = useMutation(
-    trpc.inboxAccounts.connect.mutationOptions({
-      onSuccess: (authUrl) => {
-        if (authUrl) {
-          router.push(authUrl);
-        }
-      },
-    }),
-  );
+  const connectMutation = useInboxOAuth();
 
   return (
     <SubmitButton
@@ -33,6 +24,8 @@ export function ConnectGmail({ redirectPath }: Props) {
       onClick={() =>
         connectMutation.mutate({ provider: "gmail", redirectPath })
       }
+      disabled={!configured}
+      title={configured ? undefined : "Not configured for this installation"}
       isSubmitting={connectMutation.isPending}
     >
       <div className="flex items-center space-x-2">

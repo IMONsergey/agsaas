@@ -19,6 +19,7 @@ import {
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { FinancialOperationConflictError } from "@midday/db/financial-job";
 import {
   createTransaction,
   createTransactions,
@@ -30,6 +31,7 @@ import {
   updateTransactions,
 } from "@midday/db/queries";
 import { signedUrl } from "@midday/supabase/storage";
+import { HTTPException } from "hono/http-exception";
 import { withRequiredScope } from "../middleware";
 
 const app = new OpenAPIHono<Context>();
@@ -259,9 +261,14 @@ app.openapi(
     const teamId = c.get("teamId");
     const params = c.req.valid("json");
 
-    const result = await createTransaction(db, { teamId, ...params });
-
-    return c.json(validateResponse(result, transactionResponseSchema));
+    try {
+      const result = await createTransaction(db, { teamId, ...params });
+      return c.json(validateResponse(result, transactionResponseSchema));
+    } catch (error) {
+      if (error instanceof FinancialOperationConflictError)
+        throw new HTTPException(409, { message: error.message });
+      throw error;
+    }
   },
 );
 

@@ -18,6 +18,11 @@ process.env.DATABASE_IAD_URL =
 process.env.MIDDAY_DASHBOARD_URL =
   process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
 process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || "re_test_key";
+process.env.EMAIL_FROM = "AGSaaS <accounts@example.test>";
+process.env.EMAIL_REPLY_TO = "support@example.test";
+process.env.EMAIL_REVIEW_TO = "review@example.test";
+process.env.DASHBOARD_URL = "https://app.example.test";
+process.env.APP_NAME = "AGSaaS";
 process.env.RESEND_AUDIENCE_ID =
   process.env.RESEND_AUDIENCE_ID || "aud_test_resend_audience";
 process.env.FILE_KEY_SECRET = process.env.FILE_KEY_SECRET || "test-secret";
@@ -45,37 +50,40 @@ process.env.STRIPE_SECRET_KEY =
   process.env.STRIPE_SECRET_KEY || "sk_test_mock_secret";
 
 // Create a mock db object for tRPC tests that simulates Drizzle's query interface
-const createMockDb = () => ({
-  query: {
-    users: {
-      findFirst: mock(() =>
-        Promise.resolve({
-          id: "test-user-id",
-          teamId: "test-team-id" as string | null,
-          email: "test@example.com",
-          usersOnTeams: [{ id: "membership-1", teamId: "test-team-id" }],
-        }),
-      ),
-    },
-    invoices: {
-      findMany: mock(() => Promise.resolve([])),
-      findFirst: mock(() => Promise.resolve(null)),
-    },
-  },
-  // Used by invoice-recurring delete/pause (transaction + invoices.findMany)
-  transaction: mock(async (fn: (tx: any) => Promise<unknown>) =>
-    fn({
-      query: {
-        invoices: {
-          findMany: mock(() => Promise.resolve([])),
-        },
+const createMockDb = () => {
+  const database = {
+    query: {
+      users: {
+        findFirst: mock(() =>
+          Promise.resolve({
+            id: "test-user-id",
+            teamId: "test-team-id" as string | null,
+            email: "test@example.com",
+            usersOnTeams: [{ id: "membership-1", teamId: "test-team-id" }],
+          }),
+        ),
       },
-    }),
-  ),
-  // Add usePrimaryOnly for the withReplicas pattern
-  usePrimaryOnly: () => createMockDb(),
-  $primary: undefined,
-});
+      invoices: {
+        findMany: mock(() => Promise.resolve([])),
+        findFirst: mock(() => Promise.resolve(null)),
+      },
+    },
+    // Used by invoice-recurring delete/pause (transaction + invoices.findMany)
+    transaction: mock(async (fn: (tx: any) => Promise<unknown>) =>
+      fn({
+        query: {
+          invoices: {
+            findMany: mock(() => Promise.resolve([])),
+          },
+        },
+      }),
+    ),
+    $primary: undefined,
+  };
+
+  // Routing must preserve seeded query mocks, not create a new default user.
+  return Object.assign(database, { usePrimaryOnly: () => database });
+};
 
 export const mockDb = createMockDb();
 
@@ -110,6 +118,9 @@ export const mocks = {
     meta: { hasNextPage: false, hasPreviousPage: false },
   })) as MockFn,
   getInvoiceById: mock(() => null) as MockFn,
+  getPublishedInvoiceById: mock(() => null) as MockFn,
+  getInvoiceDocumentById: mock(() => null) as MockFn,
+  getInvoiceRefundContext: mock(() => null) as MockFn,
   createInvoice: mock(() => ({})) as MockFn,
   updateInvoice: mock(() => ({})) as MockFn,
   deleteInvoice: mock(() => ({})) as MockFn,
@@ -375,6 +386,8 @@ export const mocks = {
     meta: { hasNextPage: false, cursor: null },
   })) as MockFn,
   getTrackerProjectById: mock(() => null) as MockFn,
+  getUnbilledTrackerEntriesForInvoice: mock(() => []) as MockFn,
+  allocateTrackerEntriesToInvoice: mock(() => undefined) as MockFn,
   upsertTrackerProject: mock(() => ({
     id: "b3b6e2c2-1f2a-4e3b-9c1d-2a4b6e2c21f2",
     name: "New Project",
@@ -658,6 +671,9 @@ export const mocks = {
   ) as MockFn,
 
   // Polar (billing)
+  polarCheckoutCreate: mock(() =>
+    Promise.resolve({ url: "https://polar.test/checkout" }),
+  ) as MockFn,
   polarSubscriptionsList: mock(() =>
     Promise.resolve({ result: { items: [] as unknown[] } }),
   ) as MockFn,
@@ -746,6 +762,7 @@ export const mocks = {
 
   // Bank connections
   getBankConnections: mock(() => Promise.resolve([])) as MockFn,
+  listBankConnectionCleanupStatus: mock(() => Promise.resolve([])) as MockFn,
   deleteBankConnection: mock(() => Promise.resolve(null)) as MockFn,
 
   // Inbox accounts (tRPC inbox-accounts router)
@@ -776,6 +793,8 @@ export const mocks = {
   // Other commonly used queries
   validateAccessToken: mock(() => null) as MockFn,
   triggerJob: mock(() => ({ id: "job-123" })) as MockFn,
+  removeInboxSyncScheduler: mock(() => Promise.resolve(true)) as MockFn,
+  getInboxAccountById: mock(() => Promise.resolve(null)) as MockFn,
   signedUrl: mock(() => ({
     data: { signedUrl: "https://example.com/signed" },
     error: null,
@@ -821,6 +840,9 @@ const dbQueriesMock = new Proxy(
     // Invoice functions
     getInvoices: mocks.getInvoices,
     getInvoiceById: mocks.getInvoiceById,
+    getPublishedInvoiceById: mocks.getPublishedInvoiceById,
+    getInvoiceDocumentById: mocks.getInvoiceDocumentById,
+    getInvoiceRefundContext: mocks.getInvoiceRefundContext,
     createInvoice: mocks.createInvoice,
     updateInvoice: mocks.updateInvoice,
     deleteInvoice: mocks.deleteInvoice,
@@ -910,7 +932,9 @@ const dbQueriesMock = new Proxy(
     getInboxByStatus: mocks.getInboxByStatus,
     getInboxSearch: mocks.getInboxSearch,
     getInboxAccounts: mocks.getInboxAccounts,
-    getInboxAccountById: createDefaultMock(),
+    getInboxAccountById: mocks.getInboxAccountById,
+    createInboxOAuthIntent: createDefaultMock(),
+    consumeInboxOAuthIntent: createDefaultMock(),
     upsertInboxAccount: createDefaultMock(),
     updateInboxAccount: createDefaultMock(),
     deleteInboxAccount: mocks.deleteInboxAccount,
@@ -950,6 +974,7 @@ const dbQueriesMock = new Proxy(
     deleteTeamMember: mocks.deleteTeamMember,
     getAvailablePlans: mocks.getAvailablePlans,
     getBankConnections: mocks.getBankConnections,
+    listBankConnectionCleanupStatus: mocks.listBankConnectionCleanupStatus,
     getInvitesByEmail: mocks.getInvitesByEmail,
     getTeamInvites: mocks.getTeamInvites,
     getTeamMemberRole: mocks.getTeamMemberRole,
@@ -997,6 +1022,9 @@ const dbQueriesMock = new Proxy(
     getTrackerRecordsByRange: mocks.getTrackerRecordsByRange,
     getTrackerProjects: mocks.getTrackerProjects,
     getTrackerProjectById: mocks.getTrackerProjectById,
+    getUnbilledTrackerEntriesForInvoice:
+      mocks.getUnbilledTrackerEntriesForInvoice,
+    allocateTrackerEntriesToInvoice: mocks.allocateTrackerEntriesToInvoice,
     upsertTrackerProject: mocks.upsertTrackerProject,
     upsertTrackerEntries: mocks.upsertTrackerEntries,
     deleteTrackerEntry: mocks.deleteTrackerEntry,
@@ -1187,11 +1215,20 @@ mock.module("@midday/supabase/storage", () => ({
 mock.module("@midday/job-client", () => ({
   triggerJob: mocks.triggerJob,
   getJobStatus: mocks.getJobStatus,
+  removeInboxSyncScheduler: mocks.removeInboxSyncScheduler,
   getQueue: mock(() => ({
     getJob: mock(() => null),
     getJobs: mock(() => []),
   })),
   decodeJobId: mock((id: string) => ({ id, queue: "default" })),
+}));
+
+mock.module("@midday/notifications/team-invitation-config", () => ({
+  getTeamInviteEmailConfig: mock(() => ({
+    from: "AGSaaS <hello@example.test>",
+    appUrl: "https://app.example.test",
+    productName: "AGSaaS",
+  })),
 }));
 
 mock.module("@midday/notifications", () => ({
@@ -1232,22 +1269,8 @@ mock.module("@midday/import", () => ({
   buildCsvMappingPrompt: mock(() => "mock-csv-mapping-prompt"),
 }));
 
-// Mock @midday/invoice
-mock.module("@midday/invoice/calculate", () => ({
-  calculateTotal: mock(({ lineItems }: { lineItems: any[] }) => ({
-    subTotal: lineItems.reduce(
-      (sum: number, item: any) => sum + item.price * item.quantity,
-      0,
-    ),
-    total: lineItems.reduce(
-      (sum: number, item: any) => sum + item.price * item.quantity,
-      0,
-    ),
-    vat: 0,
-    tax: 0,
-  })),
-}));
-
+// Keep the pure @midday/invoice/calculate module real: financial snapshot and
+// rounding regressions must not be hidden by a tax-free fake calculator.
 mock.module("@midday/invoice/utils", () => ({
   transformCustomerToContent: mock((customer: any) => ({
     type: "doc",
@@ -1285,6 +1308,9 @@ mock.module("@api/services/supabase", () => ({
   createAdminClient: mock(async () => ({
     auth: {
       admin: {
+        mfa: {
+          listFactors: async () => ({ data: { factors: [] }, error: null }),
+        },
         deleteUser: (...args: unknown[]) =>
           mocks.supabaseAdminDeleteUser(...args),
       },
@@ -1307,9 +1333,7 @@ mock.module("@api/services/resend", () => ({
 mock.module("@api/utils/polar", () => ({
   api: {
     checkouts: {
-      create: mock(() =>
-        Promise.resolve({ url: "https://polar.test/checkout" }),
-      ),
+      create: mocks.polarCheckoutCreate,
     },
     customers: {
       getExternal: mock(() => Promise.resolve({ id: "polar-customer-id" })),

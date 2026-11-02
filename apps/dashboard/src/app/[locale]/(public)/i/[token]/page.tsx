@@ -79,22 +79,19 @@ async function updateInvoiceViewedAt(id: string) {
 
 export default async function Page(props: Props) {
   const params = await props.params;
-  const supabase = await createClient({ admin: true });
   const searchParams = await props.searchParams;
   const viewerParam = searchParams?.viewer as string | undefined;
   const viewer = viewerParam ? decodeURIComponent(viewerParam) : undefined;
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
   const queryClient = getQueryClient();
 
-  const invoice = await queryClient.fetchQuery(
-    trpc.invoice.getInvoiceByToken.queryOptions({
-      token: params.token,
-    }),
-  );
+  const invoice = await queryClient
+    .fetchQuery(
+      trpc.invoice.getInvoiceByToken.queryOptions({
+        token: params.token,
+      }),
+    )
+    .catch(() => null);
 
   if (!invoice) {
     notFound();
@@ -115,11 +112,6 @@ export default async function Page(props: Props) {
     }
   }
 
-  // If the invoice is draft and the user is not logged in, return 404 or if the invoice is not found
-  if (!invoice || (invoice.status === "draft" && !session)) {
-    notFound();
-  }
-
   const width = invoice.template.size === "letter" ? 750 : 595;
   const height = invoice.template.size === "letter" ? 1056 : 842;
 
@@ -130,7 +122,7 @@ export default async function Page(props: Props) {
   return (
     <>
       <InvoiceViewWrapper
-        token={invoice.token}
+        token={params.token}
         invoiceNumber={invoice.invoiceNumber || "invoice"}
         paymentEnabled={paymentEnabled}
         amount={invoice.amount ?? undefined}
@@ -152,14 +144,9 @@ export default async function Page(props: Props) {
       </InvoiceViewWrapper>
 
       <div className="fixed bottom-4 right-4 hidden md:block">
-        <a
-          href="https://midday.ai?utm_source=invoice"
-          target="_blank"
-          rel="noreferrer"
-          className="text-[9px] text-[#878787]"
-        >
-          Powered by <span className="text-primary">midday</span>
-        </a>
+        <span className="text-[9px] text-[#878787]">
+          Powered by <span className="text-primary">AGSaaS</span>
+        </span>
       </div>
     </>
   );

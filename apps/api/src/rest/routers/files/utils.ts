@@ -1,6 +1,7 @@
 import { teamCache } from "@midday/cache/team-cache";
 import type { Database } from "@midday/db/client";
 import { hasTeamAccess } from "@midday/db/queries";
+import { validateVaultKey } from "@midday/supabase/storage-path";
 import { HTTPException } from "hono/http-exception";
 
 /**
@@ -12,29 +13,14 @@ export function normalizeAndValidatePath(filePath: string): {
   pathTeamId: string;
   pathArray: string[];
 } {
-  // Normalize path
-  const normalizedPath = filePath.startsWith("vault/")
-    ? filePath.substring("vault/".length)
-    : filePath;
-
-  // Extract teamId from path and validate
-  const pathParts = normalizedPath.split("/");
-  const pathTeamId = pathParts[0];
-  const uuidRegex =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-  if (!pathTeamId || !uuidRegex.test(pathTeamId)) {
+  try {
+    return validateVaultKey(filePath);
+  } catch {
     throw new HTTPException(400, {
       message:
-        "Invalid file path format. Path must start with a valid teamId UUID.",
+        "Invalid file path. A canonical team-scoped storage key is required.",
     });
   }
-
-  return {
-    normalizedPath,
-    pathTeamId,
-    pathArray: pathParts,
-  };
 }
 
 /**
@@ -85,4 +71,20 @@ export function getContentTypeFromFilename(filename: string): string {
     xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   };
   return contentTypes[ext || ""] || "application/octet-stream";
+}
+
+/** RFC 5987 name plus a safe ASCII fallback, including for legacy invoice names. */
+export function attachmentDisposition(filename: string): string {
+  const name = filename.slice(0, 240);
+  const fallback = Array.from(name, (char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code > 126 || ['"', "\\", "/"].includes(char)
+      ? "_"
+      : char;
+  }).join("");
+  const encoded = encodeURIComponent(name).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${fallback || "download"}"; filename*=UTF-8''${encoded}`;
 }

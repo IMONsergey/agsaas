@@ -21,6 +21,14 @@ export function DataTable() {
   const trpc = useTRPC();
   const { data } = useSuspenseQuery({
     ...trpc.team.teamInvites.queryOptions(),
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (invite) =>
+          invite.delivery?.status === "pending" ||
+          invite.delivery?.status === "sending",
+      )
+        ? 5000
+        : false,
   });
 
   const table = useReactTable({

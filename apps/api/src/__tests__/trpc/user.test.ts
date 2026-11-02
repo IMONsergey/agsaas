@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { TeamMembershipError } from "@midday/db/errors";
 import { getUserInvites } from "@midday/db/queries";
 import { createCallerFactory } from "../../trpc/init";
 import { userRouter } from "../../trpc/routers/user";
@@ -193,11 +194,20 @@ describe("tRPC: user.switchTeam", () => {
 });
 
 describe("tRPC: user.delete", () => {
+  const originalApiKey = process.env.RESEND_API_KEY;
+  const originalAudience = process.env.RESEND_AUDIENCE_ID;
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = originalApiKey;
+    if (originalAudience === undefined) delete process.env.RESEND_AUDIENCE_ID;
+    else process.env.RESEND_AUDIENCE_ID = originalAudience;
+  });
   beforeEach(() => {
     mocks.deleteUser.mockReset();
-    mocks.deleteUser.mockImplementation(() =>
-      Promise.resolve({ id: "test-user-id" }),
-    );
+    mocks.deleteUser.mockImplementation(async (_db, id, deleteAuth) => {
+      await deleteAuth();
+      return { id };
+    });
     mocks.supabaseAdminDeleteUser.mockReset();
     mocks.supabaseAdminDeleteUser.mockImplementation(() =>
       Promise.resolve({ data: {}, error: null }),
@@ -216,6 +226,7 @@ describe("tRPC: user.delete", () => {
     expect(mocks.deleteUser).toHaveBeenCalledWith(
       expect.anything(),
       "test-user-id",
+      expect.any(Function),
     );
     expect(mocks.supabaseAdminDeleteUser).toHaveBeenCalledWith("test-user-id");
     expect(mocks.resendContactsRemove).toHaveBeenCalledWith(
@@ -224,5 +235,76 @@ describe("tRPC: user.delete", () => {
         audienceId: process.env.RESEND_AUDIENCE_ID,
       }),
     );
+  });
+
+  test("a shared-team last-owner rejection happens before Auth or marketing", async () => {
+    mocks.deleteUser.mockImplementation(async () => {
+      throw new TeamMembershipError("LAST_TEAM_OWNER");
+    });
+    await expect(
+      createCaller(createTestContext()).delete(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.supabaseAdminDeleteUser).not.toHaveBeenCalled();
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
+  });
+
+  test("checks a returned Auth error and does not run marketing cleanup", async () => {
+    mocks.supabaseAdminDeleteUser.mockImplementation(async () => ({
+      data: null,
+      error: { code: "unexpected_failure" },
+    }));
+    await expect(createCaller(createTestContext()).delete()).rejects.toThrow(
+      "could not be confirmed",
+    );
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
+  });
+
+  test("an Auth transport rejection is not reported as successful deletion", async () => {
+    mocks.supabaseAdminDeleteUser.mockImplementation(async () => {
+      throw new Error("timeout");
+    });
+    await expect(createCaller(createTestContext()).delete()).rejects.toThrow(
+      "could not be confirmed",
+    );
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
+  });
+
+  test("a previously removed Auth user can complete idempotent local cleanup", async () => {
+    mocks.supabaseAdminDeleteUser.mockImplementation(async () => ({
+      data: null,
+      error: { code: "user_not_found" },
+    }));
+    expect(await createCaller(createTestContext()).delete()).toEqual({
+      id: "test-user-id",
+    });
+  });
+
+  for (const setting of ["RESEND_API_KEY", "RESEND_AUDIENCE_ID"] as const) {
+    test(`account deletion works without optional ${setting}`, async () => {
+      delete process.env[setting];
+      expect(await createCaller(createTestContext()).delete()).toEqual({
+        id: "test-user-id",
+      });
+      expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
+    });
+  }
+
+  test("a marketing SDK returned error does not undo successful core deletion", async () => {
+    mocks.resendContactsRemove.mockImplementation(async () => ({
+      data: null,
+      error: { message: "unavailable" },
+    }));
+    expect(await createCaller(createTestContext()).delete()).toEqual({
+      id: "test-user-id",
+    });
+  });
+
+  test("a marketing exception does not undo successful core deletion", async () => {
+    mocks.resendContactsRemove.mockImplementation(async () => {
+      throw new Error("unavailable");
+    });
+    expect(await createCaller(createTestContext()).delete()).toEqual({
+      id: "test-user-id",
+    });
   });
 });

@@ -1,14 +1,17 @@
 import type { Metadata } from "next";
+import { ChangePassword } from "@/components/change-password";
 import { MfaSettingsList } from "@/components/mfa-settings-list";
 import { AddNewDeviceModal } from "@/components/modals/add-new-device";
+import { getPasswordCapabilities } from "@/utils/password-config.server";
 
 export const metadata: Metadata = {
-  title: "Security | Midday",
+  title: "Security | AGSaaS",
 };
 
 export default async function Security() {
   return (
     <div className="space-y-12">
+      {getPasswordCapabilities().passwordChange.enabled && <ChangePassword />}
       <MfaSettingsList />
       <AddNewDeviceModal />
     </div>

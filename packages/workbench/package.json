@@ -27,11 +27,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "npm run build:ui && npm run build:lib",
+    "build": "bun run build:ui && bun run build:lib",
     "build:lib": "tsc",
     "build:ui": "vite build",
     "dev": "vite build --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
+    "test": "bun test --exit src/core src/adapters",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },
@@ -45,6 +46,7 @@
     "lru-cache": "^11.2.7"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
@@ -79,7 +81,7 @@
     "tailwindcss": "^4.2.2",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "catalog:",
-    "vite": "8.0.2",
+    "vite": "8.3.5",
     "zod": "catalog:"
   },
   "peerDependencies": {

@@ -11,8 +11,9 @@ import {
   updateTeamByIdSchema,
   updateTeamMemberSchema,
 } from "@api/schemas/team";
+import { enqueueTeamInvitations } from "@api/services/team-invitation-queue";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
-import type { InviteTeamMembersPayload } from "@jobs/schema";
+import { withTeamMembershipErrors } from "@api/utils/team-membership";
 
 import { teamCache } from "@midday/cache/team-cache";
 import {
@@ -29,16 +30,14 @@ import {
   getInvitesByEmail,
   getTeamById,
   getTeamInvites,
-  getTeamMemberRole,
   getTeamMembersByTeamId,
   getTeamsByUserId,
-  hasTeamAccess,
   leaveTeam,
   updateTeamById,
   updateTeamMember,
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
-import { tasks } from "@trigger.dev/sdk";
+import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
 import { TRPCError } from "@trpc/server";
 
 export const teamRouter = createTRPCRouter({
@@ -70,12 +69,14 @@ export const teamRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createTeamSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
-      const teamId = await createTeam(db, {
-        ...input,
-        userId: session.user.id,
-        email: session.user.email!,
-        companyType: input.companyType,
-      });
+      const teamId = await withTeamMembershipErrors(() =>
+        createTeam(db, {
+          ...input,
+          userId: session.user.id,
+          email: session.user.email!,
+          companyType: input.companyType,
+        }),
+      );
 
       if (input.switchTeam) {
         try {
@@ -91,24 +92,9 @@ export const teamRouter = createTRPCRouter({
   leave: protectedProcedure
     .input(leaveTeamSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
-      const teamMembersData = await getTeamMembersByTeamId(db, input.teamId);
-
-      const currentUser = teamMembersData?.find(
-        (member) => member.user?.id === session.user.id,
+      const result = await withTeamMembershipErrors(() =>
+        leaveTeam(db, { userId: session.user.id, teamId: input.teamId }),
       );
-
-      const totalOwners = teamMembersData?.filter(
-        (member) => member.role === "owner",
-      ).length;
-
-      if (currentUser?.role === "owner" && totalOwners === 1) {
-        throw Error("Action not allowed");
-      }
-
-      const result = await leaveTeam(db, {
-        userId: session.user.id,
-        teamId: input.teamId,
-      });
 
       try {
         await teamCache.invalidateForUser(session.user.id, input.teamId);
@@ -122,18 +108,21 @@ export const teamRouter = createTRPCRouter({
   acceptInvite: protectedProcedure
     .input(acceptTeamInviteSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
-      if (!session.user.email) {
+      const userEmail = session.user.email;
+      if (!userEmail) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Email is required to accept an invite",
         });
       }
 
-      return acceptTeamInvite(db, {
-        id: input.id,
-        userId: session.user.id,
-        userEmail: session.user.email,
-      });
+      return withTeamMembershipErrors(() =>
+        acceptTeamInvite(db, {
+          id: input.id,
+          userId: session.user.id,
+          userEmail,
+        }),
+      );
     }),
 
   declineInvite: protectedProcedure
@@ -148,52 +137,9 @@ export const teamRouter = createTRPCRouter({
   delete: protectedProcedure
     .input(deleteTeamSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
-      // Check if the user has access to the team before deleting
-      const canAccess = await hasTeamAccess(db, input.teamId, session.user.id);
-
-      if (!canAccess) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "You don't have access to this team",
-        });
-      }
-
-      // Fetch team data BEFORE deleting (for cleanup job)
-      const team = await getTeamById(db, input.teamId);
-
-      if (!team) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Team not found",
-        });
-      }
-
-      const bankConnections = await getBankConnections(db, {
-        teamId: input.teamId,
-      });
-
-      // Trigger cleanup job BEFORE deleting team from database.
-      // This ensures that if job triggering fails (Redis down, queue unavailable),
-      // the team remains intact and the user can retry. The cleanup job will handle
-      // bank connection deletion. Subscription cancellation should be done manually
-      // by the user via the customer portal before deleting the team.
-      await triggerJob(
-        "delete-team",
-        {
-          teamId: input.teamId!,
-          connections: bankConnections.map((c) => ({
-            referenceId: c.referenceId,
-            provider: c.provider,
-            accessToken: c.accessToken,
-          })),
-        },
-        "teams",
+      const data = await withTeamMembershipErrors(() =>
+        deleteTeam(db, { teamId: input.teamId, userId: session.user.id }),
       );
-
-      const data = await deleteTeam(db, {
-        teamId: input.teamId,
-        userId: session.user.id,
-      });
 
       if (!data) {
         throw new TRPCError({
@@ -211,6 +157,7 @@ export const teamRouter = createTRPCRouter({
       } catch {
         // Non-fatal — team deletion succeeded, cache will expire naturally
       }
+      return { id: data.id, cleanupPending: data.cleanupPending };
     }),
 
   deleteMember: protectedProcedure
@@ -223,36 +170,13 @@ export const teamRouter = createTRPCRouter({
         });
       }
 
-      const callerRole = await getTeamMemberRole(db, teamId!, session.user.id);
-
-      if (callerRole !== "owner") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Only team owners can remove members",
-        });
-      }
-
-      // Prevent removing the last owner
-      const targetRole = await getTeamMemberRole(db, teamId!, input.userId);
-
-      if (targetRole === "owner") {
-        const teamMembers = await getTeamMembersByTeamId(db, teamId!);
-        const totalOwners = teamMembers?.filter(
-          (member) => member.role === "owner",
-        ).length;
-
-        if (totalOwners === 1) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "Cannot remove the last team owner",
-          });
-        }
-      }
-
-      const result = await deleteTeamMember(db, {
-        teamId: input.teamId,
-        userId: input.userId,
-      });
+      const result = await withTeamMembershipErrors(() =>
+        deleteTeamMember(db, {
+          teamId: input.teamId,
+          userId: input.userId,
+          actorId: session.user.id,
+        }),
+      );
 
       try {
         await teamCache.invalidateForUser(input.userId, input.teamId);
@@ -273,35 +197,9 @@ export const teamRouter = createTRPCRouter({
         });
       }
 
-      const callerRole = await getTeamMemberRole(db, teamId!, session.user.id);
-
-      if (callerRole !== "owner") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Only team owners can update member roles",
-        });
-      }
-
-      // Prevent demoting the last owner to member
-      if (input.role === "member") {
-        const targetRole = await getTeamMemberRole(db, teamId!, input.userId);
-
-        if (targetRole === "owner") {
-          const teamMembers = await getTeamMembersByTeamId(db, teamId!);
-          const totalOwners = teamMembers?.filter(
-            (member) => member.role === "owner",
-          ).length;
-
-          if (totalOwners === 1) {
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message: "Cannot demote the last team owner",
-            });
-          }
-        }
-      }
-
-      return updateTeamMember(db, input);
+      return withTeamMembershipErrors(() =>
+        updateTeamMember(db, { ...input, actorId: session.user.id }),
+      );
     }),
 
   teamInvites: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
@@ -323,61 +221,59 @@ export const teamRouter = createTRPCRouter({
         });
       }
 
-      const ip = geo.ip ?? "127.0.0.1";
-
-      const data = await createTeamInvites(db, {
-        teamId: teamId!,
-        invites: input.map((invite) => ({
-          ...invite,
-          invitedBy: session.user.id,
-        })),
-      });
-
-      const results = data?.results ?? [];
-      const skippedInvites = data?.skippedInvites ?? [];
-
-      const invites: InviteTeamMembersPayload["invites"] = results.flatMap(
-        (invite) => {
-          if (!invite?.email) {
-            return [];
-          }
-
-          return [
-            {
-              email: invite.email,
-              invitedByName: session.user.full_name ?? "",
-              invitedByEmail,
-              teamName: invite.team?.name ?? "",
-            },
-          ];
-        },
-      );
-
-      // Only trigger email sending if there are valid invites
-      if (invites.length > 0) {
-        await tasks.trigger("invite-team-members", {
-          teamId: teamId!,
-          invites,
-          ip,
-          locale: "en",
-        } satisfies InviteTeamMembersPayload);
+      if (!teamId)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Choose a team before inviting members",
+        });
+      try {
+        getTeamInviteEmailConfig();
+      } catch {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Invitation email is not configured for this installation",
+        });
       }
-
-      // Return information about the invitation process
+      const data = await withTeamMembershipErrors(() =>
+        createTeamInvites(db, {
+          teamId,
+          actorId: session.user.id,
+          deliveryContext: {
+            invitedByEmail,
+            invitedByName: session.user.full_name ?? "",
+            locale: "en",
+            ...(geo.ip ? { ip: geo.ip } : {}),
+          },
+          invites: input.map((invite) => ({
+            ...invite,
+            invitedBy: session.user.id,
+          })),
+        }),
+      );
+      await enqueueTeamInvitations(
+        data.results.map((invite) => ({
+          teamId,
+          inviteId: invite.id,
+          deliveryId: invite.deliveryId,
+        })),
+      );
       return {
-        sent: invites.length,
-        skipped: skippedInvites.length,
-        skippedInvites,
+        queued: data.results.length,
+        skipped: data.skippedInvites.length,
+        skippedInvites: data.skippedInvites,
       };
     }),
 
   deleteInvite: protectedProcedure
     .input(deleteTeamInviteSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
-      return deleteTeamInvite(db, {
-        teamId: teamId!,
-        id: input.id,
-      });
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
+      return withTeamMembershipErrors(() =>
+        deleteTeamInvite(db, {
+          teamId: teamId!,
+          id: input.id,
+          actorId: session.user.id,
+        }),
+      );
     }),
 
   availablePlans: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {

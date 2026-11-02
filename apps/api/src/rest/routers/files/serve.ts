@@ -91,12 +91,10 @@ app.openapi(
     const headers: Record<string, string> = {
       "Content-Type": contentType,
       "Cross-Origin-Resource-Policy": "cross-origin",
+      "Cache-Control": "private, no-store, max-age=0",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
     };
-
-    // Add cache headers for images
-    if (contentType.startsWith("image/")) {
-      headers["Cache-Control"] = "public, max-age=31536000, immutable";
-    }
 
     return new Response(blob, {
       headers,
