@@ -289,8 +289,8 @@ describe("application deployment wiring", () => {
     );
     required(args?.NEXT_PUBLIC_URL, "AGSAAS_DASHBOARD_URL");
     required(args?.NEXT_PUBLIC_API_URL, "AGSAAS_API_URL");
-    expect(args?.NEXT_PUBLIC_AUTH_COOKIE_NAME).toBe(
-      "${NEXT_PUBLIC_AUTH_COOKIE_NAME:-}",
+    expect(args?.NEXT_PUBLIC_AUTH_COOKIE_NAME).toMatch(
+      /^\$\{NEXT_PUBLIC_AUTH_COOKIE_NAME:-\}$/,
     );
     expect(args?.NEXT_PUBLIC_AUTH_COOKIE_NAME).toBe(
       env(apps, "dashboard").NEXT_PUBLIC_AUTH_COOKIE_NAME,

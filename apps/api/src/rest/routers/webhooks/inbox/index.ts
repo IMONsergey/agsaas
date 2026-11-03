@@ -325,12 +325,17 @@ app.openapi(
         allowedCount: allowedAttachments.length,
       });
 
+      // Preserve source positions by object identity across both filters. The
+      // provider Attachment type intentionally has no Zod passthrough index signature.
+      const originalAttachmentIndices = new Map<object, number>(
+        Attachments!.map((attachment, index) => [attachment, index]),
+      );
       const result = await receiveInboxAttachments(db, supabase, {
         teamId,
         messageId: MessageID,
         attachments: filteredAttachments.map((attachment) => ({
           attachment,
-          index: Attachments!.findIndex((original) => original === attachment),
+          index: originalAttachmentIndices.get(attachment) ?? -1,
         })),
         senderEmail: FromFull.Email || null,
         subject: Subject,
