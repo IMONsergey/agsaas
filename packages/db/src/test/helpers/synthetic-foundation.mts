@@ -185,7 +185,7 @@ export function loadSources(root = ROOT): Sources {
   };
   if (
     lock.kind !== "agsaas-synthetic-foundation-source-lock-v1" ||
-    lock.files.length !== 32
+    lock.files.length !== 34
   ) {
     throw new FixtureRefusal("Unexpected reviewed application SQL source lock");
   }

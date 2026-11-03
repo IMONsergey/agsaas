@@ -234,17 +234,17 @@ describe("synthetic foundation guardrails (no database connection)", () => {
       expect(() => assertKnownFixture(catalog)).toThrow();
     }
   });
-  test("the complete merged baseline and all 31 upgrades match reviewed immutable bytes", () => {
+  test("the complete merged baseline and all 33 upgrades match reviewed immutable bytes", () => {
     const sources = loadSources(ROOT);
-    expect(sources.files).toHaveLength(32);
-    expect(sources.receipts).toHaveLength(33); // explicitly synthetic platform + real application SQL
+    expect(sources.files).toHaveLength(34);
+    expect(sources.receipts).toHaveLength(35); // explicitly synthetic platform + real application SQL
     expect(sources.files[0]?.sha256).toBe(
       "e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd",
     );
     expect(
       sources.files
         .at(-1)
-        ?.path.endsWith("20261103103000_onboarding_deliveries.sql"),
+        ?.path.endsWith("20261103111000_plaid_hosted_consent.sql"),
     ).toBe(true);
     expect(sources.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
@@ -262,7 +262,7 @@ describe("synthetic foundation guardrails (no database connection)", () => {
       writeFileSync(changed, `${original}\n-- changed after review\n`);
       expect(() => loadSources(temp)).toThrow("immutable SQL bytes differ");
       writeFileSync(changed, original);
-      const extra = join(dirname(changed), "20261103110000_unreviewed.sql");
+      const extra = join(dirname(changed), "20261103112000_unreviewed.sql");
       writeFileSync(extra, "SELECT 1;");
       expect(() => loadSources(temp)).toThrow("additional or reordered");
       rmSync(extra);

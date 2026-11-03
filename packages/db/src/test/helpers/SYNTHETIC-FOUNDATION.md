@@ -43,7 +43,7 @@ Within one transaction the helper:
    `synthetic-platform.sql`. The Auth subject and claims read the transaction's
    request GUC, rather than constant identities. Test roles use the actual
    application RLS/session/MFA policies. No real service migration is imitated.
-5. Executes the complete immutable application baseline and every one of the 31
+5. Executes the complete immutable application baseline and every one of the 33
    sorted SQL upgrades. `synthetic-foundation-source-lock.json` records each
    filename and SHA256. It refuses changed, additional, missing or reordered
    SQL. The baseline already contains `before.sql` and `after.sql`; they are not
@@ -66,7 +66,7 @@ Only the root coordinator runs database work, through the existing shared
 cgroup for an `imon-job@...service` unit before permitting writes. It performs no
 OS privilege escalation and does not change the queue, Docker or other services.
 
-Run from the merged project containing all 31 upgrades, with the already guarded
+Run from the merged project containing all 33 upgrades, with the already guarded
 `TEST_DATABASE_URL` loaded from the private test environment. Do not print that
 file or put credentials in command arguments. Exact command arguments for the
 read-only step are:
@@ -117,11 +117,33 @@ in the queue. A rehearsal marker cannot commit. The operation intentionally is
 not replayable on its finished catalog: another run refuses the changed shape
 and fingerprints. Keep the resulting provenance and the untouched archives.
 
+## Source revision and existing fixture provenance
+
+The source lock now contains the baseline plus 33 ordered upgrades, reviewed from
+commit `7281e338c9d381b0054c31f40fd15b142566577e`. The previous 32 entries are unchanged.
+The appended source files are `20261103110000_invoice_refund_requests.sql` and
+`20261103111000_plaid_hosted_consent.sql`; their exact SHA256 values are in the lock.
+This refresh describes the complete reviewed SQL for a prospective foundation.
+It does not establish that either additional upgrade ran on an existing database.
+
+The already completed fixture operation `0f191da4-bb92-4262-bcdb-2195cf109bcd`
+executed the earlier baseline plus 31 upgrades. Its original source fingerprint
+`343e96a887bd93aac9f0eec6c1d22a4873f01819ecefcbdff3d3af8071052ff3`, receipt and
+`private.agsaas_synthetic_fixture_provenance` row remain unchanged. Do not re-run
+this foundation helper on that completed catalog. The separately reviewed
+synthetic append runner records later upgrades in a distinct append-only private
+journal, after its own inspect and rollback rehearsal. Neither source-lock edits
+nor append receipts fabricate canonical Supabase applied history.
+
+A further SQL file requires an explicit reviewed lock append, updated exact
+source-count assertions, and refreshed source fingerprints for any new approval.
+Never accept a new file merely by loosening the directory/count/hash checks.
+
 ## Verification bounds and suite compatibility
 
 The companion unit tests validate endpoint, mode, identity, fingerprint and SQL
 source drift refusals, bounded archive identifiers and the actual merged
-32-source lock. They do not connect to PostgreSQL. The queued rehearsal provides
+34-source lock. They do not connect to PostgreSQL. The queued rehearsal provides
 the actual SQL failure/rollback evidence; the subsequent application suites
 provide query, trigger, RLS and concurrency evidence. Neither substitutes for
 the gated canonical Auth/Storage/PostgreSQL 17 rehearsal.

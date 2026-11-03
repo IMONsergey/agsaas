@@ -1,6 +1,6 @@
 {
   "kind": "agsaas-synthetic-foundation-source-lock-v1",
-  "reviewedFromCommit": "9ef3bbcebc90325337a46c0ff5dc9f0fd93c2123",
+  "reviewedFromCommit": "7281e338c9d381b0054c31f40fd15b142566577e",
   "evidence": "Application SQL coverage only; not a canonical Supabase, Auth, Storage or PostgreSQL 17 installation",
   "files": [
     {
@@ -130,6 +130,14 @@
     {
       "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103103000_onboarding_deliveries.sql",
       "sha256": "615a77648b20428d70ee713eda37fba1043aba2065be8d9b28456aca0c363f25"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103110000_invoice_refund_requests.sql",
+      "sha256": "acf11ab88ab8ebb5aa05b90dafd9b22560802aa443bd74e6d03c8dabc2ed0ddb"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103111000_plaid_hosted_consent.sql",
+      "sha256": "d0c6fc87d32cfec15561f4814475d6db1d6e08fc777fad6f5dc5d18d502a4933"
     }
   ]
 }
