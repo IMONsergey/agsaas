@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, mock, test } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { InboxItemNotFoundError } from "@midday/db/queries/inbox-deletion-receipts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMiddleware } from "hono/factory";
 import type { McpContext } from "../mcp/types";
@@ -22,6 +23,8 @@ const update = mock(
     input: { id: string; teamId: string; status?: string },
   ) => {
     calls.push(input);
+    if (input.id !== id && input.status === "deleted")
+      throw new InboxItemNotFoundError();
     return input.id === id ? command : undefined;
   },
 );
@@ -39,7 +42,10 @@ afterAll(() => {
 });
 mock.module("@midday/db/queries", () => ({
   updateInbox: update,
-  deleteInbox: async () => command,
+  deleteInbox: async (_db: unknown, input: { id: string }) => {
+    if (input.id !== id) throw new InboxItemNotFoundError();
+    return command;
+  },
   getInbox: async () => ({ data: [], meta: {} }),
   getInboxById: async () => undefined,
   confirmSuggestedMatch: forbidden,
@@ -98,6 +104,21 @@ describe("Inbox physical erasure command response", () => {
     });
     expect(result.status).toBe(200);
     expect(await result.json()).toEqual(command);
+  });
+
+  test("missing erasure targets return 404 from both REST command paths", async () => {
+    const missing = "21c1c1b4-e4b2-4c43-b5ee-03bc71bc960f";
+    for (const method of ["PATCH", "DELETE"]) {
+      const response = await app.request("http://test/inbox/" + missing, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        ...(method === "PATCH"
+          ? { body: JSON.stringify({ status: "deleted" }) }
+          : {}),
+      });
+      expect(response.status).toBe(404);
+      expect(await response.text()).toContain("Inbox item not found");
+    }
   });
 
   test("MCP inbox_update returns a successful erasure receipt, not not-found or former detail fields", async () => {

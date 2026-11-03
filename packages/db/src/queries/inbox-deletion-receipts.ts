@@ -13,6 +13,13 @@ function primary(db: DatabaseOrTransaction) {
   return "usePrimaryOnly" in db ? db.usePrimaryOnly() : db;
 }
 
+export class InboxItemNotFoundError extends Error {
+  constructor() {
+    super("Inbox item not found");
+    this.name = "InboxItemNotFoundError";
+  }
+}
+
 export class InboxReceiptDeletedError extends Error {
   constructor() {
     super("The Inbox receipt was deleted");

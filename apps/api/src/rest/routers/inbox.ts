@@ -20,6 +20,7 @@ import {
   getInboxById,
   updateInbox,
 } from "@midday/db/queries";
+import { InboxItemNotFoundError } from "@midday/db/queries/inbox-deletion-receipts";
 import { signedUrl } from "@midday/supabase/storage";
 import { HTTPException } from "hono/http-exception";
 import { withRequiredScope } from "../middleware";
@@ -253,8 +254,11 @@ app.openapi(
     let result: Awaited<ReturnType<typeof deleteInbox>>;
     try {
       result = await deleteInbox(db, { id, teamId });
-    } catch {
-      throw new HTTPException(404, { message: "Inbox item not found" });
+    } catch (error) {
+      if (error instanceof InboxItemNotFoundError) {
+        throw new HTTPException(404, { message: "Inbox item not found" });
+      }
+      throw error;
     }
 
     return c.json(
@@ -312,7 +316,15 @@ app.openapi(
     const id = c.req.valid("param").id;
     const body = c.req.valid("json");
 
-    const result = await updateInbox(db, { ...body, id, teamId });
+    let result: Awaited<ReturnType<typeof updateInbox>>;
+    try {
+      result = await updateInbox(db, { ...body, id, teamId });
+    } catch (error) {
+      if (error instanceof InboxItemNotFoundError) {
+        throw new HTTPException(404, { message: "Inbox item not found" });
+      }
+      throw error;
+    }
     if (!result)
       throw new HTTPException(404, { message: "Inbox item not found" });
 

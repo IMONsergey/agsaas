@@ -11,6 +11,7 @@ import {
 } from "../schema";
 import { assertTeamOwnership } from "../utils/tenant-ownership";
 import {
+  InboxItemNotFoundError,
   InboxReceiptDeletedError,
   isInboxReceiptDeleted,
   lockInboxDeletionScope,
@@ -505,7 +506,7 @@ export async function deleteInbox(
       .select({ filePath: inbox.filePath, referenceId: inbox.referenceId })
       .from(inbox)
       .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)));
-    if (!scope) throw new Error("Inbox item not found");
+    if (!scope) throw new InboxItemNotFoundError();
     await lockInboxDeletionScope(tx, { teamId, ...scope });
     const [item] = await tx
       .select({
@@ -518,7 +519,7 @@ export async function deleteInbox(
       .from(inbox)
       .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
       .for("update");
-    if (!item) throw new Error("Inbox item not found");
+    if (!item) throw new InboxItemNotFoundError();
     if (
       item.referenceId !== scope.referenceId ||
       JSON.stringify(item.filePath) !== JSON.stringify(scope.filePath)
