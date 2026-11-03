@@ -10,6 +10,8 @@ Four unmodified Liberation Sans faces are bundled as typed modules. `packages/in
 
 PDF rendering registers the four local faces. Public previews use direct Satori plus Sharp, with explicit dependencies and bundled fonts. We omit `loadAdditionalAsset`: Next's ImageResponse implementation otherwise downloads missing fonts and emoji from third-party services even when a primary font is provided. Latin and Cyrillic are exercised in the rendering tests. Missing emoji or CJK glyphs use the font's missing-glyph fallback; adding other scripts requires explicitly bundled font assets. We do not silently send document text to a font service.
 
+The dashboard layout also uses local Hedvig Sans and Serif files through `next/font/local`. Their original Google Fonts repository Git blob IDs, sizes and SHA256 are pinned in `apps/dashboard/src/fonts/manifest.json`; the original bytes and OFL are retained. A dashboard build no longer needs to request these fonts from Google.
+
 ## Logo boundary
 
 Server renderers fetch only the exact configured `NEXT_PUBLIC_SUPABASE_URL` origin and the public `avatars` bucket. They reject credentials, query strings, fragments, other buckets, external URLs, filesystem URLs and ambiguous path segments. Fetching uses no credentials and cannot follow redirects. Streamed bytes are capped at 5 MiB, raster dimensions at 16 million pixels and lifetime at 5 seconds, including stalled bodies. MIME must match a supported raster signature. A missing, invalid or unavailable logo is omitted without making the document unavailable.

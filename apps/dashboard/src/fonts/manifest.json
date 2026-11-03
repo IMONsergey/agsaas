@@ -1,0 +1,29 @@
+{
+  "kind": "agsaas-dashboard-owned-fonts-v1",
+  "sourceRepository": "google/fonts",
+  "retrievedAt": "2026-11-03T10:50:53.198529+00:00",
+  "unmodifiedOriginalBytes": true,
+  "files": [
+    {
+      "file": "HedvigLettersSans-Regular.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/hedvigletterssans/HedvigLettersSans-Regular.ttf",
+      "gitBlobSha1": "66cbcc858689e2c8d7c0d9dec474c96411668b02",
+      "sha256": "d4f20dfa9c65f2ed46af3ec66e055aaa56c30abf1d587ed2dd23f38146647df1",
+      "bytes": 80828
+    },
+    {
+      "file": "HedvigLettersSerif-Optical.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/hedviglettersserif/HedvigLettersSerif%5Bopsz%5D.ttf",
+      "gitBlobSha1": "3b9ee54479e79dd2a06aebbc5fec49577690a17e",
+      "sha256": "10eb164574c5858855e2708bb12a628a385e021be5dd9ff2f586c4ff73b8ce5c",
+      "bytes": 122240
+    },
+    {
+      "file": "LICENSE-Hedvig.txt",
+      "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/hedvigletterssans/OFL.txt",
+      "gitBlobSha1": "0573857f32a042e1ca6b7587346987bf25fb4843",
+      "sha256": "c0de2f095d2e43a90ddd7e18705b41e49e3536669cd2b7ed57bfeac5a2a988a9",
+      "bytes": 4402
+    }
+  ]
+}

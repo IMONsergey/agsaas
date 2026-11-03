@@ -5,7 +5,7 @@ import "@midday/ui/globals.css";
 import { Provider as Analytics } from "@midday/events/client";
 import { Toaster } from "@midday/ui/toaster";
 import type { Metadata } from "next";
-import { Hedvig_Letters_Sans, Hedvig_Letters_Serif } from "next/font/google";
+import localFont from "next/font/local";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import type { ReactElement } from "react";
 import { DesktopHeader } from "@/components/desktop-header";
@@ -30,16 +30,16 @@ export const metadata: Metadata = {
   },
 };
 
-const hedvigSans = Hedvig_Letters_Sans({
+const hedvigSans = localFont({
+  src: "../../fonts/HedvigLettersSans-Regular.ttf",
   weight: "400",
-  subsets: ["latin"],
   display: "swap",
   variable: "--font-hedvig-sans",
 });
 
-const hedvigSerif = Hedvig_Letters_Serif({
+const hedvigSerif = localFont({
+  src: "../../fonts/HedvigLettersSerif-Optical.ttf",
   weight: "400",
-  subsets: ["latin"],
   display: "swap",
   variable: "--font-hedvig-serif",
 });
