@@ -37,7 +37,7 @@
     "cli": "bun run packages/cli/bin/midday.ts",
     "jobs:dashboard": "turbo jobs --filter=@midday/jobs",
     "format": "biome format --write .",
-    "lint": "biome check scripts deploy/self-hosted && turbo lint",
+    "lint": "biome check scripts deploy/self-hosted && turbo lint --continue=always",
     "lint:fix": "turbo lint:fix",
     "typecheck": "tsc --project scripts/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 tsc --project packages/workbench/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 turbo typecheck --concurrency=1",
     "test:dependencies": "bun scripts/dependency-audit.ts"

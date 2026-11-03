@@ -20,7 +20,7 @@ describe("user-bound short-lived file capabilities", () => {
   const previousSecret = process.env.FILE_KEY_SECRET;
   const fixtureSecret = "local-file-capability-key-never-deployed";
   const identity = {
-    sessionId:"44444444-4444-4444-8444-444444444444",
+    sessionId: "44444444-4444-4444-8444-444444444444",
     userId: "user-fixture",
     teamId: "team-fixture",
     aal: "aal1" as const,
@@ -59,7 +59,7 @@ describe("user-bound short-lived file capabilities", () => {
     ]) {
       const token = await new SignJWT({
         v: 3,
-        sessionId:identity.sessionId,
+        sessionId: identity.sessionId,
         teamId: identity.teamId,
         aal: "aal1",
       })
@@ -74,11 +74,19 @@ describe("user-bound short-lived file capabilities", () => {
     }
   });
 
-  it("rejects signed version2 keys that cannot be revoked with a browser session",async()=>{
-    const now=Math.floor(Date.now()/1000);
-    const token=await new SignJWT({v:2,teamId:identity.teamId,aal:"aal1"})
-      .setProtectedHeader({alg:"HS256"}).setSubject(identity.userId).setIssuer("agsaas-api")
-      .setAudience("agsaas-private-files").setIssuedAt(now).setExpirationTime(now+300)
+  it("rejects signed version2 keys that cannot be revoked with a browser session", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({
+      v: 2,
+      teamId: identity.teamId,
+      aal: "aal1",
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject(identity.userId)
+      .setIssuer("agsaas-api")
+      .setAudience("agsaas-private-files")
+      .setIssuedAt(now)
+      .setExpirationTime(now + 300)
       .sign(new TextEncoder().encode(fixtureSecret));
     expect(await verifyFileKey(token)).toBeNull();
   });

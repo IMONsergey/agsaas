@@ -5,7 +5,10 @@
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "exports": { ".": "./src/index.ts", "./diagnostics": "./src/diagnostics.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./diagnostics": "./src/diagnostics.ts"
+  },
   "scripts": {
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

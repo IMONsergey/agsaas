@@ -190,7 +190,9 @@ export async function generateFileKey(
   identity: FileKeyIdentity,
 ): Promise<string> {
   if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identity.sessionId) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      identity.sessionId,
+    ) ||
     !identity.userId ||
     !identity.teamId ||
     !["aal1", "aal2"].includes(identity.aal)
@@ -240,7 +242,9 @@ export async function verifyFileKey(
     if (
       payload.v !== 3 ||
       typeof payload.sessionId !== "string" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.sessionId) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        payload.sessionId,
+      ) ||
       typeof payload.sub !== "string" ||
       !payload.sub ||
       typeof payload.teamId !== "string" ||
@@ -253,7 +257,12 @@ export async function verifyFileKey(
     ) {
       return null;
     }
-    return { sessionId: payload.sessionId,userId: payload.sub, teamId: payload.teamId, aal: payload.aal };
+    return {
+      sessionId: payload.sessionId,
+      userId: payload.sub,
+      teamId: payload.teamId,
+      aal: payload.aal,
+    };
   } catch {
     return null;
   }
