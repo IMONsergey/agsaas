@@ -1,4 +1,8 @@
-import { BANK_CONSENT_ONBOARDING_READY, BANK_CONSENT_UNAVAILABLE_REASON } from "./bank-consent-policy";
+import { hostedPlaidCapability } from "@api/services/plaid-hosted-consent";
+import {
+  BANK_CONSENT_ONBOARDING_READY,
+  BANK_CONSENT_UNAVAILABLE_REASON,
+} from "./bank-consent-policy";
 import {
   getProductEmailConfig,
   isProductEmailTransportAvailable,
@@ -82,6 +86,7 @@ export function getInstanceCapabilities(env: Environment = process.env) {
     );
   return {
     integrations,
+    hostedBanking: hostedPlaidCapability(env),
     banking: capability(
       BANK_CONSENT_ONBOARDING_READY && bankProvider,
       BANK_CONSENT_UNAVAILABLE_REASON,

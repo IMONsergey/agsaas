@@ -1,3 +1,5 @@
+import { matchesHostedPlaidClient } from "@midday/db/bank-consent";
+import { getHostedBankCleanupBinding } from "@midday/db/queries/hosted-bank-consents";
 import {
   isBankCleanupConfigured,
   revokeBankConnection,
@@ -33,12 +35,17 @@ export async function cleanupBankConnection(
   if (existing.status === "completed" || existing.status === "reconciliation")
     return { status: existing.status };
   let target: BankCleanupTarget | null = null;
+  let bindingReady = false;
   try {
     target = openBankConnectionCleanup(existing);
+    const binding = await getHostedBankCleanupBinding(db, existing);
+    bindingReady =
+      binding === null || matchesHostedPlaidClient(binding, process.env);
   } catch {
-    /* Preserve credentials until the correct key is available. */
+    /* Preserve credentials until SQL, the correct key and original provider identity are available. */
   }
-  const ready = target !== null && dependencies.configured(target.provider);
+  const ready =
+    target !== null && bindingReady && dependencies.configured(target.provider);
   const claim = await beginBankConnectionCleanup(db, id, ready);
   if (claim.state !== "claimed") return { status: claim.state };
   try {

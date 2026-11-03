@@ -46,6 +46,14 @@ const webhookSchema = z.object({
   new_webhook_url: z.string().optional(),
 });
 
+const hostedLinkNotification = z.object({
+  webhook_type: z.literal("LINK"),
+  webhook_code: z.enum(["ITEM_ADD_RESULT", "EVENTS", "SESSION_FINISHED"]),
+  link_token: z.string().min(1).max(4096),
+  link_session_id: z.string().min(1).max(256),
+  environment: z.enum(["sandbox", "production"]),
+});
+
 const webhookResponseSchema = z.object({
   success: z.boolean(),
 });
@@ -94,6 +102,13 @@ app.openapi(
     }
 
     const body = JSON.parse(rawBody);
+
+    // The signature is already verified. Acknowledge Hosted Link delivery
+    // without logging or accepting its credentials. The initiating owner must
+    // confirm the retained exact Link token through our server-side proof flow.
+    if (hostedLinkNotification.safeParse(body).success) {
+      return c.json({ success: true });
+    }
 
     const result = webhookSchema.safeParse(body);
 

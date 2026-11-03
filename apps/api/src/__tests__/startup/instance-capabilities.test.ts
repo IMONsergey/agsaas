@@ -11,6 +11,7 @@ describe("instance capabilities", () => {
       "enrichment",
       "ai",
       "banking",
+      "hostedBanking",
       "connectors",
       "email",
       "billing",
@@ -30,6 +31,22 @@ describe("instance capabilities", () => {
         PLAID_SECRET: "fixture",
       }).banking.enabled,
     ).toBe(false);
+  });
+  test("native Hosted Link capability never opens unverified legacy banking", () => {
+    const value = getInstanceCapabilities({
+      NODE_ENV: "production",
+      AGSAAS_PLAID_HOSTED_LINK_ENABLED: "true",
+      PLAID_ENVIRONMENT: "sandbox",
+      PLAID_CLIENT_ID: "private-client",
+      PLAID_SECRET: "private-secret",
+      MIDDAY_ENCRYPTION_KEY: "37".repeat(32),
+      DASHBOARD_URL: "https://dashboard.example.test",
+      API_URL: "https://api.example.test",
+    });
+    expect(value.hostedBanking.enabled).toBe(true);
+    expect(value.banking.enabled).toBe(false);
+    expect(JSON.stringify(value)).not.toContain("private-client");
+    expect(JSON.stringify(value)).not.toContain("private-secret");
   });
   test("returns configuration booleans without exposing credentials", () => {
     const value = getInstanceCapabilities({
