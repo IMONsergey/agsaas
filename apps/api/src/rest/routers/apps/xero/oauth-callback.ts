@@ -1,16 +1,16 @@
 import { publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
-import { consumeIntegrationOAuth, completeIntegrationOAuth } from "@api/utils/integration-oauth";
 import {
   buildErrorRedirect,
   buildSuccessRedirect,
   mapOAuthError,
 } from "@api/rest/utils/oauth";
-import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  getAccountingProvider,
-  XERO_SCOPES,
-} from "@midday/accounting";
+  completeIntegrationOAuth,
+  consumeIntegrationOAuth,
+} from "@api/utils/integration-oauth";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { getAccountingProvider, XERO_SCOPES } from "@midday/accounting";
 import config from "@midday/app-store/xero";
 import { createApp } from "@midday/db/queries";
 import { logger } from "@midday/logger";
@@ -19,7 +19,9 @@ const app = new OpenAPIHono<Context>();
 
 const paramsSchema = z.object({
   code: z
-    .string().min(1).max(8192)
+    .string()
+    .min(1)
+    .max(8192)
     .optional()
     .openapi({
       param: {
@@ -29,16 +31,22 @@ const paramsSchema = z.object({
       },
       description: "OAuth authorization code from Xero",
     }),
-  state: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/).openapi({
-    param: {
-      in: "query",
-      name: "state",
-      required: true,
-    },
-    description: "OAuth state parameter for CSRF protection",
-  }),
+  state: z
+    .string()
+    .length(43)
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .openapi({
+      param: {
+        in: "query",
+        name: "state",
+        required: true,
+      },
+      description: "OAuth state parameter for CSRF protection",
+    }),
   error: z
-    .string().min(1).max(8192)
+    .string()
+    .min(1)
+    .max(8192)
     .optional()
     .openapi({
       param: {
@@ -109,26 +117,29 @@ app.openapi(
       );
 
       // Xero returns tenant info with the token set
-      if (!tokenSet.tenantId) {
+      const tenantId = tokenSet.tenantId;
+      if (!tenantId) {
         throw new Error("No Xero organization found");
       }
 
       // Create app integration in database
-      await completeIntegrationOAuth(c, parsedState, (tx) => createApp<"xero">(tx, {
-        teamId: parsedState.teamId,
-        createdBy: parsedState.userId,
-        appId: "xero",
-        settings: config.settings,
-        config: {
-          provider: "xero", // Discriminator field
-          accessToken: tokenSet.accessToken,
-          refreshToken: tokenSet.refreshToken,
-          expiresAt: tokenSet.expiresAt.toISOString(),
-          tenantId: tokenSet.tenantId,
-          tenantName: tokenSet.tenantName,
-          scope: XERO_SCOPES,
-        },
-      }));
+      await completeIntegrationOAuth(c, parsedState, (tx) =>
+        createApp<"xero">(tx, {
+          teamId: parsedState.teamId,
+          createdBy: parsedState.userId,
+          appId: "xero",
+          settings: config.settings,
+          config: {
+            provider: "xero", // Discriminator field
+            accessToken: tokenSet.accessToken,
+            refreshToken: tokenSet.refreshToken,
+            expiresAt: tokenSet.expiresAt.toISOString(),
+            tenantId,
+            tenantName: tokenSet.tenantName,
+            scope: XERO_SCOPES,
+          },
+        }),
+      );
 
       logger.info("Xero integration created successfully", {
         teamId: parsedState.teamId,

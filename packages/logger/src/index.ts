@@ -1,5 +1,5 @@
-import { diagnosticSummary, redactDiagnosticMessage } from "./diagnostics";
 import pino from "pino";
+import { diagnosticSummary, redactDiagnosticMessage } from "./diagnostics.js";
 
 /**
  * Check if we're in pretty mode
@@ -37,7 +37,10 @@ const baseLogger = pino({
 /**
  * Create a logger adapter that wraps pino to match the existing API
  */
-export function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
+export function createLoggerAdapter(
+  pinoLogger: pino.Logger,
+  prefixContext?: string,
+) {
   // Format context with brackets if not already formatted
   const formatContext = (ctx?: string): string => {
     if (!ctx) return "";
@@ -57,7 +60,10 @@ export function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: str
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.info(diagnosticSummary(data), redactDiagnosticMessage(fullMessage));
+          pinoLogger.info(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
           pinoLogger.info(redactDiagnosticMessage(fullMessage));
         }
@@ -72,7 +78,10 @@ export function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: str
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.error(diagnosticSummary(data), redactDiagnosticMessage(fullMessage));
+          pinoLogger.error(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
           pinoLogger.error(redactDiagnosticMessage(fullMessage));
         }
@@ -87,7 +96,10 @@ export function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: str
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.warn(diagnosticSummary(data), redactDiagnosticMessage(fullMessage));
+          pinoLogger.warn(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
           pinoLogger.warn(redactDiagnosticMessage(fullMessage));
         }
@@ -102,7 +114,10 @@ export function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: str
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.debug(diagnosticSummary(data), redactDiagnosticMessage(fullMessage));
+          pinoLogger.debug(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
           pinoLogger.debug(redactDiagnosticMessage(fullMessage));
         }

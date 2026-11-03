@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseFetch } from "./server-fetch";
+import { createSupabaseFetch, withFetchAbortSignal } from "./server-fetch";
 
 export type StorageCleanupScope =
   | { teamId: string; userId?: never }
@@ -60,13 +60,9 @@ export function createStorageCleanupClient(scope: StorageCleanupScope) {
       const client = createClient(url, key, {
         auth: { persistSession: false, autoRefreshToken: false },
         global: {
-          fetch: (input, init) =>
-            boundedFetch(input, {
-              ...init,
-              signal: init?.signal
-                ? AbortSignal.any([init.signal, AbortSignal.timeout(10_000)])
-                : AbortSignal.timeout(10_000),
-            }),
+          fetch: withFetchAbortSignal(boundedFetch, () =>
+            AbortSignal.timeout(10_000),
+          ),
         },
       });
       const { error } = await client.storage.from(bucket).remove(paths);
