@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { Socket } from "node:net";
 import { join } from "node:path";
 import { PdfTemplate, renderToBuffer } from "@midday/invoice";
@@ -22,7 +29,24 @@ const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
   "base64",
 );
+const idatOffset = png.indexOf("IDAT");
+if (idatOffset < 4) throw new Error("The PNG fixture must contain IDAT");
+const idatCrcOffset = idatOffset + 4 + png.readUInt32BE(idatOffset - 4);
+const badCrcPng = Buffer.from(png);
+badCrcPng[idatCrcOffset] = badCrcPng[idatCrcOffset]! ^ 0xff;
+const brokenIdatPng = Buffer.from(png);
+brokenIdatPng[idatOffset + 4] = 0;
+const malformedPngs = [
+  ["bad-crc", badCrcPng],
+  ["broken-idat", brokenIdatPng],
+  ["truncated-ihdr", png.subarray(0, 24)],
+] as const;
+let logoBytes = Uint8Array.from(png);
 let requests: string[] = [];
+beforeEach(() => {
+  logoBytes = Uint8Array.from(png);
+  requests = [];
+});
 beforeAll(() => {
   process.env.DASHBOARD_URL = "https://dashboard.agsaas.example.test";
   process.env.NEXT_PUBLIC_SUPABASE_URL = origin;
@@ -31,7 +55,9 @@ beforeAll(() => {
       const url = input instanceof Request ? input.url : String(input);
       requests.push(url);
       if (url !== logo) throw new Error("External document network forbidden");
-      return new Response(png, { headers: { "content-type": "image/png" } });
+      return new Response(logoBytes, {
+        headers: { "content-type": "image/png" },
+      });
     },
     { preconnect: () => {} },
   ) as typeof fetch;
@@ -141,6 +167,33 @@ describe("actual offline invoice PDF", () => {
     );
     expect(requests).toEqual([logo]);
     expect(buffer.toString("latin1")).toContain("/Subtype /Image");
+  });
+  test.each(
+    malformedPngs,
+  )("keeps the actual invoice readable when its own optional logo is %s", async (_kind, bytes) => {
+    logoBytes = Uint8Array.from(bytes);
+    const buffer = await renderToBuffer(
+      await PdfTemplate({
+        ...syntheticInvoice,
+        invoiceNumber: "OWN-CORRUPT-LOGO",
+        template: {
+          ...syntheticInvoice.template,
+          includeQr: false,
+          logoUrl: logo,
+        },
+      }),
+    );
+    expect(buffer.subarray(0, 5).toString()).toBe("%PDF-");
+    const text = await runDocumentTask(
+      {
+        kind: "parse",
+        base64: documentInputBase64(buffer),
+        mimetype: "application/pdf",
+      },
+      { timeoutMs: 10000 },
+    );
+    expect(text).toContain("OWN-CORRUPT-LOGO");
+    expect(requests).toEqual([logo]);
   });
   test.each([
     "file:///etc/hostname",
