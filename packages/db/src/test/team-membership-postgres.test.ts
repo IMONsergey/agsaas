@@ -125,6 +125,29 @@ describe.skipIf(!isTestDatabaseAvailable())(
     async function profile(userId: string) {
       return db.query.users.findFirst({ where: eq(users.id, userId) });
     }
+    async function pendingUserCleanup(userId: string) {
+      const result = await db.execute<{
+        id: string;
+        kind: string;
+        status: string;
+        retained: boolean;
+      }>(sql`
+        SELECT id,kind,status,encrypted_payload IS NOT NULL AS retained FROM public.resource_cleanups
+        WHERE actor_user_id=${userId}::uuid AND team_id IS NULL AND target_id=${userId}
+        AND kind IN ('auth-user','storage-user','retention') ORDER BY kind`);
+      expect(
+        result.rows.map(({ kind, status, retained }) => ({
+          kind,
+          status,
+          retained,
+        })),
+      ).toEqual([
+        { kind: "auth-user", status: "pending", retained: true },
+        { kind: "retention", status: "manual_required", retained: true },
+        { kind: "storage-user", status: "pending", retained: true },
+      ]);
+      return result.rows.map((row) => row.id);
+    }
     async function teamExists(teamId: string) {
       return Boolean(
         await db.query.teams.findFirst({ where: eq(teams.id, teamId) }),
@@ -533,8 +556,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
           expect(await profile(f.owner)).toBeDefined();
           await authCascade(f.owner);
         });
-        expect(result).toEqual({ id: f.owner });
+        expect(result).toEqual({ id: f.owner, cleanupPending: true });
         expect(await profile(f.owner)).toBeUndefined();
+        await pendingUserCleanup(f.owner);
         expect(await teamExists(soloTeam)).toBe(false);
         expect(await teamExists(f.teamId)).toBe(true);
         expect((await members(f.teamId)).map((m) => m.userId).sort()).toEqual(
@@ -556,9 +580,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
         expect(
           (await members(f.teamId)).some((m) => m.userId === f.owner),
         ).toBe(false);
+        const retainedBeforeRetry = await pendingUserCleanup(f.owner);
         expect(
           await deleteUser(db, f.owner, () => authCascade(f.owner)),
-        ).toEqual({ id: f.owner });
+        ).toEqual({ id: f.owner, cleanupPending: true });
+        expect(await pendingUserCleanup(f.owner)).toEqual(retainedBeforeRetry);
         expect(await profile(f.owner)).toBeUndefined();
         expect(await teamExists(f.teamId)).toBe(true);
       });
@@ -704,8 +730,12 @@ describe.skipIf(!isTestDatabaseAvailable())(
           await entered.promise;
           expect(pool.idleCount).toBe(1);
           await limitedDb.execute(sql`SELECT 1`);
+          const retainedBeforeRetry = await pendingUserCleanup(f.owner);
           const retry = await deleteUser(limitedDb, f.owner, async () => {});
-          expect(retry).toEqual({ id: f.owner });
+          expect(retry).toEqual({ id: f.owner, cleanupPending: true });
+          expect(await pendingUserCleanup(f.owner)).toEqual(
+            retainedBeforeRetry,
+          );
         } finally {
           release.resolve();
           await observed;

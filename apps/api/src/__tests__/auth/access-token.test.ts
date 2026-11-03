@@ -38,10 +38,31 @@ const findInvite = mock(async ({ where }: { where: SQL }) =>
 );
 const insertMembership = mock(async (_values: unknown) => {});
 const deleteInvite = mock(async (_where: SQL) => {});
+let budgetAvailable = true;
+let budgetUnavailable = false;
+const execute = mock(async (statement: SQL) => {
+  const query = dialect.sqlToQuery(statement);
+  if (query.sql.includes("INSERT INTO public.request_resource_budgets")) {
+    expect(query.params[0]).toBe(`user:${actorId}`);
+    expect([1, 5]).toContain(query.params[1]);
+    expect(query.params[2]).toBe(600);
+    if (budgetUnavailable)
+      throw new Error("Synthetic admission storage failure");
+    return { rows: budgetAvailable ? [{ bucket: query.params[0] }] : [] };
+  }
+  if (
+    query.sql.includes("pg_advisory_xact_lock") &&
+    query.params[0] === `agsaas:membership:${actorId}`
+  )
+    return { rows: [] };
+  throw new Error(
+    "Unexpected SQL outside signed-identity and admission fixture",
+  );
+});
 const db = {
   usePrimaryOnly: () => db,
   transaction: async (run: (tx: unknown) => Promise<unknown>) => run(db),
-  execute: async (_statement: SQL) => ({ rows: [] }),
+  execute,
   select: () => ({
     from: (table: PgTable) => ({
       where: (where: SQL) => {
@@ -180,6 +201,9 @@ function context(session: Session | null): RequestContext {
 }
 
 beforeEach(() => {
+  budgetAvailable = true;
+  budgetUnavailable = false;
+  execute.mockClear();
   findInvites.mockClear();
   findInvite.mockClear();
   insertMembership.mockClear();
@@ -287,6 +311,32 @@ describe("signed access-token identity", () => {
 });
 
 describe("invitation authorization with real signed identity", () => {
+  it("exhausted admission rejects a genuine identity before invitation lookup", async () => {
+    const session = await verifyAccessToken(
+      await signAccessToken({ email: inviteeEmail }),
+    );
+    budgetAvailable = false;
+    await expect(
+      userRouter.createCaller(context(session)).invites(),
+    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(findInvites).not.toHaveBeenCalled();
+    expect(insertMembership).not.toHaveBeenCalled();
+  });
+
+  it("unavailable admission fails closed before accepting an invitation", async () => {
+    const session = await verifyAccessToken(
+      await signAccessToken({ email: inviteeEmail }),
+    );
+    budgetUnavailable = true;
+    await expect(
+      teamRouter.createCaller(context(session)).acceptInvite({ id: inviteId }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(findInvite).not.toHaveBeenCalled();
+    expect(insertMembership).not.toHaveBeenCalled();
+    expect(deleteInvite).not.toHaveBeenCalled();
+  });
+
   it.each([
     "ES256",
     "HS256",

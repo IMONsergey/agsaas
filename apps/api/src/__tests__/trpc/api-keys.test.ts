@@ -85,17 +85,26 @@ describe("tRPC: apiKeys.delete", () => {
     );
   });
 
-  test("deletes key and returns key hash for cache invalidation", async () => {
+  test("deletes the current owner's key without returning its private cache hash", async () => {
     const caller = createCaller(createTestContext());
     const result = await caller.delete({ id: KEY_ID });
 
-    expect(result).toBe("key-hash-for-cache");
+    expect(result).toEqual({ id: KEY_ID, deleted: true });
+    expect(JSON.stringify(result)).not.toContain("key-hash-for-cache");
     expect(mocks.deleteApiKey).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         id: KEY_ID,
         teamId: "test-team-id",
+        actorUserId: "test-user-id",
       }),
     );
+  });
+
+  test("a missing key is not reported as deleted", async () => {
+    mocks.deleteApiKey.mockImplementationOnce(() => Promise.resolve(undefined));
+    expect(
+      await createCaller(createTestContext()).delete({ id: KEY_ID }),
+    ).toEqual({ id: KEY_ID, deleted: false });
   });
 });

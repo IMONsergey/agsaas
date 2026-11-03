@@ -405,9 +405,20 @@ describe.skipIf(!isTestDatabaseAvailable())(
           await cascadeProfile(fixture.authorId);
         });
 
-        expect(result).toEqual({ id: fixture.authorId });
+        expect(result).toEqual({ id: fixture.authorId, cleanupPending: true });
         expect(authCalls).toBe(1);
         expect(await profile(fixture.authorId)).toBeUndefined();
+        // External deletion work outlives the profile; no fixture completes it.
+        const cleanup =
+          await db.execute(sql`SELECT kind,status,encrypted_payload IS NOT NULL AS retained
+          FROM public.resource_cleanups WHERE actor_user_id=${fixture.authorId}::uuid
+          AND team_id IS NULL AND target_id=${fixture.authorId}
+          AND kind IN ('auth-user','storage-user','retention') ORDER BY kind`);
+        expect(cleanup.rows).toEqual([
+          { kind: "auth-user", status: "pending", retained: true },
+          { kind: "retention", status: "manual_required", retained: true },
+          { kind: "storage-user", status: "pending", retained: true },
+        ]);
         await expectSurvivingOwner(fixture);
         expectOnlyAuthorReferencesRemoved(
           await financialSnapshot(db, fixture.shared),

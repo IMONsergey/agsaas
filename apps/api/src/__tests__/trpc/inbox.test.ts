@@ -100,13 +100,26 @@ describe("tRPC: inbox.delete", () => {
     mocks.deleteInbox.mockReset();
     mocks.deleteInbox.mockImplementation(() => ({
       id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      filePath: null,
+      cleanupPending: false,
+      cleanupId: null,
     }));
   });
 
   test("deletes inbox item successfully", async () => {
     const caller = createCaller(createTestContext());
-    await caller.delete({ id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d" });
-    expect(mocks.deleteInbox).toHaveBeenCalled();
+    expect(
+      await caller.delete({ id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d" }),
+    ).toEqual({
+      id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      filePath: null,
+      cleanupPending: false,
+      cleanupId: null,
+    });
+    expect(mocks.deleteInbox).toHaveBeenCalledWith(expect.anything(), {
+      id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      teamId: "test-team-id",
+    });
   });
 });
 
@@ -165,7 +178,14 @@ describe("tRPC: inbox.deleteMany", () => {
   beforeEach(() => {
     mocks.deleteInboxMany.mockReset();
     mocks.deleteInboxMany.mockImplementation(() =>
-      Promise.resolve([{ id: INBOX_NEW_ID, filePath: null }]),
+      Promise.resolve([
+        {
+          id: INBOX_NEW_ID,
+          filePath: null,
+          cleanupPending: false,
+          cleanupId: null,
+        },
+      ]),
     );
   });
 
@@ -173,7 +193,14 @@ describe("tRPC: inbox.deleteMany", () => {
     const caller = createCaller(createTestContext());
     const result = await caller.deleteMany([INBOX_NEW_ID]);
 
-    expect(result).toEqual([{ id: INBOX_NEW_ID, filePath: null }]);
+    expect(result).toEqual([
+      {
+        id: INBOX_NEW_ID,
+        filePath: null,
+        cleanupPending: false,
+        cleanupId: null,
+      },
+    ]);
     expect(mocks.deleteInboxMany).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -181,6 +208,20 @@ describe("tRPC: inbox.deleteMany", () => {
         teamId: "test-team-id",
       }),
     );
+  });
+  test("an attached object's deferred cleanup remains visible in the response", async () => {
+    const receipt = {
+      id: INBOX_NEW_ID,
+      filePath: ["test-team-id", "inbox", "invoice.pdf"],
+      cleanupPending: true,
+      cleanupId: "1cccb8f3-febf-4d7f-969b-60b3d3fe166d",
+    };
+    mocks.deleteInboxMany.mockImplementationOnce(() =>
+      Promise.resolve([receipt]),
+    );
+    expect(
+      await createCaller(createTestContext()).deleteMany([INBOX_NEW_ID]),
+    ).toEqual([receipt]);
   });
 });
 

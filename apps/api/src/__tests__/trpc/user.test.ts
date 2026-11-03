@@ -206,7 +206,7 @@ describe("tRPC: user.delete", () => {
     mocks.deleteUser.mockReset();
     mocks.deleteUser.mockImplementation(async (_db, id, deleteAuth) => {
       await deleteAuth();
-      return { id };
+      return { id, cleanupPending: true };
     });
     mocks.supabaseAdminDeleteUser.mockReset();
     mocks.supabaseAdminDeleteUser.mockImplementation(() =>
@@ -222,19 +222,14 @@ describe("tRPC: user.delete", () => {
     const caller = createCaller(createTestContext());
     const result = await caller.delete();
 
-    expect(result).toMatchObject({ id: "test-user-id" });
+    expect(result).toEqual({ id: "test-user-id", cleanupPending: true });
     expect(mocks.deleteUser).toHaveBeenCalledWith(
       expect.anything(),
       "test-user-id",
       expect.any(Function),
     );
     expect(mocks.supabaseAdminDeleteUser).toHaveBeenCalledWith("test-user-id");
-    expect(mocks.resendContactsRemove).toHaveBeenCalledWith(
-      expect.objectContaining({
-        email: "test@example.com",
-        audienceId: process.env.RESEND_AUDIENCE_ID,
-      }),
-    );
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
   });
 
   test("a shared-team last-owner rejection happens before Auth or marketing", async () => {
@@ -276,6 +271,7 @@ describe("tRPC: user.delete", () => {
     }));
     expect(await createCaller(createTestContext()).delete()).toEqual({
       id: "test-user-id",
+      cleanupPending: true,
     });
   });
 
@@ -284,27 +280,32 @@ describe("tRPC: user.delete", () => {
       delete process.env[setting];
       expect(await createCaller(createTestContext()).delete()).toEqual({
         id: "test-user-id",
+        cleanupPending: true,
       });
       expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
     });
   }
 
-  test("a marketing SDK returned error does not undo successful core deletion", async () => {
+  test("marketing returned errors are deferred to the retained cleanup worker", async () => {
     mocks.resendContactsRemove.mockImplementation(async () => ({
       data: null,
       error: { message: "unavailable" },
     }));
     expect(await createCaller(createTestContext()).delete()).toEqual({
       id: "test-user-id",
+      cleanupPending: true,
     });
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
   });
 
-  test("a marketing exception does not undo successful core deletion", async () => {
+  test("marketing exceptions are never invoked by the deletion request", async () => {
     mocks.resendContactsRemove.mockImplementation(async () => {
       throw new Error("unavailable");
     });
     expect(await createCaller(createTestContext()).delete()).toEqual({
       id: "test-user-id",
+      cleanupPending: true,
     });
+    expect(mocks.resendContactsRemove).not.toHaveBeenCalled();
   });
 });
