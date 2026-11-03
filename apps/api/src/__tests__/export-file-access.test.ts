@@ -173,6 +173,7 @@ beforeEach(() => {
   mocks.getTransactionAttachment.mockReset();
   mocks.triggerJob.mockClear();
   mocks.getJobStatus.mockReset();
+  mocks.getAppByAppId.mockReset();
   triggerJobAndWait.mockClear();
   mocks.getDocumentById.mockImplementation(() => document(teamPath));
   mocks.getInboxById.mockImplementation(() => ({
@@ -518,6 +519,28 @@ describe("MCP reserved export file authority over an actual in-memory transport"
     expect(mocks.triggerJob).not.toHaveBeenCalled();
     expect(triggerJobAndWait).not.toHaveBeenCalled();
     expect(mocks.getJobStatus).not.toHaveBeenCalled();
+    expect(mocks.signedUrl).not.toHaveBeenCalled();
+  });
+
+  test("transactions.write alone cannot read integration configuration or enqueue an accounting export", async () => {
+    // This configured app would reach triggerJob without the read-scope guard.
+    mocks.getAppByAppId.mockImplementation(async () => ({
+      config: {
+        provider: "xero",
+        tenantId: "fixture-org",
+        tenantName: "Fixture organization",
+      },
+    }));
+    const mcp = await connect(["transactions.write"]);
+    const result = await mcp.callTool({
+      name: "transactions_export_to_accounting",
+      arguments: { transactionIds: [transactionId], providerId: "xero" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("transactions.read is required");
+    expect(mocks.getAppByAppId).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+    expect(triggerJobAndWait).not.toHaveBeenCalled();
     expect(mocks.signedUrl).not.toHaveBeenCalled();
   });
 

@@ -59,6 +59,7 @@ Unknown or invalid receipts do not create a download right.
 | files/download/file and files/proxy | Existing real credential / file-capability authentication, then the same path guard before the handler |
 | MCP documents list/get and Inbox get/download | Same receipt guard before administrative signing or binary download |
 | MCP transactions_export result | transactions.read before enqueue; guard on the returned archive path |
+| MCP transactions_export_to_accounting | transactions.read before reading integration configuration or enqueueing external transaction export |
 | MCP export_job_status | Team and explicit job-name allowlist before reading progress or result, then path guard |
 | Protected tRPC document signing and member-created shares | Existing interactive member authority retained |
 | Native Storage authenticated Vault access | Existing active Auth session, MFA and team policies; opaque API/OAuth tokens are not Storage JWTs |
@@ -96,7 +97,9 @@ The direct attachment consumers were checked separately:
   use collectExportAssets.
 - Accounting sync validates the exact team path and refuses reserved exports
   before Storage download. It records failedCount and a partial sync mapping;
-  spoofed filename/MIME metadata cannot authorize an upload.
+  spoofed filename/MIME metadata cannot authorize an upload. Provider
+  initialization and token refresh can occur earlier; this boundary prevents
+  reading or transmitting reserved archive bytes, not all provider IO.
 - Transaction attachment OCR rejects reserved exports before Storage signing,
   HEIC conversion, document processing or downstream classification. This is a
   permanent validation failure.
@@ -121,7 +124,7 @@ and file-capability fixtures and must retain its existing queue harness.
 | File | Cases | What is exercised |
 | --- | ---: | --- |
 | apps/api/src/__tests__/auth/file-access.test.ts | 25 total, 8 added | Real API-key/OAuth/JWT/file-capability middleware, primary membership, MFA, forged labels and direct archive paths |
-| apps/api/src/__tests__/export-file-access.test.ts | 18 | 11 real REST requests and 7 actual in-memory MCP transport cases, Storage no-IO denials, scoped transaction archives and member access |
+| apps/api/src/__tests__/export-file-access.test.ts | 19 | 11 real REST requests and 8 actual in-memory MCP transport cases, Storage no-IO denials, accounting no-enqueue refusal, scoped transaction archives and member access |
 | apps/worker/src/utils/export-archive.test.ts | 9 total, 2 added | Current and legacy nested archives refused before byte reads, explicit partial outcome |
 | apps/worker/src/processors/transactions/attachment-export-access.test.ts | 9 | Production accounting/OCR processor bodies, no reserved download/upload/sign/OCR, ordinary positive paths |
 | packages/job-client/src/export-job-access.test.ts | 4 | Real status reader denies job kind before reading state/progress/result; team check retained |

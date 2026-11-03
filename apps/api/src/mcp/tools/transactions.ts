@@ -777,6 +777,10 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
       },
       async (params) => {
         try {
+          if (!hasReadScope)
+            throw new Error(
+              "transactions.read is required to export transaction data",
+            );
           const app = await getAppByAppId(db, {
             appId: params.providerId,
             teamId,
