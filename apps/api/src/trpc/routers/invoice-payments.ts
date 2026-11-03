@@ -9,11 +9,11 @@ import { financialRequestHash } from "@midday/db/financial-job";
 import {
   getInvoiceRefundContext,
   getInvoiceSettlement,
-  recordInvoiceSettlement,
-  reconcileInvoiceSettlement,
-  getTeamMemberRole,
   getTeamById,
-  updateTeamById,
+  getTeamMemberRole,
+  reconcileInvoiceSettlement,
+  recordInvoiceSettlement,
+  requestStripeDisconnect,
 } from "@midday/db/queries";
 import { logger } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
@@ -148,46 +148,20 @@ export const invoicePaymentsRouter = createTRPCRouter({
   }),
 
   // Disconnect Stripe account
-  disconnectStripe: ownerProcedure.mutation(async ({ ctx: { db, teamId } }) => {
-    if (!teamId) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: "Team not found",
+  disconnectStripe: ownerProcedure.mutation(
+    async ({ ctx: { db, teamId, session } }) => {
+      if (!teamId)
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Team not found",
+        });
+      return requestStripeDisconnect(db, {
+        teamId,
+        actorUserId: session.user.id,
       });
-    }
+    },
+  ),
 
-    const team = await getTeamById(db, teamId);
-
-    if (team?.stripeAccountId) {
-      try {
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-        // Deauthorize the connected account
-        await stripe.oauth.deauthorize({
-          client_id: process.env.STRIPE_CONNECT_CLIENT_ID!,
-          stripe_user_id: team.stripeAccountId,
-        });
-      } catch (err) {
-        // Log but don't fail
-        logger.warn("Failed to deauthorize Stripe account", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // Clear Stripe fields from team
-    await updateTeamById(db, {
-      id: teamId,
-      data: {
-        stripeAccountId: null,
-        stripeConnectStatus: null,
-      },
-    });
-
-    return { success: true };
-  }),
-
-  // Refund a Stripe payment for an invoice
   refundPayment: ownerProcedure
     .input(z.object({ invoiceId: z.string().uuid() }))
     .mutation(async ({ input, ctx: { db, teamId } }) => {

@@ -3,6 +3,7 @@ import type { Session } from "@api/utils/auth";
 import { verifyAccessToken } from "@api/utils/auth";
 import { getGeoContext } from "@api/utils/geo";
 import { getRequestTrace } from "@api/utils/request-trace";
+import { admitTrpcRequest } from "@api/utils/resource-admission";
 import { safeCompare } from "@api/utils/safe-compare";
 import {
   requireTeamOwner,
@@ -17,9 +18,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import type { Context } from "hono";
 import superjson from "superjson";
 import { withPrimaryReadAfterWrite } from "./middleware/primary-read-after-write";
-import {
-  withTeamPermission,
-} from "./middleware/team-permission";
+import { withTeamPermission } from "./middleware/team-permission";
 
 const DEBUG_PERF = process.env.DEBUG_PERF === "true";
 const perfLogger = createLoggerWithContext("perf:trpc");
@@ -160,6 +159,17 @@ export const protectedProcedure = t.procedure
         session,
       },
     });
+  })
+  .use(async (opts) => {
+    const { session, teamId } = opts.ctx;
+    if (!session) throw new TRPCError({ code: "UNAUTHORIZED" });
+    await admitTrpcRequest(opts.ctx.db, {
+      userId: session.user.id,
+      teamId,
+      path: opts.path,
+      type: opts.type,
+    });
+    return opts.next();
   });
 
 /**
@@ -206,7 +216,23 @@ export const protectedOrInternalProcedure = t.procedure
 
     // Browser requests need the same authoritative membership and MFA checks
     // as protectedProcedure; only the internal-key branch bypasses membership.
-    return withTeamPermission({ ctx: opts.ctx, procedurePath: opts.path, next: opts.next });
+    return withTeamPermission({
+      ctx: opts.ctx,
+      procedurePath: opts.path,
+      next: opts.next,
+    });
+  })
+  .use(async (opts) => {
+    const { session, teamId } = opts.ctx;
+    if (opts.ctx.isInternalRequest) return opts.next();
+    if (!session) throw new TRPCError({ code: "UNAUTHORIZED" });
+    await admitTrpcRequest(opts.ctx.db, {
+      userId: session.user.id,
+      teamId,
+      path: opts.path,
+      type: opts.type,
+    });
+    return opts.next();
   });
 
 /** Administrative mutations require a fresh owner role, not only membership. */

@@ -2,8 +2,8 @@ import { Composio } from "@composio/core";
 import { VercelProvider } from "@composio/vercel";
 import { connectorsCache } from "@midday/cache/connectors-cache";
 import { CURATED_TOOLKIT_SLUGS } from "@midday/connectors";
-import { logger } from "@midday/logger";
 import { LRUCache } from "lru-cache";
+import { composioTeamEntityId } from "./tenant";
 
 function createComposioClient() {
   const apiKey = process.env.COMPOSIO_API_KEY;
@@ -40,8 +40,12 @@ export async function composioFetch<T>(path: string): Promise<T> {
     throw new Error("COMPOSIO_API_KEY is required for connector operations");
   }
 
+  if (!/^\/[a-z_]+(?:\/[a-z0-9_-]+)?(?:\?[a-zA-Z0-9_=&.-]+)?$/.test(path))
+    throw new Error("Invalid connector resource path");
   const res = await fetch(`${COMPOSIO_API_BASE}${path}`, {
     headers: { "x-api-key": apiKey },
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`Composio API error: ${res.status}`);
@@ -75,7 +79,8 @@ function asToolkitItems(items: unknown[]): ToolkitItem[] {
 
 const TOOLKIT_CACHE_TTL = 120; // 2 min in seconds
 
-export async function getUserToolkits(userId: string): Promise<ToolkitItem[]> {
+export async function getTeamToolkits(teamId: string): Promise<ToolkitItem[]> {
+  const userId = composioTeamEntityId(teamId);
   if (!process.env.COMPOSIO_API_KEY) return [];
 
   return connectorsCache.getOrSet<ToolkitItem[]>(
@@ -92,9 +97,10 @@ export async function getUserToolkits(userId: string): Promise<ToolkitItem[]> {
   );
 }
 
-export async function invalidateUserToolkitsCache(
-  userId: string,
+export async function invalidateTeamToolkitsCache(
+  teamId: string,
 ): Promise<void> {
+  const userId = composioTeamEntityId(teamId);
   await connectorsCache.delete(`toolkits:${userId}`);
   toolsCache.delete(userId);
 }
@@ -124,28 +130,8 @@ const toolsCache = new LRUCache<string, Record<string, unknown>>({
   ttl: 20 * 60 * 1000, // 20 min
 });
 
-export async function getComposioTools(
-  userId: string,
-): Promise<Record<string, never> | Record<string, unknown>> {
-  if (!process.env.COMPOSIO_API_KEY) return {};
-
-  const cached = toolsCache.get(userId);
-  if (cached) return cached;
-
-  try {
-    const session = await composio.create(userId, {
-      manageConnections: false,
-      workbench: { enable: false },
-    });
-    const tools = await session.tools();
-    toolsCache.set(userId, tools);
-    return tools;
-  } catch (err) {
-    logger.warn("[composio] Tools unavailable:", { error: err });
-    return {};
-  }
-}
-
+/** External connector tools require their own typed approval protocol before execution.
+ * Native assistant currently exposes only explicitly read-only MCP tools. */
 // ---------------------------------------------------------------------------
 // Types for the Composio REST API
 // ---------------------------------------------------------------------------

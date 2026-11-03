@@ -68,8 +68,9 @@ export const apiKeysRouter = createTRPCRouter({
 
   delete: ownerProcedure
     .input(deleteApiKeySchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const keyHash = await deleteApiKey(db, {
+        actorUserId: session.user.id,
         teamId: teamId!,
         ...input,
       });
@@ -79,6 +80,6 @@ export const apiKeysRouter = createTRPCRouter({
         await apiKeyCache.delete(keyHash);
       }
 
-      return keyHash;
+      return { id: input.id, deleted: !!keyHash };
     }),
 });

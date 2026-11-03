@@ -40,7 +40,6 @@ import {
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
 import { logger } from "@midday/logger";
-import { remove } from "@midday/supabase/storage";
 
 export const inboxRouter = createTRPCRouter({
   get: protectedProcedure
@@ -72,58 +71,13 @@ export const inboxRouter = createTRPCRouter({
 
   delete: protectedProcedure
     .input(deleteInboxSchema)
-    .mutation(async ({ ctx: { db, supabase, teamId }, input }) => {
-      // Delete inbox item and get filePath for storage cleanup
-      const result = await deleteInbox(db, {
-        id: input.id,
-        teamId: teamId!,
-      });
-
-      // Delete file from storage if filePath exists
-      if (result?.filePath && result.filePath.length > 0) {
-        try {
-          await remove(supabase, {
-            bucket: "vault",
-            path: result.filePath,
-          });
-        } catch (error) {
-          // Log error but don't fail the deletion if file doesn't exist in storage
-          logger.error("Failed to delete file from storage", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+    .mutation(async ({ ctx: { db, teamId }, input }) => {
+      return deleteInbox(db, { id: input.id, teamId: teamId! });
     }),
-
   deleteMany: protectedProcedure
     .input(deleteInboxManySchema)
-    .mutation(async ({ ctx: { db, supabase, teamId }, input }) => {
-      // Delete inbox items and get filePaths for storage cleanup
-      const results = await deleteInboxMany(db, {
-        ids: input,
-        teamId: teamId!,
-      });
-
-      // Delete files from storage and embeddings
-      await Promise.all(
-        results
-          .filter((result) => result?.filePath && result.filePath.length > 0)
-          .map(async (result) => {
-            try {
-              await remove(supabase, {
-                bucket: "vault",
-                path: result.filePath!,
-              });
-            } catch (error) {
-              logger.error("Failed to delete file from storage", {
-                inboxId: result.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }),
-      );
-
-      return results;
+    .mutation(async ({ ctx: { db, teamId }, input }) => {
+      return deleteInboxMany(db, { ids: input, teamId: teamId! });
     }),
 
   create: protectedProcedure

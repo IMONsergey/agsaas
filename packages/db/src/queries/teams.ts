@@ -34,6 +34,8 @@ import {
   requireTeamOwner,
 } from "../utils/team-membership";
 import { retainTeamBankConnectionCleanups } from "./bank-connection-cleanups";
+import { retainTeamResourceCleanups } from "./resource-cleanups";
+import { appendSecurityAuditEvent } from "./security-audit";
 
 export const hasTeamAccess = async (
   db: Database,
@@ -398,9 +400,14 @@ export async function deleteTeam(db: Database, params: DeleteTeamParams) {
 
     // Local deletion and encrypted provider cleanup intent commit together.
     // Recovery cannot observe an intent until the deleting transaction commits.
-    const cleanupPending = await retainTeamBankConnectionCleanups(
+    let cleanupPending = await retainTeamBankConnectionCleanups(
       tx,
       params.teamId,
+    );
+    cleanupPending += await retainTeamResourceCleanups(
+      tx,
+      params.teamId,
+      params.userId,
     );
 
     const [result] = await tx
@@ -446,6 +453,18 @@ export async function deleteTeamMember(
         ),
       )
       .returning();
+    if (deleted)
+      await appendSecurityAuditEvent(tx, {
+        teamId: params.teamId,
+        actorUserId: params.actorId,
+        operation: "membership.delete",
+        targetType: "user",
+        targetId: params.userId,
+        metadata: {
+          beforeRole: members.find((member) => member.userId === params.userId)
+            ?.role,
+        },
+      });
     return deleted;
   });
 }
@@ -489,6 +508,18 @@ export async function updateTeamMember(
         and(eq(usersOnTeam.userId, userId), eq(usersOnTeam.teamId, teamId)),
       )
       .returning();
+    if (updated)
+      await appendSecurityAuditEvent(tx, {
+        teamId,
+        actorUserId: actorId,
+        operation: "membership.role",
+        targetType: "user",
+        targetId: userId,
+        metadata: {
+          beforeRole: members.find((member) => member.userId === userId)?.role,
+          afterRole: role,
+        },
+      });
     return updated;
   });
 }

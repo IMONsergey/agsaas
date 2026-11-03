@@ -10,6 +10,7 @@ import {
   transactions,
 } from "../schema";
 import { assertTeamOwnership } from "../utils/tenant-ownership";
+import { retainFileCleanup } from "./resource-cleanups";
 
 const logger = createLoggerWithContext("inbox");
 
@@ -486,207 +487,97 @@ export type DeleteInboxParams = {
   teamId: string;
 };
 
-export async function deleteInbox(db: Database, params: DeleteInboxParams) {
+export async function deleteInbox(
+  db: DatabaseOrTransaction,
+  params: DeleteInboxParams,
+) {
   const { id, teamId } = params;
-
-  // First get the inbox item to check if it has attachments
-  const [result] = await db
-    .select({
-      id: inbox.id,
-      transactionId: inbox.transactionId,
-      attachmentId: inbox.attachmentId,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .limit(1);
-
-  if (!result) {
-    throw new Error("Inbox item not found");
-  }
-
-  // Clean up transaction attachment if it exists (same logic as unmatchTransaction)
-  if (result.attachmentId && result.transactionId) {
-    // Delete the specific transaction attachment for this inbox item
-    await db
-      .delete(transactionAttachments)
-      .where(
-        and(
-          eq(transactionAttachments.id, result.attachmentId),
-          eq(transactionAttachments.teamId, teamId),
-        ),
-      );
-
-    // Check if this transaction still has other attachments before resetting tax info
-    const remainingAttachments = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(transactionAttachments)
-      .where(
-        and(
-          eq(transactionAttachments.transactionId, result.transactionId),
-          eq(transactionAttachments.teamId, teamId),
-        ),
-      );
-
-    // Only reset tax rate and type if no more attachments exist for this transaction
-    if (remainingAttachments[0]?.count === 0) {
-      await db
-        .update(transactions)
-        .set({
-          taxRate: null,
-          taxType: null,
-        })
-        .where(eq(transactions.id, result.transactionId));
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({
+        id: inbox.id,
+        filePath: inbox.filePath,
+        transactionId: inbox.transactionId,
+        attachmentId: inbox.attachmentId,
+      })
+      .from(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
+      .for("update");
+    if (!item) throw new Error("Inbox item not found");
+    const cleanup = item.filePath?.length
+      ? await retainFileCleanup(tx, { teamId, path: item.filePath })
+      : null;
+    if (item.attachmentId && item.transactionId) {
+      await tx
+        .delete(transactionAttachments)
+        .where(
+          and(
+            eq(transactionAttachments.id, item.attachmentId),
+            eq(transactionAttachments.teamId, teamId),
+          ),
+        );
+      const [remaining] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(transactionAttachments)
+        .where(
+          and(
+            eq(transactionAttachments.transactionId, item.transactionId),
+            eq(transactionAttachments.teamId, teamId),
+          ),
+        );
+      if (remaining?.count === 0)
+        await tx
+          .update(transactions)
+          .set({ taxRate: null, taxType: null })
+          .where(
+            and(
+              eq(transactions.id, item.transactionId),
+              eq(transactions.teamId, teamId),
+            ),
+          );
     }
-  }
-
-  // Delete any match suggestions for this inbox item
-  await db
-    .delete(transactionMatchSuggestions)
-    .where(
-      and(
-        eq(transactionMatchSuggestions.inboxId, id),
-        eq(transactionMatchSuggestions.teamId, teamId),
-      ),
-    );
-
-  // Get filePath before deletion for storage cleanup
-  const [inboxItem] = await db
-    .select({
-      id: inbox.id,
-      filePath: inbox.filePath,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .limit(1);
-
-  // Mark inbox item as deleted and clear attachment/transaction references
-  const [deleted] = await db
-    .update(inbox)
-    .set({
-      status: "deleted",
-      transactionId: null,
-      attachmentId: null,
-    })
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .returning({
-      id: inbox.id,
-      filePath: inbox.filePath,
-    });
-
-  return {
-    ...deleted,
-    filePath: inboxItem?.filePath,
-  };
+    await tx
+      .delete(transactionMatchSuggestions)
+      .where(
+        and(
+          eq(transactionMatchSuggestions.inboxId, id),
+          eq(transactionMatchSuggestions.teamId, teamId),
+        ),
+      );
+    // The bytes are queued for deletion; erase derived document content now as well.
+    if (item.filePath?.length)
+      await tx.execute(
+        sql`DELETE FROM public.documents WHERE team_id = ${teamId}::uuid AND path_tokens = ARRAY[${sql.join(
+          item.filePath.map((part) => sql`${part}`),
+          sql`, `,
+        )}]::text[]`,
+      );
+    await tx
+      .delete(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)));
+    return {
+      id,
+      filePath: item.filePath,
+      cleanupPending: !!cleanup && cleanup.status !== "completed",
+      cleanupId: cleanup?.id ?? null,
+    };
+  });
 }
 
-export type DeleteInboxManyParams = {
-  ids: string[];
-  teamId: string;
-};
-
+export type DeleteInboxManyParams = { ids: string[]; teamId: string };
 export async function deleteInboxMany(
   db: Database,
   params: DeleteInboxManyParams,
 ) {
-  const { ids, teamId } = params;
-
-  if (ids.length === 0) {
-    return [];
-  }
-
-  // Get all inbox items to check attachments and get filePaths
-  const inboxItems = await db
-    .select({
-      id: inbox.id,
-      transactionId: inbox.transactionId,
-      attachmentId: inbox.attachmentId,
-      filePath: inbox.filePath,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.teamId, teamId), inArray(inbox.id, ids)));
-
-  const results: Array<{ id: string; filePath: string[] | null }> = [];
-
-  // Process each inbox item
-  for (const item of inboxItems) {
-    try {
-      // Clean up transaction attachment if it exists
-      if (item.attachmentId && item.transactionId) {
-        // Delete the specific transaction attachment for this inbox item
-        await db
-          .delete(transactionAttachments)
-          .where(
-            and(
-              eq(transactionAttachments.id, item.attachmentId),
-              eq(transactionAttachments.teamId, teamId),
-            ),
-          );
-
-        // Check if this transaction still has other attachments before resetting tax info
-        const remainingAttachments = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(transactionAttachments)
-          .where(
-            and(
-              eq(transactionAttachments.transactionId, item.transactionId),
-              eq(transactionAttachments.teamId, teamId),
-            ),
-          );
-
-        // Only reset tax rate and type if no more attachments exist for this transaction
-        if (remainingAttachments[0]?.count === 0) {
-          await db
-            .update(transactions)
-            .set({
-              taxRate: null,
-              taxType: null,
-            })
-            .where(eq(transactions.id, item.transactionId));
-        }
-      }
-
-      // Delete any match suggestions for this inbox item
-      await db
-        .delete(transactionMatchSuggestions)
-        .where(
-          and(
-            eq(transactionMatchSuggestions.inboxId, item.id),
-            eq(transactionMatchSuggestions.teamId, teamId),
-          ),
-        );
-
-      // Mark inbox item as deleted and clear attachment/transaction references
-      const [deleted] = await db
-        .update(inbox)
-        .set({
-          status: "deleted",
-          transactionId: null,
-          attachmentId: null,
-        })
-        .where(and(eq(inbox.id, item.id), eq(inbox.teamId, teamId)))
-        .returning({
-          id: inbox.id,
-          filePath: inbox.filePath,
-        });
-
-      if (deleted) {
-        results.push({
-          id: deleted.id,
-          filePath: deleted.filePath,
-        });
-      }
-    } catch (error) {
-      // Log error but continue with other items
-      logger.error(`Failed to delete inbox item ${item.id}:`, {
-        error:
-          error instanceof Error
-            ? { message: error.message, stack: error.stack }
-            : { message: String(error) },
-      });
-    }
-  }
-
-  return results;
+  if (params.ids.length > 100)
+    throw new Error("Delete at most 100 inbox items at a time");
+  return db.transaction(async (tx) => {
+    const ids = [...new Set(params.ids)].sort();
+    const results: Awaited<ReturnType<typeof deleteInbox>>[] = [];
+    for (const id of ids)
+      results.push(await deleteInbox(tx, { id, teamId: params.teamId }));
+    return results;
+  });
 }
 
 export type GetInboxSearchParams = {

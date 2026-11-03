@@ -1,8 +1,19 @@
-import { diagnosticSummary } from "@midday/logger/diagnostics";
+import { randomUUID } from "node:crypto";
+import {
+  ResourceBudgetExceededError,
+  withHeavyJobAdmission,
+} from "@midday/db/queries/resource-admission";
+import {
+  queuePayloadTeam,
+  releaseQueuedJob,
+} from "@midday/job-client/resource-admission";
 import { createLoggerWithContext } from "@midday/logger";
+import { diagnosticSummary } from "@midday/logger/diagnostics";
 import * as Sentry from "@sentry/bun";
 import type { Job } from "bullmq";
+import { DelayedError } from "bullmq";
 import type { ZodSchema } from "zod";
+import { getDb } from "../utils/db";
 import {
   classifyError,
   getMaxRetries,
@@ -11,6 +22,20 @@ import {
   NonRetryableError,
 } from "../utils/error-classification";
 import { extractErrorDetails } from "../utils/error-details";
+
+const admissionOwnerRunId = randomUUID();
+const heavyJobs = new Set([
+  "export-team-data",
+  "export-transactions",
+  "process-export",
+  "import-transactions",
+  "classify-document",
+  "classify-image",
+  "process-attachment",
+  "process-transaction-attachment",
+  "enrich-transactions",
+  "sync-bank-connection",
+]);
 
 /**
  * Base processor class with error handling, retries, and logging
@@ -73,6 +98,8 @@ export abstract class BaseProcessor<TData = unknown> {
    */
   async handle(job: Job<TData>): Promise<unknown> {
     const startTime = Date.now();
+    const admissionTeamId = queuePayloadTeam(job.data);
+    let releaseAdmission = true;
 
     this.logger.info("Processing job", {
       jobId: job.id,
@@ -108,7 +135,19 @@ export abstract class BaseProcessor<TData = unknown> {
       }
 
       // Process with the job (now contains validated/transformed data, preserves prototype methods)
-      const result = await this.process(job);
+      const result =
+        admissionTeamId && heavyJobs.has(job.name)
+          ? await withHeavyJobAdmission(
+              getDb(),
+              {
+                teamId: admissionTeamId,
+                userId: (job.data as { userId?: string })?.userId,
+                jobKey: `${job.queueName}:${job.id}`,
+                ownerRunId: admissionOwnerRunId,
+              },
+              () => this.process(job),
+            )
+          : await this.process(job);
 
       const duration = Date.now() - startTime;
 
@@ -161,6 +200,11 @@ export abstract class BaseProcessor<TData = unknown> {
 
       return result;
     } catch (error) {
+      if (error instanceof ResourceBudgetExceededError && job.token) {
+        releaseAdmission = false;
+        await job.moveToDelayed(Date.now() + 10_000, job.token);
+        throw new DelayedError();
+      }
       const duration = Date.now() - startTime;
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
@@ -173,6 +217,7 @@ export abstract class BaseProcessor<TData = unknown> {
       const shouldRetry = classified.retryable && !isNonRetryable;
       const remainingAttempts =
         (job.opts.attempts ?? 3) - (job.attemptsMade + 1);
+      if (shouldRetry && remainingAttempts > 0) releaseAdmission = false;
 
       this.logger.error("Job failed", {
         jobId: job.id,
@@ -229,6 +274,14 @@ export abstract class BaseProcessor<TData = unknown> {
 
       // Re-throw original error for retryable cases
       throw error;
+    } finally {
+      if (releaseAdmission && admissionTeamId && job.id) {
+        try {
+          await releaseQueuedJob(job.queueName, job.id, admissionTeamId);
+        } catch {
+          this.logger.warn("Job admission cleanup deferred", { jobId: job.id });
+        }
+      }
     }
   }
 

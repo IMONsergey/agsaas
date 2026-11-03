@@ -85,3 +85,24 @@ Internal assistant runtime now builds from the current scoped MCP definitions an
 Added five tool-policy regressions, three HTTP approval-boundary regressions and seven PostgreSQL concurrency/rollback/TTL/session/ownership/budget regressions. Tests pending root queue. Integration dependencies: finance f675657252e1e9004e6e1f8d313a46b1fbc9dee8 and its parent chain; root UI10 Session.sessionId plus private.auth_session_active migration20261103071000 (root reserved timestamp071000). This branch alone does not yet contain those shared APIs. No live emails, OAuth, payment or deletion actions were performed.
 
 CHECKPOINT: source implementation committed for integrated validation. Next assigned work: durable provider revoke and tenant/user/file deletion, security audit journal, resource admission/budgets and QA06. Native banking real consent lifecycle remains pending; existing guard intentionally prevents unverified consent creation.
+
+## SECURITY-CONTINUATION-20261103 — local source continuation, pending merged gate
+
+Prepared CODE14/CODE15/CODE19–QA06/CODE32 continuation: durable encrypted resource cleanup and provider revocation outcomes, Storage ownership/tombstones, support PII purge, team-scoped Composio reservations, immutable security history, and bounded request/queue/leaf execution admission. The account journal now preserves personal-only access for nonowners. Missing Redis jobs never release their reservation merely because of age.
+
+Last committed security packet remains `13d8f07657e75d0f0481d63b10cf036b3e6c27aa`. This continuation has no server commit and has not been applied or deployed: Remote Desktop Commander exhausted its monthly quota. No alternative remote execution path was used.
+
+Offline verification of the continuation: 46 boundary unit tests passed with real source bodies and explicit fake transports; 66 TypeScript/TSX files parsed without syntax errors; 13 apply/preflight preservation and conflict-refusal tests passed. No provider calls, PostgreSQL/Redis connections, full Bun suites, typechecks or live UI acceptance were performed by those local checks. The accompanying validation matrix retains these remaining gates.
+
+Dependencies: committed security1–9 and finance/infra/root integration; support070000, sessions071000, Storage093100; new security migrations094000/095000/100000; finance101000/team-entitlements source. Apply the reviewed full migration chain in order. Mount SecurityHistory alongside AccountSessions and append the session revocation audit in the same primary transaction (root UI10 wiring).
+
+CODE04 verified bank consent onboarding remains unfinished and its capability gate must remain closed. Manual/unknown provider results, retention, historic queued payloads/logs and unscoped assets require their explicit operational evidence. Source implementation is not proof of external revocation, complete erasure, large-tenant load acceptance or successful production recovery.
+
+File-key boundary continuation: `admitFileRequest` shares admission only for the exact verified user/team, throws429 with Retry-After60 or503 on database failure, and is included in the test-only preload. Root wires both verified file-access return branches.
+
+
+## Security source resume 2026-11-03
+
+Applied the 74-file continuation to the observed dfaf0d0 source, preserving diagnostic redaction, public integration DTOs, current owner procedures, session guards and the financial settlement implementation. Reviewed two additive import conflicts. Targeted Biome checks passed on 69 TS/TSX/JSON files. Full TypeScript, PostgreSQL, Redis and provider/runtime gates remain pending; no migration, email, live payment or deployment was run.
+
+The active writable copy is /home/sergey/Work/security-resume-source-20261103. Its root commit a0e9fa7bcbfa3852a52d9393f0452895da033323 is an explicit source snapshot: all 3002 baseline file modes and Git blob identities match source tree b06c4fde8dff39999f0667479d3631ad66ceed35 observed at server ref dfaf0d097fb789d4473f57b4aa311fb4b4800b2d. It is not the original Git ancestry. Original Git remains untouched after actual object permissions blocked a user-owned clone; no privileged command was used after the Desktop Commander restriction became known. This snapshot must not replace upstream history.

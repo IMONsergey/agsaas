@@ -1,13 +1,22 @@
 import { protectedMiddleware, publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
-import { consumeIntegrationOAuth, startIntegrationOAuth, completeIntegrationOAuth } from "@api/utils/integration-oauth";
-import { requireTeamOwner, TeamOwnerRequiredError } from "@api/utils/team-owner";
 import { prepareInvoicePaymentSession } from "@api/services/invoice-payment-session";
+import {
+  completeIntegrationOAuth,
+  consumeIntegrationOAuth,
+  startIntegrationOAuth,
+} from "@api/utils/integration-oauth";
+import {
+  requireTeamOwner,
+  TeamOwnerRequiredError,
+} from "@api/utils/team-owner";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { InvoicePaymentError } from "@midday/db/errors";
 import {
+  assertNoPendingProviderCleanup,
   attachInvoicePayment,
   getTeamById,
+  requestStripeDisconnect,
   requireInvoicePaymentReconciliation,
   reserveInvoicePayment,
   updateTeamById,
@@ -96,25 +105,35 @@ app.openapi(
 
 const callbackParamsSchema = z.object({
   code: z
-    .string().min(1).max(8192)
+    .string()
+    .min(1)
+    .max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "code", required: false },
       description: "OAuth authorization code from Stripe",
     }),
-  state: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/).openapi({
-    param: { in: "query", name: "state", required: true },
-    description: "OAuth state parameter for CSRF protection",
-  }),
+  state: z
+    .string()
+    .length(43)
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .openapi({
+      param: { in: "query", name: "state", required: true },
+      description: "OAuth state parameter for CSRF protection",
+    }),
   error: z
-    .string().min(1).max(8192)
+    .string()
+    .min(1)
+    .max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "error", required: false },
       description: "OAuth error code if authorization failed",
     }),
   error_description: z
-    .string().min(1).max(8192)
+    .string()
+    .min(1)
+    .max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "error_description", required: false },
@@ -152,7 +171,6 @@ app.openapi(
     },
   }),
   async (c) => {
-    const db = c.get("db");
     const { code, state, error, error_description } = c.req.valid("query");
     const parsedState = await consumeIntegrationOAuth(c, "stripe", state);
     const { dashboardUrl } = parsedState;
@@ -170,7 +188,10 @@ app.openapi(
     }
 
     try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { timeout: 15_000, maxNetworkRetries: 0 });
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+        timeout: 15_000,
+        maxNetworkRetries: 0,
+      });
 
       // Exchange authorization code for connected account ID
       const response = await stripe.oauth.token({
@@ -194,13 +215,18 @@ app.openapi(
       }
 
       // Update team with Stripe account info
-      await completeIntegrationOAuth(c, parsedState, (tx) => updateTeamById(tx, {
-        id: parsedState.teamId,
-        data: {
+      await completeIntegrationOAuth(c, parsedState, async (tx) => {
+        await assertNoPendingProviderCleanup(
+          tx,
+          parsedState.teamId,
+          "stripe",
           stripeAccountId,
-          stripeConnectStatus: connectStatus,
-        },
-      }));
+        );
+        return updateTeamById(tx, {
+          id: parsedState.teamId,
+          data: { stripeAccountId, stripeConnectStatus: connectStatus },
+        });
+      });
 
       logger.info("Stripe Connect integration created", {
         teamId: parsedState.teamId,
@@ -243,7 +269,11 @@ app.openapi(
         description: "Successfully disconnected",
         content: {
           "application/json": {
-            schema: z.object({ success: z.boolean() }),
+            schema: z.object({
+              success: z.boolean(),
+              cleanupPending: z.boolean(),
+              cleanupId: z.string().uuid().nullable(),
+            }),
           },
         },
       },
@@ -260,45 +290,29 @@ app.openapi(
       throw new HTTPException(401, { message: "Unauthorized" });
     }
 
-    if (c.get("authType") !== "session") throw new HTTPException(403, { message: "Sign in as a team owner to manage payment connections" });
+    if (c.get("authType") !== "session")
+      throw new HTTPException(403, {
+        message: "Sign in as a team owner to manage payment connections",
+      });
 
     try {
       await requireTeamOwner(db, session.teamId, session.user.id);
     } catch (error) {
-      if (error instanceof TeamOwnerRequiredError) throw new HTTPException(403, { message: error.message });
+      if (error instanceof TeamOwnerRequiredError)
+        throw new HTTPException(403, { message: error.message });
       throw error;
     }
 
-    // Get current team to check if they have a Stripe account
-    const team = await getTeamById(db, session.teamId);
-
-    if (team?.stripeAccountId) {
-      try {
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { timeout: 15_000, maxNetworkRetries: 0 });
-
-        // Deauthorize the connected account
-        await stripe.oauth.deauthorize({
-          client_id: process.env.STRIPE_CONNECT_CLIENT_ID!,
-          stripe_user_id: team.stripeAccountId,
-        });
-      } catch (err) {
-        // Log but don't fail - account might already be disconnected on Stripe's side
-        logger.warn("Failed to deauthorize Stripe account", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // Clear Stripe fields from team
-    await updateTeamById(db, {
-      id: session.teamId,
-      data: {
-        stripeAccountId: null,
-        stripeConnectStatus: null,
-      },
-    });
-
-    return c.json({ success: true });
+    if (c.get("authType") !== "session")
+      throw new HTTPException(403, {
+        message: "An interactive owner session is required",
+      });
+    return c.json(
+      await requestStripeDisconnect(db, {
+        teamId: session.teamId,
+        actorUserId: session.user.id,
+      }),
+    );
   },
 );
 

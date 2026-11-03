@@ -14,7 +14,7 @@ export function ConnectorCallbackEmitter({
 
     if (window?.opener && !window.opener.closed) {
       try {
-        window.opener.postMessage(message, "*");
+        window.opener.postMessage(message, window.location.origin);
       } catch {
         // Ignore cross-origin errors
       }
@@ -22,7 +22,7 @@ export function ConnectorCallbackEmitter({
 
     const timeout = setTimeout(() => {
       if (window?.opener && !window.opener.closed) {
-        window.opener.postMessage(message, "*");
+        window.opener.postMessage(message, window.location.origin);
       }
     }, 100);
 

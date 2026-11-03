@@ -59,9 +59,9 @@ export function DeleteTeam() {
       <CardHeader>
         <CardTitle>Delete team</CardTitle>
         <CardDescription>
-          Permanently remove your Team and all of its contents from the Midday
-          platform. This action is not reversible — please continue with
-          caution.
+          Remove team access and live records. File deletion and external
+          disconnection continue as tracked cleanup operations. This action
+          cannot be undone.
         </CardDescription>
       </CardHeader>
       <CardFooter className="flex justify-between">
@@ -82,8 +82,10 @@ export function DeleteTeam() {
               <AlertDialogDescription asChild>
                 <div>
                   <p>
-                    This action cannot be undone. This will permanently delete
-                    your team and remove your data from our servers.
+                    Team access and live records are removed now. Files and
+                    external permissions are cleaned up in the background.
+                    Review their status in Security. Backup and billing
+                    retention may require separate verification.
                   </p>
 
                   {hasPaidPlan && (

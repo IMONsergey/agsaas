@@ -7,6 +7,7 @@ import {
   documentTagAssignments,
   transactionAttachments,
 } from "../schema";
+import { retainFileCleanup } from "./resource-cleanups";
 
 export type GetDocumentQueryParams = {
   teamId: string;
@@ -313,35 +314,46 @@ export async function deleteDocument(
   db: Database,
   params: DeleteDocumentParams,
 ) {
-  // First get the document to retrieve its path_tokens
-  const [result] = await db
-    .delete(documents)
-    .where(
-      and(eq(documents.id, params.id), eq(documents.teamId, params.teamId)),
-    )
-    .returning({
-      id: documents.id,
-      pathTokens: documents.pathTokens,
-    });
-
-  if (!result) {
-    return null;
-  }
-
-  // Delete all transaction attachments that have the same path
-  // Convert the array to PostgreSQL array literal format
-  const pathArray = `{${result.pathTokens?.map((token) => `"${token}"`).join(",")}}`;
-
-  await db
-    .delete(transactionAttachments)
-    .where(
-      and(
-        eq(transactionAttachments.teamId, params.teamId),
-        sql`${transactionAttachments.path} @> ${pathArray}::text[] AND ${transactionAttachments.path} <@ ${pathArray}::text[]`,
-      ),
-    );
-
-  return result;
+  return db.transaction(async (tx) => {
+    const [result] = await tx
+      .select({ id: documents.id, pathTokens: documents.pathTokens })
+      .from(documents)
+      .where(
+        and(eq(documents.id, params.id), eq(documents.teamId, params.teamId)),
+      )
+      .for("update");
+    if (!result) return null;
+    const cleanup = result.pathTokens?.length
+      ? await retainFileCleanup(tx, {
+          teamId: params.teamId,
+          path: result.pathTokens,
+        })
+      : null;
+    if (result.pathTokens?.length) {
+      const path = sql`ARRAY[${sql.join(
+        result.pathTokens.map((part) => sql`${part}`),
+        sql`, `,
+      )}]::text[]`;
+      await tx
+        .delete(transactionAttachments)
+        .where(
+          and(
+            eq(transactionAttachments.teamId, params.teamId),
+            sql`${transactionAttachments.path} = ${path}`,
+          ),
+        );
+    }
+    await tx
+      .delete(documents)
+      .where(
+        and(eq(documents.id, params.id), eq(documents.teamId, params.teamId)),
+      );
+    return {
+      ...result,
+      cleanupPending: !!cleanup && cleanup.status !== "completed",
+      cleanupId: cleanup?.id ?? null,
+    };
+  });
 }
 
 export type UpdateDocumentsParams = {

@@ -4,6 +4,7 @@ import { DeleteTeamProcessor } from "./delete-team";
 import { DeliverTeamInvitationProcessor } from "./deliver-team-invitation";
 import { PaymentIssueProcessor } from "./payment-issue";
 import { ReconcileBankConnectionsProcessor } from "./reconcile-bank-connections";
+import { ReconcileResourceCleanupsProcessor } from "./reconcile-resource-cleanups";
 import { ReconcileTeamInvitationsProcessor } from "./reconcile-team-invitations";
 
 /**
@@ -19,6 +20,7 @@ export { PaymentIssueProcessor } from "./payment-issue";
  * Maps job names to processor instances
  */
 export const teamProcessors = {
+  "reconcile-resource-cleanups": new ReconcileResourceCleanupsProcessor(),
   "deliver-team-invitation": new DeliverTeamInvitationProcessor(),
   "reconcile-team-invitations": new ReconcileTeamInvitationsProcessor(),
   "reconcile-bank-connections": new ReconcileBankConnectionsProcessor(),

@@ -183,6 +183,7 @@ export const deleteInboxSchema = z
 export const deleteInboxManySchema = z
   .array(z.string().uuid())
   .min(1)
+  .max(100)
   .openapi({
     description: "Schema for bulk deleting inbox items by their IDs.",
     example: [
@@ -194,21 +195,32 @@ export const deleteInboxManySchema = z
 export const createInboxItemSchema = z.object({
   filename: z.string(),
   mimetype: z.string(),
-  size: z.number(),
+  size: z
+    .number()
+    .int()
+    .min(1)
+    .max(50 * 1024 * 1024),
   filePath: z.array(z.string()),
 });
 
-export const processAttachmentsSchema = z.array(
-  z.object({
-    mimetype: z.string(),
-    size: z.number(),
-    filePath: z.array(z.string()),
-    referenceId: z.string().optional(),
-    website: z.string().optional(),
-    senderEmail: z.string().email().optional(),
-    inboxAccountId: z.string().uuid().optional(),
-  }),
-);
+export const processAttachmentsSchema = z
+  .array(
+    z.object({
+      mimetype: z.string(),
+      size: z
+        .number()
+        .int()
+        .min(1)
+        .max(50 * 1024 * 1024),
+      filePath: z.array(z.string()),
+      referenceId: z.string().optional(),
+      website: z.string().optional(),
+      senderEmail: z.string().email().optional(),
+      inboxAccountId: z.string().uuid().optional(),
+    }),
+  )
+  .min(1)
+  .max(20);
 
 export const searchInboxSchema = z.object({
   q: z.string().optional(), // Search query (text or amount)

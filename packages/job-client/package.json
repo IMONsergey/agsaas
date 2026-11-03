@@ -17,5 +17,10 @@
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "catalog:"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./resource-admission": "./src/resource-admission.ts",
+    "./*": "./src/*.ts"
   }
 }

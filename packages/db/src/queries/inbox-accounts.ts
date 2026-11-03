@@ -6,6 +6,10 @@ import {
   lockUserMembership,
   requireTeamMember,
 } from "../utils/team-membership";
+import {
+  assertNoPendingProviderCleanup,
+  retainInboxAccountCleanup,
+} from "./resource-cleanups";
 
 export async function getInboxAccounts(db: Database, teamId: string) {
   return db
@@ -52,6 +56,7 @@ export async function getInboxAccountById(
 }
 
 type DeleteInboxAccountParams = {
+  actorUserId?: string;
   id: string;
   teamId: string;
 };
@@ -60,20 +65,45 @@ export async function deleteInboxAccount(
   db: Database,
   params: DeleteInboxAccountParams,
 ) {
-  const [deleted] = await db
-    .delete(inboxAccounts)
-    .where(
-      and(
-        eq(inboxAccounts.id, params.id),
-        eq(inboxAccounts.teamId, params.teamId),
-      ),
-    )
-    .returning({
-      id: inboxAccounts.id,
-      scheduleId: inboxAccounts.scheduleId,
+  return db.transaction(async (tx) => {
+    if (params.actorUserId) {
+      await lockUserMembership(tx, params.actorUserId);
+      requireTeamMember(
+        await lockTeamMembership(tx, params.teamId),
+        params.actorUserId,
+      );
+    }
+    const [account] = await tx
+      .select()
+      .from(inboxAccounts)
+      .where(
+        and(
+          eq(inboxAccounts.id, params.id),
+          eq(inboxAccounts.teamId, params.teamId),
+        ),
+      )
+      .for("update");
+    if (!account?.teamId) return undefined;
+    const cleanup = await retainInboxAccountCleanup(tx, {
+      ...account,
+      teamId: account.teamId,
+      actorUserId: params.actorUserId,
     });
-
-  return deleted;
+    await tx
+      .delete(inboxAccounts)
+      .where(
+        and(
+          eq(inboxAccounts.id, params.id),
+          eq(inboxAccounts.teamId, params.teamId),
+        ),
+      );
+    return {
+      id: account.id,
+      scheduleId: account.scheduleId,
+      cleanupPending: cleanup.status !== "completed",
+      cleanupId: cleanup.id,
+    };
+  });
 }
 
 export type UpdateInboxAccountParams = {
@@ -129,6 +159,12 @@ export async function upsertInboxAccount(
     await lockUserMembership(tx, params.actorUserId);
     const members = await lockTeamMembership(tx, params.teamId);
     requireTeamMember(members, params.actorUserId);
+    await assertNoPendingProviderCleanup(
+      tx,
+      params.teamId,
+      params.provider,
+      params.externalId,
+    );
 
     const [result] = await tx
       .insert(inboxAccounts)

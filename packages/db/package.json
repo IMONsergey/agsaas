@@ -81,7 +81,12 @@
     "./queries/export-snapshots": "./src/queries/export-snapshots.ts",
     "./queries/storage-document-ingestion": "./src/queries/storage-document-ingestion.ts",
     "./queries/team-entitlements": "./src/queries/team-entitlements.ts",
-    "./team-quota-error": "./src/team-quota-error.ts"
+    "./team-quota-error": "./src/team-quota-error.ts",
+    "./utils/team-membership": "./src/utils/team-membership.ts",
+    "./cleanup": "./src/cleanup.ts",
+    "./queries/resource-cleanups": "./src/queries/resource-cleanups.ts",
+    "./queries/security-audit": "./src/queries/security-audit.ts",
+    "./queries/resource-admission": "./src/queries/resource-admission.ts"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",
