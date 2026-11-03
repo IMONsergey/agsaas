@@ -257,7 +257,18 @@ app.openapi(
       throw new HTTPException(404, { message: "Inbox item not found" });
     }
 
-    return c.json(validateResponse(result, deleteInboxResponseSchema));
+    return c.json(
+      validateResponse(
+        {
+          id: result.id,
+          deleted: true,
+          status: "deleted",
+          cleanupPending: result.cleanupPending,
+          cleanupId: result.cleanupId,
+        },
+        deleteInboxResponseSchema,
+      ),
+    );
   },
 );
 

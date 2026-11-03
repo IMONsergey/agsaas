@@ -237,7 +237,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
       {
         title: "Delete Inbox Item",
         description:
-          "Permanently delete an inbox item and its associated file. This action cannot be undone.",
+          "Erase an inbox item and request deletion of its associated file. The response reports whether file cleanup is still pending. Erasure cannot be undone.",
         inputSchema: {
           id: deleteInboxSchema.shape.id,
         },
@@ -254,14 +254,17 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
             };
           }
 
+          const erased = sanitize(inboxErasureResponseSchema, {
+            id: result.id,
+            deleted: true,
+            status: "deleted",
+            cleanupPending: result.cleanupPending,
+            cleanupId: result.cleanupId,
+          });
+          const response = { ...erased, success: true, deletedId: erased.id };
           return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ success: true, deletedId: id }),
-              },
-            ],
-            structuredContent: { success: true, deletedId: id },
+            content: [{ type: "text", text: JSON.stringify(response) }],
+            structuredContent: response,
           };
         } catch (error) {
           return {
