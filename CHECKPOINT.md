@@ -1,3 +1,51 @@
+# Current AGSaaS completion checkpoint — 2026-11-03 11:55 UTC
+
+This section supersedes the historical entries below. Source progress, executed verification, synthetic database work and deployed acceptance are separate states.
+
+## Working source and preservation
+
+- Active source: /home/sergey/Work/agsaas-completion-resume-20261103, branch work/completion-resume-2026-11-03. Source before this documentation commit: baabc351bcd8abca53b7f5cd45da94299735ba63.
+- Initial readable snapshot9215a9778decbc44966da4d45ce48d4f45537251 has3011 verified blobs and tree613880b83529c94b5c2f1c145ea68cfd06589ea4. It is not original Git ancestry. Do not push it as a replacement for the upstream repository.
+- Protected /opt/agsaas/work/completion-20261103 remains at dfaf0d097fb789d4473f57b4aa311fb4b4800b2d with unfinished b231e4fc cherry-pick and its additive package exports conflict. No reset, abort, permission change or privileged workaround was performed.
+- Full ordinary-user history clone exists at /home/sergey/Work/agsaas-history-recovery-20261103, upstream8269ed3d2c25a0b6b92510b173594b08dfd5b473. Content bridge helper3893684 is reviewed but not applied. A fresh exact-source plan is required; its old880 plan is obsolete. Original inaccessible unpublished commit IDs are not claimed as recovered.
+- No completion source has been pushed to GitHub or deployed. Credentials are never included in reports or source.
+
+## Integrated implementation, awaiting current combined gate
+
+Durable invoice refund requests and provider-outcome recovery; owner/session-bound Hosted Plaid consent and resume UI; immutable financial snapshots and corrected SQL fixtures; atomic admission generations and retained inbox retries; worker lock-token fencing; admission for financial/insight producers; canonical Postmark receipt handoff with mandatory Basic authentication; explicit trusted-proxy IP parsing and OAuth/MCP rate-limit keys; own CLI credentials/callback/origins; own Slack/MCP integration URLs; bounded own-logo loading; bundled PDF/OG/dashboard fonts and actual render regression suites.
+
+The PDF font follow-up removed the remaining Inter family references from descriptions, rich text and paid watermarks. The source SQL lock now includes baseline plus33 upgrades; its earlier32 entries are unchanged. This lock describes source, not the state of any database.
+
+Two further reviews remain active in separate worktrees: durable digest-only deletion receipts to prevent webhook/worker resurrection after physical inbox deletion, and verified PostgreSQL TLS configuration for runtime clients. They are not yet integrated or accepted.
+
+## Actual executed evidence
+
+| Gate | Exact source | Result and limits |
+| --- | --- | --- |
+| Integrated round5, job20261103T103442-016be0dc86 | 8806839b2110192c72ea0267b5cbec5139d0e036 | Finished11:24:29UTC;317 tests passed,3 failed;25 steps passed,4 failed. Worker/dashboard types passed. DB missing-sql fixture type, API nullable wire type, two issued-payment fixtures and export snapshot fixture were corrected afterward; the corrected combined gate has not run yet. |
+| UI round1, job20261103T100735-dcb… | 12a3ae45… | 82 tests and7 steps passed, including dashboard types,194 exact PDF.js asset bytes and8 Turbo dry runs. This was not a production dashboard build or fresh browser acceptance. |
+| PostgreSQL foundation round1, job20261103T100305… | e97363ad33b08a1737e7ea77dffadc7a868db355 | 91 passed,34 failed. The identified native-bank SQL cast and Auth/Storage fixture corrections are integrated; rerun remains necessary. |
+
+Detailed receipts and complete IDs are under /home/sergey/Work/Reports/agsaas-completion-20261103. The source set changed after these gates. Do not sum historical gate totals and call them acceptance of current HEAD.
+
+## Database and queued work
+
+The isolated fixture is PostgreSQL16.15, loopback127.0.0.1:55439, database midday_test, system identifier7703819082990792743. Its earlier62 application tables remain archived. Foundation operation0f191da4-bb92-4262-bcdb-2195cf109bcd committed synthetic platform plus baseline and31 upgrades; source set343e96a887bd93aac9f0eec6c1d22a4873f01819ecefcbdff3d3af8071052ff3. Do not rerun the foundation or fabricate Supabase migration history.
+
+The separately reviewed two-upgrade append runner is pinned to exact refund/Plaid SQL bytes. Inspect-only job20261103T114603-45b1744014 is queued. It must finish and be reviewed before rollback rehearsal, and exact verified rehearsal must precede commit. Neither new SQL file has been applied. The original foundation marker remains immutable. An OAuth fixture-leftover read-only inventory job20261103T105902-3e9351a728 is queued; no speculative cleanup is authorized.
+
+The old two-case Redis job20261103T104352-91412ddf5b was cancelled while queued on11:46:03UTC. Its coverage is superseded by the prepared12-case isolated Redis gate; no Redis PASS is claimed. The older public-assets gate20261103T110400-d93ceb6968 is still queued as of this checkpoint and may be superseded by the combined round6 before it starts. Round6 preparation covers dependency resolution/frozen install, affected types, isolated units, offline PDF/OG renders, CLI build and a production dashboard build with synthetic build-only configuration. It has not been submitted yet.
+
+## Current operating boundaries and remaining acceptance
+
+Remote Desktop Commander is available. The active device profile explicitly blocks sudo/su; the Docker socket is inaccessible. Do not bypass these boundaries. All installs, tests, builds and DDL use /usr/local/bin/imon-job with the canonical shared queue and HOME=/home/sergey. Shared queue capacity is10 waiting jobs; preserve other projects and VPN443.
+
+Required next evidence: combined current-source gate; reviewed append inspect/rehearse/commit; corrected and new PostgreSQL concurrency suites; real12-case isolated Redis gate with child-process cleanup; exact production build and visual render inspection; full-history content bridge and reviewable branch; own PostgreSQL17/Auth/Storage/Realtime/MFA runtime and ingress; real mail/recovery/provider callbacks; backup/offsite restore proof; all96 current screen routes and role/dialog/mobile states on the exact candidate. Legal operator, pricing/licensing decisions and real provider credentials are not invented.
+
+# Historical checkpoints
+
+The following entries preserve context. Their pending items, branch locations, access observations and gate states may have been superseded above.
+
 # AGSaaS completion checkpoint
 
 Date: 2026-11-03. Authorized goal: implement the entire 90-item audit backlog and deliver a reliable self-hosted product. Repository: IMONsergey/agsaas (Midday fork), not APCOSYS.
