@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+
 const messages: unknown[] = [];
 const views: unknown[] = [];
 const fakeClient = {
@@ -51,9 +52,16 @@ beforeEach(() => {
   views.length = 0;
   process.env.NODE_ENV = "production";
   process.env.DASHBOARD_URL = "https://dashboard.owned.example:8543";
-  globalThis.fetch = (() => {
-    throw new Error("Provider network access is forbidden in this fixture");
-  }) as typeof fetch;
+  globalThis.fetch = Object.assign(
+    async () => {
+      throw new Error("Provider network access is forbidden in this fixture");
+    },
+    {
+      preconnect() {
+        throw new Error("Provider preconnect is forbidden in this fixture");
+      },
+    },
+  );
 });
 afterEach(() => {
   globalThis.fetch = nativeFetch;

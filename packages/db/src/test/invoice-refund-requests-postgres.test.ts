@@ -142,7 +142,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       await removeTenantIsolationFixture(db, f);
     });
     afterAll(closeDatabase);
-    const prepare = (operationId = randomUUID()) =>
+    const prepare = (operationId: string = randomUUID()) =>
       prepareInvoiceRefundRequest(db, { ...ownerScope(), operationId });
     const plan = (requestId: string) =>
       getInvoiceRefundRequestPlan(db, { ...ownerScope(), requestId });

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   BankConsentError,
+  type HostedConsentPayload,
   hostedPlaidClientBinding,
   matchesHostedPlaidClient,
+  type VerifiedConsentAccount,
   validateConsentAccounts,
   verifyConsentEnvelope,
 } from "./bank-consent";
@@ -13,7 +15,7 @@ const scope = {
   userId: "owner-fixture",
   sessionId: "session-fixture",
 };
-const payload = {
+const payload: HostedConsentPayload = {
   ...scope,
   version: 1,
   provider: "plaid",
@@ -21,7 +23,7 @@ const payload = {
   clientFingerprint: "a".repeat(64),
   country: "US",
 };
-const account = {
+const account: VerifiedConsentAccount = {
   accountId: "account-fixture",
   name: "Checking",
   currency: "USD",

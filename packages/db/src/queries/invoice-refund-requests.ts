@@ -213,7 +213,9 @@ export type InvoiceRefundDispatch =
       remainingMs: number;
       claimToken: string;
     }
-  | { kind: "known" | "busy" | "blocked"; request: InvoiceRefundRequest };
+  | { kind: "known"; request: InvoiceRefundRequest }
+  | { kind: "busy"; request: InvoiceRefundRequest }
+  | { kind: "blocked"; request: InvoiceRefundRequest };
 
 /** The last authorization point before POST; retries never change key, payload or creation age. */
 export async function claimInvoiceRefundDispatch(

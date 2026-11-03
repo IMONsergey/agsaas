@@ -11,7 +11,7 @@ describe.skipIf(!configured)("admitted Inbox retry (isolated Redis)", () => {
   const teamId = randomUUID();
   let queue: Queue;
   let events: QueueEvents;
-  let worker: Worker;
+  let worker: Worker<unknown, void>;
   const ownedMetadata = new Set<string>();
   beforeAll(async () => {
     const url = new URL(configured!);
@@ -34,7 +34,7 @@ describe.skipIf(!configured)("admitted Inbox retry (isolated Redis)", () => {
     const name = `agsaas-retry-test-${tag}`;
     queue = new Queue(name, { connection });
     events = new QueueEvents(name, { connection });
-    worker = new Worker(
+    worker = new Worker<unknown, void>(
       name,
       async () => {
         throw new Error("intentional fixture failure");
