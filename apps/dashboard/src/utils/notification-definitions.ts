@@ -44,6 +44,19 @@ export function getNotificationDisplayInfoWithFallback(
   type: string,
   t: ReturnType<typeof useI18n>,
 ): NotificationDisplayInfo {
+  if (type === "onboarding_welcome")
+    return {
+      type,
+      name: "Welcome email",
+      description: "A one-time introduction after creating your account.",
+    };
+  if (type === "onboarding_tips")
+    return {
+      type,
+      name: "Getting started tips",
+      description:
+        "Optional email tips for setting up your workspace. Off until you choose to enable them.",
+    };
   const displayInfo = getNotificationDisplayInfo(type, t);
 
   if (displayInfo) {

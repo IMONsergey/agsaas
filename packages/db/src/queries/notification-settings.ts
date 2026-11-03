@@ -113,9 +113,13 @@ export async function shouldSendNotification(
     channel,
   });
 
-  // If no setting exists, default to enabled
+  // Optional product tips require an explicit saved opt-in.
   if (settings.length === 0) {
-    return true;
+    return (
+      getUserSettingsNotificationTypes().find(
+        (definition) => definition.type === notificationType,
+      )?.defaultEnabled ?? true
+    );
   }
 
   return settings[0]?.enabled ?? true;
@@ -154,7 +158,7 @@ export async function getUserNotificationPreferences(
       );
       return {
         channel,
-        enabled: setting?.enabled ?? true, // Default to enabled if no setting exists
+        enabled: setting?.enabled ?? notificationType.defaultEnabled ?? true,
       };
     }),
   }));

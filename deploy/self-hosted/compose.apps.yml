@@ -40,6 +40,19 @@ x-app-environment: &app-environment
   FILE_KEY_SECRET: "${FILE_KEY_SECRET:?Generate and retain the file signing secret}"
   INVOICE_JWT_SECRET: "${INVOICE_JWT_SECRET:?Generate and retain the invoice signing secret}"
 
+# Server-only optional provider configuration. Missing keys keep sync pending.
+x-native-bank-environment: &native-bank-environment
+  PLAID_CLIENT_ID: "${PLAID_CLIENT_ID:-}"
+  PLAID_SECRET: "${PLAID_SECRET:-}"
+  PLAID_ENVIRONMENT: "${PLAID_ENVIRONMENT:-production}"
+  TELLER_CERT_BASE64: "${TELLER_CERT_BASE64:-}"
+  TELLER_KEY_BASE64: "${TELLER_KEY_BASE64:-}"
+  GOCARDLESS_SECRET_ID: "${GOCARDLESS_SECRET_ID:-}"
+  GOCARDLESS_SECRET_KEY: "${GOCARDLESS_SECRET_KEY:-}"
+  ENABLEBANKING_APPLICATION_ID: "${ENABLEBANKING_APPLICATION_ID:-}"
+  ENABLE_BANKING_KEY_CONTENT: "${ENABLE_BANKING_KEY_CONTENT:-}"
+  ENABLEBANKING_REDIRECT_URL: "${ENABLEBANKING_REDIRECT_URL:-}"
+
 services:
   api:
     <<: *app-runtime
@@ -65,7 +78,7 @@ services:
       redis-queue:
         condition: service_healthy
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
       DATABASE_PRIMARY_URL: "${AGSAAS_DATABASE_URL:?Provision the dedicated backend database role first}"
       SUPABASE_JWT_SECRET: "${JWT_SECRET:?Use the matching Supabase legacy signing secret}"
@@ -126,7 +139,7 @@ services:
       redis-queue:
         condition: service_healthy
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
       DATABASE_PRIMARY_POOLER_URL: "${AGSAAS_WORKER_DATABASE_URL:?Set the dedicated role and transaction pooler tenant}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"

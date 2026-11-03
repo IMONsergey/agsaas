@@ -6,9 +6,25 @@ export interface NotificationType {
   showInSettings: boolean;
   category?: string;
   order?: number;
+  defaultEnabled?: boolean;
 }
 
 export const allNotificationTypes: NotificationType[] = [
+  {
+    type: "onboarding_welcome",
+    channels: ["email"],
+    showInSettings: true,
+    category: "onboarding",
+    order: 4,
+  },
+  {
+    type: "onboarding_tips",
+    channels: ["email"],
+    showInSettings: true,
+    category: "onboarding",
+    order: 4,
+    defaultEnabled: false,
+  },
   {
     type: "transactions_created",
     channels: ["in_app", "email"],

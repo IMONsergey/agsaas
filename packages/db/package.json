@@ -14,7 +14,7 @@
     "test:golden": "bun test src/test/transaction-matching.golden.test.ts",
     "test:all-matching": "bun test src/test/transaction-matching*.test.ts",
     "test:reports": "bun test src/test/reports.test.ts",
-    "test:e2e": "bun run test:team-invite-upgrade && bun run test:financial-retention-upgrade && bun run test:oauth-retention-upgrade && bun run test:invoice-payments-upgrade && bun run test:invoice-email-outbox-upgrade && bun test src/test/calculations-e2e.test.ts --exit --timeout 30000 && bun run test:tenant-isolation && bun run test:financial-queries && bun run test:team-membership && bun run test:financial-retention && bun run test:oauth-retention && bun run test:invoice-money && bun run test:invoice-delivery && bun run test:invoice-payments && bun run test:invoice-email-outbox && bun run test:team-invite-deliveries && bun run test:invoice-documents-upgrade && bun run test:invoice-documents && bun run test:tracker-integrity && bun run test:notification-dispatch-upgrade && bun run test:notification-dispatches && bun run test:inbox-oauth-upgrade && bun run test:inbox-oauth && bun run test:financial-jobs-upgrade && bun run test:financial-jobs && bun run test:tracker-allocations && bun run test:bank-cleanup-upgrade && bun run test:bank-cleanup && bun run test:billing-subscriptions-upgrade && bun run test:billing-subscriptions && bun run test:mfa-assurance && bun run test:storage-ingestion && bun run test:migration-chain",
+    "test:e2e": "bun run test:team-invite-upgrade && bun run test:financial-retention-upgrade && bun run test:oauth-retention-upgrade && bun run test:invoice-payments-upgrade && bun run test:invoice-email-outbox-upgrade && bun test src/test/calculations-e2e.test.ts --exit --timeout 30000 && bun run test:tenant-isolation && bun run test:financial-queries && bun run test:team-membership && bun run test:financial-retention && bun run test:oauth-retention && bun run test:invoice-money && bun run test:invoice-delivery && bun run test:invoice-payments && bun run test:invoice-email-outbox && bun run test:team-invite-deliveries && bun run test:invoice-documents-upgrade && bun run test:invoice-documents && bun run test:tracker-integrity && bun run test:notification-dispatch-upgrade && bun run test:notification-dispatches && bun run test:inbox-oauth-upgrade && bun run test:inbox-oauth && bun run test:financial-jobs-upgrade && bun run test:financial-jobs && bun run test:tracker-allocations && bun run test:bank-cleanup-upgrade && bun run test:bank-cleanup && bun run test:billing-subscriptions-upgrade && bun run test:billing-subscriptions && bun run test:mfa-assurance && bun run test:storage-ingestion && bun run test:migration-chain && bun run test:native-bank-sync && bun run test:onboarding-deliveries",
     "test:tenant-isolation": "bun test src/test/tenant-isolation.test.ts --exit --timeout 30000",
     "test:financial-queries": "bun test --exit --timeout 30000 src/test/financial-queries-postgres.test.ts",
     "test:team-membership": "bun test --exit --timeout 30000 src/test/team-membership-postgres.test.ts",
@@ -50,7 +50,9 @@
     "test:billing-subscriptions-upgrade": "bun --no-env-file test --exit --timeout 30000 src/test/upgrade-billing-subscription-postgres.test.ts",
     "test:mfa-assurance": "bun --no-env-file test --exit --timeout 30000 src/test/mfa-assurance-postgres.test.ts",
     "test:storage-ingestion": "bun --no-env-file test --exit --timeout 30000 src/test/storage-document-ingestion-postgres.test.ts",
-    "test:migration-chain": "bun --no-env-file test --exit --timeout 30000 src/test/migration-chain-postgres.test.ts"
+    "test:migration-chain": "bun --no-env-file test --exit --timeout 30000 src/test/migration-chain-postgres.test.ts",
+    "test:native-bank-sync": "bun --no-env-file test --exit --timeout 30000 src/test/native-bank-sync-postgres.test.ts",
+    "test:onboarding-deliveries": "bun --no-env-file test --exit --timeout 30000 src/test/onboarding-deliveries-postgres.test.ts"
   },
   "exports": {
     "./client": "./src/client.ts",
@@ -86,7 +88,9 @@
     "./cleanup": "./src/cleanup.ts",
     "./queries/resource-cleanups": "./src/queries/resource-cleanups.ts",
     "./queries/security-audit": "./src/queries/security-audit.ts",
-    "./queries/resource-admission": "./src/queries/resource-admission.ts"
+    "./queries/resource-admission": "./src/queries/resource-admission.ts",
+    "./queries/bank-sync": "./src/queries/bank-sync.ts",
+    "./queries/onboarding-deliveries": "./src/queries/onboarding-deliveries.ts"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",

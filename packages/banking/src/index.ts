@@ -29,16 +29,16 @@ export class Provider {
 
     switch (params.provider) {
       case "gocardless":
-        this.#provider = new GoCardLessProvider();
+        this.#provider = new GoCardLessProvider(params.signal);
         break;
       case "teller":
-        this.#provider = new TellerProvider();
+        this.#provider = new TellerProvider(params.signal);
         break;
       case "plaid":
-        this.#provider = new PlaidProvider();
+        this.#provider = new PlaidProvider(params.signal);
         break;
       case "enablebanking":
-        this.#provider = new EnableBankingProvider();
+        this.#provider = new EnableBankingProvider(params.signal);
         break;
       default: {
         const exhaustiveCheck: never = params.provider;

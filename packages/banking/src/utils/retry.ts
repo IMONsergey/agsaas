@@ -1,21 +1,31 @@
+import { setTimeout as delayWithSignal } from "node:timers/promises";
+
+async function waitForRetry(delay: number, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  await delayWithSignal(delay, undefined, { signal });
+}
+
 export async function withRetry<TResult>(
   fn: (attempt: number) => TResult | Promise<TResult>,
   {
     maxRetries = 1,
     onError,
     delay,
+    signal,
   }: {
     maxRetries?: number;
     onError?(error: unknown, attempt: number): boolean | undefined;
     delay?: number;
+    signal?: AbortSignal;
   } = {},
 ) {
   let retries = 0;
   let lastError: unknown;
 
   while (retries <= maxRetries) {
+    signal?.throwIfAborted();
     if (delay && retries > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await waitForRetry(delay, signal);
     }
 
     try {
@@ -158,11 +168,15 @@ function isRateLimitError(error: unknown): boolean {
  */
 export async function withRateLimitRetry<TResult>(
   fn: () => TResult | Promise<TResult>,
-  { maxRetries = 3 }: { maxRetries?: number } = {},
+  {
+    maxRetries = 3,
+    signal,
+  }: { maxRetries?: number; signal?: AbortSignal } = {},
 ): Promise<TResult> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    signal?.throwIfAborted();
     try {
       return await fn();
     } catch (err) {
@@ -172,8 +186,12 @@ export async function withRateLimitRetry<TResult>(
         throw err;
       }
 
+      signal?.throwIfAborted();
       const delayMs = getRateLimitDelay(err, attempt);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // Long provider backoff belongs in the durable scheduler, not a hanging
+      // in-process timer. Do not retry earlier than Retry-After requested.
+      if (!Number.isFinite(delayMs) || delayMs > 30_000) throw err;
+      await waitForRetry(delayMs, signal);
     }
   }
 

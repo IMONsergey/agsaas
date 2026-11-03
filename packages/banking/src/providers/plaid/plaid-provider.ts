@@ -20,8 +20,8 @@ import {
 export class PlaidProvider implements Provider {
   #api: PlaidApi;
 
-  constructor() {
-    this.#api = new PlaidApi();
+  constructor(signal?: AbortSignal) {
+    this.#api = new PlaidApi(signal);
   }
 
   async getTransactions({

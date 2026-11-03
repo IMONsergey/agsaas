@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Context } from "@api/rest/types";
 import { isTeamEligibleForSync } from "@api/utils/check-team-eligibility";
 import { validatePlaidWebhook } from "@api/utils/plaid";
@@ -7,9 +8,8 @@ import {
   getBankConnectionByReferenceId,
   updateBankConnectionStatus,
 } from "@midday/db/queries";
-import type { SyncConnectionPayload } from "@midday/jobs/schema";
+import { requestBankSync } from "@midday/db/queries/bank-sync";
 import { logger } from "@midday/logger";
-import { tasks } from "@trigger.dev/sdk";
 import { isAfter, subDays } from "date-fns";
 import { HTTPException } from "hono/http-exception";
 
@@ -111,6 +111,7 @@ app.openapi(
 
     const connectionData = await getBankConnectionByReferenceId(db, {
       referenceId: result.data.item_id,
+      provider: "plaid",
     });
 
     if (!connectionData) {
@@ -133,6 +134,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "disconnected",
           });
 
@@ -149,6 +152,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "disconnected",
           });
 
@@ -162,6 +167,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "connected",
           });
 
@@ -207,10 +214,15 @@ app.openapi(
             manualSync,
           });
 
-          await tasks.trigger("sync-connection", {
+          await requestBankSync(db, {
             connectionId: connectionData.id,
-            manualSync,
-          } satisfies SyncConnectionPayload);
+            teamId: connectionData.team.id,
+            fullHistory: manualSync,
+            eventKey: createHash("sha256")
+              .update("plaid\0")
+              .update(rawBody)
+              .digest("hex"),
+          });
 
           break;
         }

@@ -5,6 +5,7 @@ import { apiKeysRouter } from "./api-keys";
 import { appsRouter } from "./apps";
 import { bankAccountsRouter } from "./bank-accounts";
 import { bankConnectionsRouter } from "./bank-connections";
+import { bankSyncRouter } from "./bank-sync";
 import { bankingRouter } from "./banking";
 import { billingRouter } from "./billing";
 import { connectorsRouter } from "./connectors";
@@ -43,6 +44,7 @@ import { transactionsRouter } from "./transactions";
 import { userRouter } from "./user";
 
 export const appRouter = createTRPCRouter({
+  bankSync: bankSyncRouter,
   securityAudit: securityAuditRouter,
   resourceCleanup: resourceCleanupsRouter,
   accounting: accountingRouter,
