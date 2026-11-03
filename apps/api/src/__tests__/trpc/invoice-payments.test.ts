@@ -108,9 +108,11 @@ describe("tRPC: invoicePayments.getConnectUrl", () => {
     mocks.simulateMissingTeamOnce();
     const caller = createCaller(createTestContext());
 
+    // The session is authenticated; no workspace means it has no owner grant.
     await expect(caller.getConnectUrl()).rejects.toMatchObject({
-      code: "UNAUTHORIZED",
+      code: "FORBIDDEN",
     });
+    expect(mocks.getTeamMemberRole).not.toHaveBeenCalled();
   });
 });
 
@@ -235,9 +237,11 @@ describe("tRPC: invoicePayments.refundPayment", () => {
     mocks.simulateMissingTeamOnce();
     const caller = createCaller(createTestContext());
     await expect(caller.refundPayment({ invoiceId })).rejects.toMatchObject({
-      code: "UNAUTHORIZED",
+      code: "FORBIDDEN",
     });
+    expect(mocks.getTeamMemberRole).not.toHaveBeenCalled();
     expect(mocks.getInvoiceRefundContext).not.toHaveBeenCalled();
+    expect(retrievePayment).not.toHaveBeenCalled();
     expect(requestRefund).not.toHaveBeenCalled();
   });
 
