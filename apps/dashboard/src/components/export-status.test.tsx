@@ -198,6 +198,8 @@ mock.module("@/hooks/use-file-url", () => ({
 }));
 mock.module("@/lib/download", () => ({ downloadFile }));
 
+mock.module("./export-history", () => ({ ExportHistory: () => null }));
+
 const { ExportStatus } = await import("./export-status");
 const { ExportAllData } = await import("./export-all-data");
 
