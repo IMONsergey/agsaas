@@ -15,6 +15,10 @@ import {
   usersOnTeam,
 } from "../schema";
 import {
+  seedTestProfiles,
+  removeTestProfiles,
+} from "./helpers/profile-fixture";
+import {
   closeDatabase,
   getTestDatabase,
   isTestDatabaseAvailable,
@@ -55,12 +59,16 @@ describe.skipIf(!isTestDatabaseAvailable())(
             name: "Inbox OAuth fixture",
           })),
         );
-        await db.insert(users).values(
-          [f.actorId, f.outsiderId].map((id) => ({
-            id,
-            email: `${id}@example.test`,
-            teamId: f.teamId,
-          })),
+        await db.transaction((tx) =>
+          seedTestProfiles(
+            tx,
+            [f.actorId, f.outsiderId].map((id) => ({
+              id,
+              fullName: "Inbox OAuth fixture",
+              email: `${id}@example.test`,
+              teamId: f.teamId,
+            })),
+          ),
         );
         await db.insert(usersOnTeam).values(
           [f.teamId, f.otherTeamId].map((teamId) => ({
@@ -77,6 +85,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
         await db
           .delete(users)
           .where(inArray(users.id, [f.actorId, f.outsiderId]));
+        await removeTestProfiles(db, [f.actorId, f.outsiderId]);
       }
     }
 

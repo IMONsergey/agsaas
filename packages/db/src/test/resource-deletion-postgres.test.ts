@@ -7,6 +7,10 @@ import { deleteTeam } from "../queries/teams";
 import { deleteUser } from "../queries/users";
 import { teams, users, usersOnTeam } from "../schema";
 import {
+  seedTestProfiles,
+  removeTestProfiles,
+} from "./helpers/profile-fixture";
+import {
   closeDatabase,
   getTestDatabase,
   isTestDatabaseAvailable,
@@ -40,12 +44,16 @@ describe.skipIf(!isTestDatabaseAvailable())(
           .values(
             ids.map((id) => ({ id, inboxId: id, name: "Deletion fixture" })),
           );
-        await db.insert(users).values(
-          actors.map((id, index) => ({
-            id,
-            teamId: ids[index]!,
-            email: `${id}@example.test`,
-          })),
+        await db.transaction((tx) =>
+          seedTestProfiles(
+            tx,
+            actors.map((id, index) => ({
+              id,
+              teamId: ids[index]!,
+              fullName: "Deletion fixture",
+              email: `${id}@example.test`,
+            })),
+          ),
         );
         await db.insert(usersOnTeam).values(
           actors.map((id, index) => ({
@@ -87,6 +95,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
         }
         await db.delete(teams).where(inArray(teams.id, ids));
         await db.delete(users).where(inArray(users.id, actors));
+        await removeTestProfiles(db, actors);
       }
     }
     test("team deletion retains storage/retention work and purges support PII without affecting another tenant", async () =>

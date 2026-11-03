@@ -30,6 +30,10 @@ import {
   usersOnTeam,
 } from "../schema";
 import {
+  seedTestProfiles,
+  removeTestProfiles,
+} from "./helpers/profile-fixture";
+import {
   closeDatabase,
   getTestDatabase,
   isTestDatabaseAvailable,
@@ -82,7 +86,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
               inboxId: id,
             })),
           );
-          await tx.insert(users).values(
+          await seedTestProfiles(
+            tx,
             userIds.map((id) => ({
               id,
               fullName: "OAuth retention fixture user",
@@ -149,10 +154,30 @@ describe.skipIf(!isTestDatabaseAvailable())(
         }
         await run(f);
       } finally {
+        // Retention ledgers deliberately survive their source rows; remove only
+        // these generated fixture identities after their assertions finish.
+        const fixtureTeams = sql.join(
+          [f.teamId, f.consumerTeamId].map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        const fixtureUsers = sql.join(
+          userIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        await db.execute(
+          sql`DELETE FROM public.resource_cleanups WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+        );
+        await db.execute(
+          sql`DELETE FROM public.security_audit_events WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+        );
+        await db.execute(
+          sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id IN (${fixtureTeams})`,
+        );
         await db
           .delete(teams)
           .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
         await db.delete(users).where(inArray(users.id, userIds));
+        await removeTestProfiles(db, userIds);
       }
     }
 

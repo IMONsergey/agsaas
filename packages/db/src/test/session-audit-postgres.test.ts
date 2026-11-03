@@ -22,7 +22,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       db = getTestDatabase();
       // Session catalog fixture and complete migrations must run before this suite.
       await db.execute(
-        sql`INSERT INTO auth.users(id) VALUES (${userId}::uuid)`,
+        sql`INSERT INTO auth.users(id,email) VALUES (${userId}::uuid,${`${userId}@example.test`})`,
       );
       await db.execute(sql`INSERT INTO auth.sessions(id,user_id,created_at,refreshed_at)
       VALUES (${current}::uuid,${userId}::uuid,now(),now()),
