@@ -14,9 +14,9 @@ import {
   trackerEntries,
   trackerProjects,
   transactions,
-  users,
   usersOnTeam,
 } from "../../schema";
+import { removeTestProfiles, seedTestProfiles } from "./profile-fixture";
 
 function tenantIds() {
   return {
@@ -57,7 +57,8 @@ export async function createTenantIsolationFixture(
         baseCurrency: "USD",
       })),
     );
-    await tx.insert(users).values(
+    await seedTestProfiles(
+      tx,
       tenants.map((tenant) => ({
         id: tenant.userId,
         teamId: tenant.teamId,
@@ -194,10 +195,10 @@ export async function removeTenantIsolationFixture(
 ): Promise<void> {
   // Only these randomly generated fixture tenants and their cascading rows.
   // Never truncate shared tables or use an ambient database connection.
-  await db
-    .delete(teams)
-    .where(inArray(teams.id, [fixture.own.teamId, fixture.other.teamId]));
-  await db
-    .delete(users)
-    .where(inArray(users.id, [fixture.own.userId, fixture.other.userId]));
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(teams)
+      .where(inArray(teams.id, [fixture.own.teamId, fixture.other.teamId]));
+    await removeTestProfiles(tx, [fixture.own.userId, fixture.other.userId]);
+  });
 }

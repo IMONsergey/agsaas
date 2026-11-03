@@ -18,7 +18,11 @@ import {
   listRecoverableNotificationDispatches,
   notificationDispatchOperationKey,
 } from "../queries/notification-dispatches";
-import { notificationDispatches, teams, users, usersOnTeam } from "../schema";
+import { notificationDispatches, teams, usersOnTeam } from "../schema";
+import {
+  removeTestProfiles,
+  seedTestProfiles,
+} from "./helpers/profile-fixture";
 import {
   closeDatabase,
   getTestDatabase,
@@ -46,35 +50,39 @@ describe.skipIf(!isTestDatabaseAvailable())(
       otherTeamId = randomUUID();
       ownerId = randomUUID();
       otherOwnerId = randomUUID();
-      await db.insert(teams).values(
-        [teamId, otherTeamId].map((id) => ({
-          id,
-          inboxId: id,
-          name: "Billing fixture",
-        })),
-      );
-      await db.insert(users).values([
-        {
-          id: ownerId,
-          teamId,
-          fullName: "Billing owner",
-          email: `${ownerId}@owner.example.test`,
-        },
-        {
-          id: otherOwnerId,
-          teamId: otherTeamId,
-          fullName: "Other owner",
-          email: `${otherOwnerId}@other.example.test`,
-        },
-      ]);
-      await db.insert(usersOnTeam).values([
-        { userId: ownerId, teamId, role: "owner" },
-        { userId: otherOwnerId, teamId: otherTeamId, role: "owner" },
-      ]);
+      await db.transaction(async (tx) => {
+        await tx.insert(teams).values(
+          [teamId, otherTeamId].map((id) => ({
+            id,
+            inboxId: id,
+            name: "Billing fixture",
+          })),
+        );
+        await seedTestProfiles(tx, [
+          {
+            id: ownerId,
+            teamId,
+            fullName: "Billing owner",
+            email: `${ownerId}@owner.example.test`,
+          },
+          {
+            id: otherOwnerId,
+            teamId: otherTeamId,
+            fullName: "Other owner",
+            email: `${otherOwnerId}@other.example.test`,
+          },
+        ]);
+        await tx.insert(usersOnTeam).values([
+          { userId: ownerId, teamId, role: "owner" },
+          { userId: otherOwnerId, teamId: otherTeamId, role: "owner" },
+        ]);
+      });
     });
     afterEach(async () => {
-      await db.delete(teams).where(inArray(teams.id, [teamId, otherTeamId]));
-      await db.delete(users).where(inArray(users.id, [ownerId, otherOwnerId]));
+      await db.transaction(async (tx) => {
+        await tx.delete(teams).where(inArray(teams.id, [teamId, otherTeamId]));
+        await removeTestProfiles(tx, [ownerId, otherOwnerId]);
+      });
     });
     afterAll(closeDatabase);
 
