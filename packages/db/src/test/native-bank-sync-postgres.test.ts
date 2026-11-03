@@ -60,7 +60,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
         [team, other],
       );
       await client.query(
-        "INSERT INTO public.bank_connections(id,team_id,institution_id,name,provider,status,access_token,reference_id) VALUES($1,$2,$1::text,'Synthetic bank','plaid','connected','fixture-not-a-provider-secret','fixture-reference')",
+        "INSERT INTO public.bank_connections(id,team_id,institution_id,name,provider,status,access_token,reference_id) VALUES($1::uuid,$2::uuid,$1::text,'Synthetic bank','plaid','connected','fixture-not-a-provider-secret','fixture-reference')",
         [connection, team],
       );
       await client.query(
