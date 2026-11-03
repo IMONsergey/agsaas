@@ -4,6 +4,7 @@ import type { DatabaseOrTransaction } from "@midday/db/client";
 import type { ResourceCleanup } from "@midday/db/queries/resource-cleanups";
 
 const teamId = "873902e8-e1ba-4350-abff-84cae07e790f";
+const retainedPath = `${teamId}/inbox/original.pdf`;
 const target: CleanupTarget = {
   version: 1,
   kind: "storage-object",
@@ -11,7 +12,7 @@ const target: CleanupTarget = {
   actorUserId: null,
   targetId: "a".repeat(64),
   provider: null,
-  data: { path: teamId + "/inbox/original.pdf" },
+  data: { path: retainedPath },
 };
 const row: ResourceCleanup = {
   id: "0eeae853-cfae-4217-9a61-9a90a31ee04d",
@@ -64,7 +65,7 @@ mock.module("@midday/supabase/deletion-proof", () => ({
     maximumBytes: number,
   ) => {
     expect(scope.teamId).toBe(teamId);
-    expect(path).toBe(target.data.path);
+    expect(path).toBe(retainedPath);
     expect(maximumBytes).toBe(plan.maximumBytes);
     events.push("digest");
     if (readFails) throw new Error("original bytes are unavailable");
@@ -75,7 +76,7 @@ mock.module("@midday/supabase/cleanup", () => ({
   createStorageCleanupClient: () => ({
     remove: async (bucket: string, paths: string[]) => {
       expect(bucket).toBe("vault");
-      expect(paths).toEqual([target.data.path!]);
+      expect(paths).toEqual([retainedPath]);
       events.push("erase");
     },
   }),

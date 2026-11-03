@@ -46,10 +46,25 @@ async function rejectsState(work: Promise<unknown>, allowed: string[]) {
   } catch (error) {
     caught = error;
   }
-  expect(allowed).toContain(state(caught));
+  const code = state(caught);
+  if (code === undefined) {
+    throw new Error(
+      "Expected the operation to fail with a PostgreSQL SQLSTATE",
+      {
+        cause: caught,
+      },
+    );
+  }
+  expect(allowed).toContain(code);
 }
-function bound(client: PoolClient) {
-  const primary = drizzle(client, {
+function connection(client: PoolClient) {
+  return drizzle(client, {
+    schema: runtimeSchema,
+    casing: "snake_case",
+  });
+}
+function bound(pool: Pool) {
+  const primary = drizzle(pool, {
     schema: runtimeSchema,
     casing: "snake_case",
   });
@@ -632,10 +647,14 @@ describe.skipIf(!isTestDatabaseAvailable())(
               "SELECT id FROM public.resource_cleanups WHERE id=$1 FOR UPDATE",
               [claim.id],
             );
-            const pending = retainInboxDeletionDigest(bound(b), claim, {
-              sha256: digest("original"),
-              size: 8,
-            }).catch((error: unknown) => error);
+            const pending = connection(b)
+              .transaction((tx) =>
+                retainInboxDeletionDigest(tx, claim, {
+                  sha256: digest("original"),
+                  size: 8,
+                }),
+              )
+              .catch((error: unknown) => error);
             await blockedBy(identities.bPid, identities.aPid);
             await pool.query(
               "SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM ($1::timestamptz-clock_timestamp())))+0.05)",
@@ -662,9 +681,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
         await clients(async (a, b, identities) => {
           await a.query("BEGIN");
           await putStorage(a, f.params);
-          const pending = deleteInbox(bound(b), { id: f.row.id, teamId }).catch(
-            (error: unknown) => error,
-          );
+          const pending = connection(b)
+            .transaction((tx) => deleteInbox(tx, { id: f.row.id, teamId }))
+            .catch((error: unknown) => error);
           await blockedBy(identities.bPid, identities.aPid);
           await a.query("COMMIT");
           const result = await pending;
@@ -690,26 +709,64 @@ describe.skipIf(!isTestDatabaseAvailable())(
     test("deletion first fences concurrent registration, Storage upload and stale direct writes", async () =>
       fixture(async (teamId) => {
         const f = await receipt(teamId);
-        await clients(async (a, b, identities) => {
-          await a.query("BEGIN");
-          await lockScope(a, f.params);
-          await a.query("DELETE FROM public.inbox WHERE id=$1", [f.row.id]);
-          await rejectsState(putStorage(b, f.params), ["40001", "55P03"]);
-          await rejectsState(
-            b.query(
-              "INSERT INTO public.inbox(id,team_id,reference_id,file_path,file_name) VALUES($1,$2,$3,$4,'late')",
-              [randomUUID(), teamId, f.params.referenceId, f.params.filePath],
-            ),
-            ["40001", "55P03"],
-          );
-          const pending = createInbox(bound(b), f.params).catch(
-            (error: unknown) => error,
-          );
-          await blockedBy(identities.bPid, identities.aPid);
-          await a.query("COMMIT");
-          expect(await pending).toBeInstanceOf(InboxReceiptDeletedError);
-          await rejectsState(putStorage(b, f.params), ["23514"]);
+        // createInbox owns its commit-before-refusal boundary. Use a real Pool
+        // while keeping the waiter's one backend observable for the lock barrier.
+        const a = await pool.connect();
+        const registrationPool = new Pool({
+          connectionString: getTestDatabaseUrl(),
+          max: 1,
+          idleTimeoutMillis: 0,
+          connectionTimeoutMillis: 3000,
         });
+        try {
+          const b = await registrationPool.connect();
+          let released = false;
+          try {
+            for (const client of [a, b])
+              await client.query("SET statement_timeout='8s'");
+            const identities = { aPid: await pid(a), bPid: await pid(b) };
+            await a.query("BEGIN");
+            await lockScope(a, f.params);
+            await a.query("DELETE FROM public.inbox WHERE id=$1", [f.row.id]);
+            await rejectsState(putStorage(b, f.params), ["40001", "55P03"]);
+            await rejectsState(
+              b.query(
+                "INSERT INTO public.inbox(id,team_id,reference_id,file_path,file_name) VALUES($1,$2,$3,$4,'late')",
+                [randomUUID(), teamId, f.params.referenceId, f.params.filePath],
+              ),
+              ["40001", "55P03"],
+            );
+            b.release();
+            released = true;
+            const pending = createInbox(
+              bound(registrationPool),
+              f.params,
+            ).catch((error: unknown) => error);
+            await blockedBy(identities.bPid, identities.aPid);
+            await a.query("COMMIT");
+            expect(await pending).toBeInstanceOf(InboxReceiptDeletedError);
+            const retainedCleanup = await registrationPool.query<{
+              retained: boolean;
+            }>(
+              "SELECT encrypted_payload IS NOT NULL AS retained FROM public.resource_cleanups WHERE team_id=$1 AND kind='storage-object' AND target_id=$2",
+              [teamId, inboxDeletionIdentity(f.params).objectHash],
+            );
+            expect(retainedCleanup.rows).toEqual([{ retained: true }]);
+            const after = await registrationPool.connect();
+            try {
+              expect(await pid(after)).toBe(identities.bPid);
+              await rejectsState(putStorage(after, f.params), ["23514"]);
+            } finally {
+              after.release();
+            }
+          } finally {
+            if (!released) b.release();
+          }
+        } finally {
+          await a.query("ROLLBACK").catch(() => {});
+          a.release();
+          await registrationPool.end();
+        }
         expect(
           (
             await pool.query("SELECT id FROM public.inbox WHERE team_id=$1", [

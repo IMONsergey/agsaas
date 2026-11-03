@@ -66,8 +66,8 @@ describe("immutable ordered migration chain", () => {
   });
 });
 
-describe("reviewed refund and Plaid source append (no database)", () => {
-  test("the full source chain accepts the exact previous prefix and appends both upgrades", () => {
+describe("reviewed refund, Plaid and Inbox erasure source append (no database)", () => {
+  test("the full source chain preserves both earlier upgrades and appends only SQL123 to their installed prefix", () => {
     const root = join(__dirname, "..");
     const directory = join(
       root,
@@ -81,9 +81,9 @@ describe("reviewed refund and Plaid source append (no database)", () => {
           sql: readFileSync(join(directory, filename), "utf8"),
         })),
     );
-    expect(chain).toHaveLength(33);
+    expect(chain).toHaveLength(34);
     expect(
-      chain.slice(-2).map(({ filename, sha256 }) => ({ filename, sha256 })),
+      chain.slice(-3).map(({ filename, sha256 }) => ({ filename, sha256 })),
     ).toEqual([
       {
         filename: "20261103110000_invoice_refund_requests.sql",
@@ -95,21 +95,51 @@ describe("reviewed refund and Plaid source append (no database)", () => {
         sha256:
           "d0c6fc87d32cfec15561f4814475d6db1d6e08fc777fad6f5dc5d18d502a4933",
       },
+      {
+        filename: "20261103123000_inbox_deletion_receipts.sql",
+        sha256:
+          "34a73f78d312d6f46e26057ab3c666e9832a6f0096c52b08bdbcd132a42f87b4",
+      },
     ]);
-    const prior = [baseline, ...chain.slice(0, -2)];
+    const refund = chain.at(-3)!;
+    const plaid = chain.at(-2)!;
+    const erasure = chain.at(-1)!;
+    const prior = [baseline, ...chain.slice(0, -3)];
     const pending = pendingMigrations(prior, chain);
     expect(pending.map(({ version }) => version)).toEqual([
       "20261103110000",
       "20261103111000",
+      "20261103123000",
     ]);
-    expect(pendingMigrations([...prior, ...pending], chain)).toEqual([]);
-    // A later applied entry cannot authorize skipping the preceding refund SQL.
-    expect(() => pendingMigrations([...prior, chain.at(-1)!], chain)).toThrow(
+    const afterAppend2 = [...prior, refund, plaid];
+    expect(chain.slice(0, -1)).toHaveLength(33);
+    expect(pendingMigrations(afterAppend2, chain)).toEqual([erasure]);
+    expect(pendingMigrations([...afterAppend2, erasure], chain)).toEqual([]);
+    // SQL123 cannot authorize skipping either preceding append2 migration.
+    expect(() => pendingMigrations([...prior, plaid], chain)).toThrow(
+      "out-of-order",
+    );
+    expect(() => pendingMigrations([...prior, erasure], chain)).toThrow(
+      "out-of-order",
+    );
+    expect(() => pendingMigrations([...prior, refund, erasure], chain)).toThrow(
       "out-of-order",
     );
     expect(() =>
       pendingMigrations(
-        [...prior, { ...chain.at(-2)!, statements: ["SELECT 1"] }],
+        [...prior, { ...refund, statements: ["SELECT 1"] }],
+        chain,
+      ),
+    ).toThrow("immutable");
+    expect(() =>
+      pendingMigrations(
+        [...prior, refund, { ...plaid, statements: ["SELECT 1"] }],
+        chain,
+      ),
+    ).toThrow("immutable");
+    expect(() =>
+      pendingMigrations(
+        [...afterAppend2, { ...erasure, statements: ["SELECT 1"] }],
         chain,
       ),
     ).toThrow("immutable");
@@ -127,19 +157,19 @@ describe("reviewed refund and Plaid source append (no database)", () => {
       "a".repeat(40),
       chain,
     );
-    const refund = chain.at(-2)!;
-    const plaid = chain.at(-1)!;
     expect(installation.indexOf(refund.sql)).toBeGreaterThan(
       installation.indexOf(baselineSql),
     );
     expect(installation.indexOf(plaid.sql)).toBeGreaterThan(
       installation.indexOf(refund.sql),
     );
-    expect(installation).toContain(
-      `VALUES ('${refund.version}','${refund.name}',ARRAY[`,
+    expect(installation.indexOf(erasure.sql)).toBeGreaterThan(
+      installation.indexOf(plaid.sql),
     );
-    expect(installation).toContain(
-      `VALUES ('${plaid.version}','${plaid.name}',ARRAY[`,
-    );
+    for (const migration of [refund, plaid, erasure]) {
+      expect(installation).toContain(
+        `VALUES ('${migration.version}','${migration.name}',ARRAY[`,
+      );
+    }
   });
 });
