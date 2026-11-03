@@ -487,13 +487,7 @@ export async function applyStripeInvoicePaymentEvent(
         seen.has(refund.id) ||
         !Number.isSafeInteger(refund.amountMinor) ||
         refund.amountMinor <= 0 ||
-        ![
-          "succeeded",
-          "pending",
-          "requires_action",
-          "failed",
-          "canceled",
-        ].includes(refund.status)
+        typeof refund.status !== "string"
       )
         throw new InvoicePaymentError(409, "Invalid confirmed refund list");
       seen.add(refund.id);
@@ -617,6 +611,16 @@ export async function applyStripeInvoicePaymentEvent(
       const knownRefunds = history.filter(
         (row) => row.kind === "refund" && row.paymentId === payment.entry.id,
       );
+      const unknownStates = event.refunds.filter(
+        (refund) =>
+          ![
+            "succeeded",
+            "pending",
+            "requires_action",
+            "failed",
+            "canceled",
+          ].includes(refund.status),
+      );
       const uncertainty = (
         await tx.execute<{ required: boolean }>(sql`
         select reconciliation_required as required from invoice_settlement_state
@@ -643,10 +647,16 @@ export async function applyStripeInvoicePaymentEvent(
               )))
         );
       });
-      if (anomalous) {
+      if (anomalous || unknownStates.length) {
         await requireInvoiceSettlementProviderReconciliation(tx, {
           invoiceId: invoice.id,
           teamId: invoice.teamId,
+          // A new resource absent from the immutable journal must not later be
+          // "proved absent" by checking only the older known refund IDs.
+          manualUnknown: unknownStates.some(
+            (refund) =>
+              !knownRefunds.some((row) => row.providerResourceId === refund.id),
+          ),
         });
         // Commit the uncertainty before returning an error to the adapter.
         return { blocked: true as const };

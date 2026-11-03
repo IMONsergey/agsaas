@@ -1,5 +1,6 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
 import type { InvoiceProviderReconciliationPlan } from "@midday/db/queries";
+import type Stripe from "stripe";
 import {
   confirmStripeRefundsForWebhook,
   getInvoiceProviderReconciliationProofs,
@@ -41,18 +42,18 @@ function provider() {
     failure_balance_transaction: null as string | null,
   };
   const retrievePayment = mock(
-    async (_id: string, _options: { stripeAccount?: string }) => ({
+    async (_id: string, _options: Stripe.RequestOptions) => ({
       ...intent,
     }),
   );
   const retrieveRefund = mock(
-    async (_id: string, _options: { stripeAccount?: string }) => ({
+    async (_id: string, _options: Stripe.RequestOptions) => ({
       ...resource,
     }),
   );
   const listed = { ...resource };
   const list = mock(
-    async (_params: unknown, _options: { stripeAccount?: string }) => ({
+    async (_params: unknown, _options: Stripe.RequestOptions) => ({
       data: [{ ...listed }],
       has_more: false,
     }),
@@ -78,9 +79,11 @@ describe("exact provider resource verification", () => {
     const proofs = await getInvoiceProviderReconciliationProofs(f.stripe, plan);
     expect(f.retrievePayment).toHaveBeenCalledWith("pi_fixture", {
       stripeAccount: "acct_original",
+      timeout: expect.any(Number),
     });
     expect(f.retrieveRefund).toHaveBeenCalledWith("re_fixture", {
       stripeAccount: "acct_original",
+      timeout: expect.any(Number),
     });
     expect(proofs).toEqual([
       {
@@ -198,9 +201,48 @@ describe("exact provider resource verification", () => {
       clock.mockRestore();
     }
   });
+  test("the last exact GET receives only the remaining budget and a late result cannot clear uncertainty", async () => {
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const f = provider();
+      f.retrievePayment.mockImplementation(async () => {
+        now = 5_000;
+        return { ...f.intent };
+      });
+      f.list.mockImplementation(async () => {
+        now = 14_500;
+        return { data: [{ ...f.listed }], has_more: false };
+      });
+      f.retrieveRefund.mockImplementation(async () => {
+        now = 15_001;
+        return { ...f.resource };
+      });
+      await expect(
+        getInvoiceProviderReconciliationProofs(f.stripe, plan),
+      ).rejects.toMatchObject({ status: 503 });
+      expect(f.retrievePayment.mock.calls[0]?.[1].timeout).toBe(5_000);
+      expect(f.list.mock.calls[0]?.[1].timeout).toBe(5_000);
+      expect(f.retrieveRefund.mock.calls[0]?.[1].timeout).toBe(500);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 describe("webhook return-of-funds proof", () => {
+  test("unknown and null statuses reach the DB boundary as unconfirmed observations", async () => {
+    for (const status of [null, "future_provider_status"]) {
+      const f = provider();
+      f.listed.status = status;
+      const result = await confirmStripeRefundsForWebhook(f.stripe, identity);
+      expect(result.refunds).toEqual([
+        { id: "re_fixture", amountMinor: 2000, status: status ?? "unknown" },
+      ]);
+      expect(result.refundedMinor).toBe(0);
+      expect(f.retrieveRefund).not.toHaveBeenCalled();
+    }
+  });
   test("a late failed-list snapshot cannot reverse a resource that now requires customer action", async () => {
     const f = provider();
     f.listed.status = "failed";
@@ -212,6 +254,7 @@ describe("webhook return-of-funds proof", () => {
     });
     expect(f.retrieveRefund).toHaveBeenCalledWith("re_fixture", {
       stripeAccount: "acct_original",
+      timeout: expect.any(Number),
     });
   });
   test("a failed exact GET retains unverified evidence for the durable DB marker", async () => {

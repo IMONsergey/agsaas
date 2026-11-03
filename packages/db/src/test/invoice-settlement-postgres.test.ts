@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { and, eq, type SQL, sql } from "drizzle-orm";
+import { confirmStripeRefundsForWebhook } from "../../../../apps/api/src/services/invoice-provider-reconciliation";
 import type { Database } from "../client";
 import { financialRequestHash } from "../financial-job";
 import { getTopRevenueClient } from "../queries/customer-analytics";
@@ -576,6 +577,90 @@ describe.skipIf(!isTestDatabaseAvailable())(
         });
       });
     }
+    for (const status of [null, "future_provider_status"]) {
+      test(`adapter-to-PostgreSQL ${status ?? "null"} refund status commits uncertainty before refusing new money`, async () => {
+        const { event, refund } = await confirmedStripeRefund();
+        const before = await getInvoiceSettlement(db, scope());
+        const confirmation = await confirmStripeRefundsForWebhook(
+          {
+            paymentIntents: {
+              retrieve: async () => ({
+                id: event.paymentIntentId,
+                status: "succeeded" as const,
+                amount: event.amountMinor,
+                amount_received: event.amountMinor,
+                currency: event.currency,
+                metadata: {
+                  invoice_id: event.invoiceId,
+                  team_id: event.teamId,
+                },
+              }),
+            },
+            refunds: {
+              list: async () => ({
+                data: [
+                  {
+                    id: refund.id,
+                    amount: refund.amountMinor,
+                    currency: event.currency,
+                    payment_intent: event.paymentIntentId,
+                    status,
+                  },
+                ],
+                has_more: false,
+              }),
+              retrieve: async () => {
+                throw new Error("Unknown status must remain unconfirmed");
+              },
+            },
+          },
+          event,
+        );
+        await expect(
+          applyStripeInvoicePaymentEvent(db, {
+            ...event,
+            refunds: confirmation.refunds,
+          }),
+        ).rejects.toMatchObject({ status: 409 });
+        const after = await getInvoiceSettlement(db, scope());
+        expect(after.entries).toEqual(before.entries);
+        expect(after.projection).toEqual(before.projection);
+        expect(after.reconciliationRequired).toBe(true);
+        await expect(
+          recordInvoiceSettlement(db, payment("1")),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(
+          getInvoiceRefundContext(db, scope()),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(reserveInvoicePayment(db, scope())).rejects.toMatchObject({
+          status: 400,
+        });
+      });
+    }
+    test("an unknown unjournaled refund cannot be cleared using only older known resources", async () => {
+      const { event } = await confirmedStripeRefund();
+      const before = await getInvoiceSettlement(db, scope());
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [
+            ...event.refunds,
+            {
+              id: "re_unknownNew",
+              amountMinor: 1,
+              status: "future_provider_status",
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const after = await getInvoiceSettlement(db, scope());
+      expect(after.entries).toEqual(before.entries);
+      expect(after.reconciliationRequired).toBe(true);
+      expect(after.providerVerificationAvailable).toBe(false);
+      await expect(
+        getInvoiceProviderReconciliationPlan(db, ownerScope()),
+      ).rejects.toMatchObject({ status: 409 });
+    });
     test("exact current resource proofs clear uncertainty without inventing money", async () => {
       const { event, refund } = await confirmedStripeRefund();
       await expect(

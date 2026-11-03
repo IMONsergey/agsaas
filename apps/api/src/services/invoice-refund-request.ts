@@ -134,6 +134,23 @@ export type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
   };
 };
 
+/** Every read is bounded by the remaining shared deadline, including pagination. */
+export function stripeRefundReadOptions(
+  stripeAccountId: string,
+  deadline: number,
+): Stripe.RequestOptions {
+  const remaining = Math.floor(deadline - performance.now());
+  if (!Number.isFinite(remaining) || remaining < 1)
+    throw new InvoicePaymentError(
+      503,
+      "Refund confirmation exceeded its processing budget",
+    );
+  return {
+    stripeAccount: stripeAccountId,
+    timeout: Math.min(5_000, remaining),
+  };
+}
+
 /**
  * charge.refunded is not proof that each refund succeeded. Confirm the current
  * complete refund list, including asynchronous refund.updated notifications.
@@ -143,6 +160,7 @@ export async function getConfirmedInvoiceRefunds(
   stripe: RefundStateProvider,
   params: { paymentIntentId: string; stripeAccountId: string },
   deadline = performance.now() + 15_000,
+  policy: { preserveUnknownStatuses?: boolean } = {},
 ) {
   const withinBudget = () => {
     if (performance.now() > deadline)
@@ -151,11 +169,10 @@ export async function getConfirmedInvoiceRefunds(
         "Refund confirmation exceeded its processing budget",
       );
   };
-  const options = { stripeAccount: params.stripeAccountId };
   withinBudget();
   const intent = await stripe.paymentIntents.retrieve(
     params.paymentIntentId,
-    options,
+    stripeRefundReadOptions(params.stripeAccountId, deadline),
   );
   withinBudget();
   if (
@@ -183,7 +200,7 @@ export async function getConfirmedInvoiceRefunds(
         limit: 100,
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       },
-      options,
+      stripeRefundReadOptions(params.stripeAccountId, deadline),
     );
     withinBudget();
     if (!Array.isArray(refunds.data) || typeof refunds.has_more !== "boolean") {
@@ -214,7 +231,8 @@ export async function getConfirmedInvoiceRefunds(
           "requires_action",
           "failed",
           "canceled",
-        ].includes(refund.status ?? "")
+        ].includes(refund.status ?? "") &&
+        !policy.preserveUnknownStatuses
       )
         throw new InvoicePaymentError(
           409,
@@ -224,7 +242,9 @@ export async function getConfirmedInvoiceRefunds(
       records.push({
         id: refund.id,
         amountMinor: refund.amount,
-        status: refund.status!,
+        // An unrecognized observation reaches the authorized DB adapter so it
+        // can retain a durable fence; it never counts as confirmed money.
+        status: typeof refund.status === "string" ? refund.status : "unknown",
       });
       if (refund.status === "succeeded") succeeded += refund.amount;
     }

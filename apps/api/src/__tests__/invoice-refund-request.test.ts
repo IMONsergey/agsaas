@@ -194,7 +194,7 @@ describe("full invoice refund confirmation reads complete current succeeded refu
     });
     expect(stripe.refunds.list).toHaveBeenCalledWith(
       { payment_intent: "pi_fixture", limit: 100 },
-      { stripeAccount: "acct_original" },
+      { stripeAccount: "acct_original", timeout: expect.any(Number) },
     );
   });
   for (const status of [

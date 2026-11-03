@@ -8,6 +8,7 @@ import type Stripe from "stripe";
 import {
   getConfirmedInvoiceRefunds,
   type RefundStateProvider,
+  stripeRefundReadOptions,
 } from "./invoice-refund-request";
 
 type RefundResource = Pick<
@@ -78,6 +79,7 @@ export async function confirmStripeRefundsForWebhook(
     stripe,
     params,
     deadline,
+    { preserveUnknownStatuses: true },
   );
   const refunds: StripeRefundEvidence[] = [];
   for (const refund of confirmation.refunds) {
@@ -90,9 +92,10 @@ export async function confirmStripeRefundsForWebhook(
     }
     try {
       const exact = verifiedRefund(
-        await stripe.refunds.retrieve(refund.id, {
-          stripeAccount: params.stripeAccountId,
-        }),
+        await stripe.refunds.retrieve(
+          refund.id,
+          stripeRefundReadOptions(params.stripeAccountId, deadline),
+        ),
         {
           id: refund.id,
           paymentIntentId: params.paymentIntentId,
@@ -166,9 +169,10 @@ export async function getInvoiceProviderReconciliationProofs(
       const refunds: StripeRefundEvidence[] = [];
       for (const id of ids) {
         withinBudget();
-        const exact = await stripe.refunds.retrieve(id, {
-          stripeAccount: payment.stripeAccountId,
-        });
+        const exact = await stripe.refunds.retrieve(
+          id,
+          stripeRefundReadOptions(payment.stripeAccountId, deadline),
+        );
         withinBudget();
         refunds.push(
           verifiedRefund(exact, {

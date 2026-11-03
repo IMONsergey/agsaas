@@ -201,7 +201,7 @@ async function persistProjection(
 /** The original provider resources remain bound by the immutable journal. */
 export async function requireInvoiceSettlementProviderReconciliation(
   db: DatabaseOrTransaction,
-  input: { invoiceId: string; teamId: string },
+  input: { invoiceId: string; teamId: string; manualUnknown?: boolean },
 ) {
   return primary(db).transaction(async (tx) => {
     const invoice = await lockedInvoice(tx, input);
@@ -210,7 +210,14 @@ export async function requireInvoiceSettlementProviderReconciliation(
       input.teamId,
       input.invoiceId,
     );
-    if (!rows.some((row) => row.provider === "stripe" && row.kind === "refund"))
+    if (
+      !rows.some(
+        (row) =>
+          row.provider === "stripe" &&
+          (row.kind === "refund" ||
+            (input.manualUnknown && row.kind === "payment")),
+      )
+    )
       throw new InvoicePaymentError(
         409,
         "Unknown provider history requires manual reconciliation",
@@ -227,9 +234,10 @@ export async function requireInvoiceSettlementProviderReconciliation(
         ),
       )
       .limit(1);
-    const reason = unknownRequest.length
-      ? "manual_unknown"
-      : STRIPE_LEDGER_RECONCILIATION_REASON;
+    const reason =
+      unknownRequest.length || input.manualUnknown
+        ? "manual_unknown"
+        : STRIPE_LEDGER_RECONCILIATION_REASON;
     const amount = getInvoiceLedgerAmount(invoice.amount, invoice.currency);
     const projection = calculateInvoiceSettlement(
       String(amount.amountMinor),
