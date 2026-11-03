@@ -44,7 +44,10 @@ const execute = mock(async (statement: SQL) => {
   const query = dialect.sqlToQuery(statement);
   if (query.sql.includes("INSERT INTO public.request_resource_budgets")) {
     expect(query.params[0]).toBe(`user:${actorId}`);
-    expect([1, 5]).toContain(query.params[1]);
+    const cost = query.params[1];
+    if (typeof cost !== "number")
+      throw new Error("Admission cost must be a numeric SQL parameter");
+    expect([1, 5]).toContain(cost);
     expect(query.params[2]).toBe(600);
     if (budgetUnavailable)
       throw new Error("Synthetic admission storage failure");

@@ -144,7 +144,7 @@ describe("optional provider imports", () => {
     delete process.env.COMPOSIO_API_KEY;
   });
 
-  test("configured Composio REST requests preserve URL, header, and payload", async () => {
+  test("configured Composio REST requests remain bounded and refuse redirects", async () => {
     process.env.COMPOSIO_API_KEY = "local-test-composio-rest-key";
     fetchSpy.mockResolvedValueOnce(Response.json({ slug: "example" }));
 
@@ -153,7 +153,11 @@ describe("optional provider imports", () => {
     });
     expect(fetchSpy).toHaveBeenLastCalledWith(
       "https://backend.composio.dev/api/v3/toolkits/example",
-      { headers: { "x-api-key": "local-test-composio-rest-key" } },
+      {
+        headers: { "x-api-key": "local-test-composio-rest-key" },
+        redirect: "error",
+        signal: expect.any(AbortSignal),
+      },
     );
     delete process.env.COMPOSIO_API_KEY;
   });

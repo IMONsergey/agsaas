@@ -8,6 +8,11 @@ const createCaller = createCallerFactory(apiKeysRouter);
 
 const KEY_ID = "f1e2d3c4-b5a6-7890-abcd-ef1234567890";
 
+beforeEach(() => {
+  mocks.getTeamMemberRole.mockReset();
+  mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("owner"));
+});
+
 describe("tRPC: apiKeys.get", () => {
   beforeEach(() => {
     mocks.getApiKeysByTeam.mockReset();
@@ -107,4 +112,34 @@ describe("tRPC: apiKeys.delete", () => {
       await createCaller(createTestContext()).delete({ id: KEY_ID }),
     ).toEqual({ id: KEY_ID, deleted: false });
   });
+});
+
+describe("tRPC: apiKeys owner authorization", () => {
+  beforeEach(() => {
+    mocks.getApiKeysByTeam.mockReset();
+    mocks.upsertApiKey.mockReset();
+    mocks.deleteApiKey.mockReset();
+    mocks.resendEmailsSend.mockReset();
+  });
+
+  for (const role of ["member", null]) {
+    test(`rejects ${role ?? "missing"} role before key access or email`, async () => {
+      mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve(role));
+      const caller = createCaller(createTestContext());
+
+      await expect(caller.get()).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
+        caller.upsert({ name: "Test Key", scopes: ["apis.read"] }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(caller.delete({ id: KEY_ID })).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+
+      expect(mocks.getTeamMemberRole).toHaveBeenCalledTimes(3);
+      expect(mocks.getApiKeysByTeam).not.toHaveBeenCalled();
+      expect(mocks.upsertApiKey).not.toHaveBeenCalled();
+      expect(mocks.deleteApiKey).not.toHaveBeenCalled();
+      expect(mocks.resendEmailsSend).not.toHaveBeenCalled();
+    });
+  }
 });
