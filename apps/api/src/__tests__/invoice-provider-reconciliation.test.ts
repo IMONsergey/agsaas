@@ -39,7 +39,7 @@ function provider() {
     amount: 2000,
     currency: "usd",
     payment_intent: "pi_fixture",
-    failure_balance_transaction: null as string | null,
+    failure_balance_transaction: null as string | null | undefined,
   };
   const retrievePayment = mock(
     async (_id: string, _options: Stripe.RequestOptions) => ({
@@ -269,6 +269,23 @@ describe("webhook return-of-funds proof", () => {
       amountMinor: 2000,
       status: "failed",
     });
+  });
+  test("an omitted or null balance-transaction reference cannot invent return-of-funds evidence", async () => {
+    for (const reference of [undefined, null]) {
+      const f = provider();
+      f.listed.status = "failed";
+      f.resource.status = "failed";
+      f.resource.failure_balance_transaction = reference;
+      const result = await confirmStripeRefundsForWebhook(f.stripe, identity);
+      expect(result.refunds[0]).toEqual({
+        id: "re_fixture",
+        amountMinor: 2000,
+        status: "failed",
+        verifiedBy: "resource_get",
+        failureBalanceTransactionId: null,
+      });
+      expect(result.refundedMinor).toBe(0);
+    }
   });
   test("failed and canceled resources carry the exact returned balance-transaction reference", async () => {
     for (const status of ["failed", "canceled"]) {

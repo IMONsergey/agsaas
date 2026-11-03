@@ -13,13 +13,14 @@ import {
 
 type RefundResource = Pick<
   Stripe.Refund,
-  | "id"
-  | "payment_intent"
-  | "amount"
-  | "currency"
-  | "status"
-  | "failure_balance_transaction"
->;
+  "id" | "payment_intent" | "amount" | "currency" | "status"
+> & {
+  // The SDK models absence as optional; JSON responses may also contain null.
+  // Neither representation establishes that failed refund funds were returned.
+  failure_balance_transaction?:
+    | Stripe.Refund["failure_balance_transaction"]
+    | null;
+};
 export type RefundVerificationProvider = RefundStateProvider & {
   refunds: {
     retrieve(
