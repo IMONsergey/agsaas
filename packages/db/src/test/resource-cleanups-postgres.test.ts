@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import {
   assertNoPendingProviderCleanup,
@@ -11,6 +11,7 @@ import {
   retainFileCleanup,
   retainResourceCleanup,
 } from "../queries/resource-cleanups";
+import { teams } from "../schema";
 import {
   closeDatabase,
   getTestDatabase,
@@ -31,8 +32,13 @@ describe.skipIf(!isTestDatabaseAvailable())(
       const teamId = randomUUID(),
         userId = randomUUID();
       try {
+        // File erasure now locks the live team before its object scope.
+        await db
+          .insert(teams)
+          .values({ id: teamId, inboxId: teamId, name: "Cleanup fixture" });
         await work(teamId, userId);
       } finally {
+        await db.delete(teams).where(eq(teams.id, teamId));
         await db.execute(
           sql`DELETE FROM public.resource_cleanups WHERE team_id = ${teamId}::uuid`,
         );

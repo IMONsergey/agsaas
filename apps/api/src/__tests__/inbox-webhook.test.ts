@@ -30,6 +30,7 @@ process.env.INBOX_WEBHOOK_PASSWORD = fixturePassword;
 
 const objects = new Map<string, Uint8Array>();
 const rows = new Map<string, InboxWebhookReceipt>();
+const erased = new Map<string, InboxWebhookReceipt>();
 const queued = new Map<string, string[]>();
 const refusedBytes = new Set<string>();
 const options: unknown[] = [];
@@ -89,10 +90,36 @@ mock.module("@midday/db/queries", () => ({
 mock.module("@midday/db/queries/inbox-receipts", () => ({
   getInboxReceiptByReferenceId: async (
     _db: unknown,
-    input: { teamId: string; referenceId: string },
+    input: {
+      teamId: string;
+      referenceId: string;
+      expectedProof?: { contentType: string; meta: Record<string, unknown> };
+    },
   ) => {
     const row = rows.get(input.referenceId);
-    return row?.teamId === input.teamId ? row : undefined;
+    if (row?.teamId === input.teamId) return row;
+    const deleted = erased.get(input.referenceId);
+    if (!deleted || deleted.teamId !== input.teamId) return undefined;
+    const meta = deleted.meta as { contentSha256: string };
+    return {
+      ...deleted,
+      filePath: null,
+      fileName: null,
+      meta: null,
+      senderEmail: null,
+      contentType: input.expectedProof?.contentType ?? null,
+      status: "deleted",
+      deletionProof: {
+        contentSha256: meta.contentSha256,
+        contentTypeMatches:
+          input.expectedProof?.contentType === deleted.contentType,
+        metadataRetained: true,
+        metadataMatches:
+          JSON.stringify(input.expectedProof?.meta) ===
+          JSON.stringify(deleted.meta),
+        unavailable: false,
+      },
+    };
   },
 }));
 mock.module("../services/inbox-webhook-queue", () => ({
@@ -183,6 +210,7 @@ beforeEach(() => {
   process.env.INBOX_WEBHOOK_PASSWORD = fixturePassword;
   objects.clear();
   rows.clear();
+  erased.clear();
   queued.clear();
   refusedBytes.clear();
   options.length = 0;
@@ -326,4 +354,23 @@ describe("inbound webhook HTTP handoff", () => {
     expect(register).not.toHaveBeenCalled();
     expect(objects.size).toBe(0);
   });
+});
+
+test("HTTP replay of a physically erased receipt acknowledges exact evidence without notification or recreation", async () => {
+  expect((await request([item("%PDF-one")])).status).toBe(200);
+  for (const [ref, row] of rows) erased.set(ref, structuredClone(row));
+  rows.clear();
+  objects.clear();
+  queued.clear();
+  options.length = 0;
+  register.mockClear();
+  processing.mockClear();
+  notify.mockClear();
+  expect((await request([item("%PDF-one")])).status).toBe(200);
+  expect((await request([item("%PDF-changed")])).status).toBe(503);
+  expect([rows.size, objects.size, queued.size]).toEqual([0, 0, 0]);
+  expect(register).not.toHaveBeenCalled();
+  expect(processing).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+  expect(options).toEqual([]);
 });

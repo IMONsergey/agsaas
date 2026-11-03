@@ -55,6 +55,15 @@ type FakeJob = RetainedInboxJob & {
 function fixture(teamId = TEAM) {
   const objects = new Map<string, Uint8Array>();
   const rows = new Map<string, InboxWebhookReceipt>();
+  const erased = new Map<
+    string,
+    {
+      id: string;
+      original: PreparedWebhookReceipt;
+      legacy: boolean;
+      known: boolean;
+    }
+  >();
   const jobs = new Map<string, FakeJob>();
   const uploads: string[] = [];
   const events: string[] = [];
@@ -106,14 +115,41 @@ function fixture(teamId = TEAM) {
     },
   });
   const deps: WebhookIngestionDependencies = {
-    findReceipt: async (ref) => {
+    findReceipt: async (ref, expected) => {
       const row = rows.get(ref);
-      return row?.teamId === teamId ? structuredClone(row) : undefined;
+      if (row?.teamId === teamId) return structuredClone(row);
+      const proof = erased.get(ref);
+      if (!proof || proof.original.teamId !== teamId) return undefined;
+      return {
+        id: proof.id,
+        teamId,
+        referenceId: ref,
+        filePath: null,
+        fileName: null,
+        contentType: expected.contentType,
+        size: proof.original.size,
+        status: "deleted",
+        senderEmail: null,
+        meta: null,
+        deletionProof: {
+          contentSha256: proof.known ? proof.original.contentSha256 : null,
+          contentTypeMatches:
+            proof.original.contentType === expected.contentType,
+          metadataRetained: !proof.legacy,
+          metadataMatches: proof.legacy
+            ? null
+            : JSON.stringify(proof.original.meta) ===
+              JSON.stringify(expected.meta),
+          unavailable: !proof.known,
+        },
+      };
     },
     upload: async (receipt) => {
       const path = receipt.filePath.join("/");
       uploads.push(path);
       events.push("upload");
+      if (erased.has(receipt.referenceId))
+        return { error: "object was deleted" };
       if (failUploads.has(receipt.referenceId)) return { error: "unavailable" };
       if (objects.has(path)) return { error: "already exists" };
       objects.set(path, new Uint8Array(receipt.bytes));
@@ -128,6 +164,8 @@ function fixture(teamId = TEAM) {
     },
     register: async (receipt) => {
       events.push("register");
+      if (erased.has(receipt.referenceId))
+        throw new Error("Inbox receipt was erased");
       const {
         bytes: _bytes,
         legacyReferenceId: _legacy,
@@ -158,6 +196,25 @@ function fixture(teamId = TEAM) {
     events,
     failUploads,
     deps,
+    erase(
+      original: PreparedWebhookReceipt,
+      options: { legacy?: boolean; known?: boolean; keepBytes?: boolean } = {},
+    ) {
+      const ref = options.legacy
+        ? original.legacyReferenceId
+        : original.referenceId;
+      const row = rows.get(ref);
+      erased.set(ref, {
+        id: row?.id ?? crypto.randomUUID(),
+        original: structuredClone(original),
+        legacy: options.legacy === true,
+        known: options.known !== false,
+      });
+      rows.delete(ref);
+      if (!options.keepBytes) {
+        objects.delete(row?.filePath?.join("/") ?? original.filePath.join("/"));
+      }
+    },
     loseUpload() {
       loseUploadResponse = true;
     },
@@ -274,6 +331,7 @@ describe("Postmark durable receipt handoff", () => {
       attempted: 1,
       accepted: 0,
       failed: 1,
+      deleted: 0,
     });
     expect(Buffer.from(f.objects.get(path)!).toString()).toBe("unrelated");
     expect(f.rows.size).toBe(0);
@@ -312,6 +370,7 @@ describe("Postmark durable receipt handoff", () => {
       attempted: 2,
       accepted: 0,
       failed: 2,
+      deleted: 0,
     });
     f.failUploads.delete(receipts[0]!.referenceId);
     expect(await ingestWebhookReceipts(receipts, f.deps)).toEqual({
@@ -319,6 +378,7 @@ describe("Postmark durable receipt handoff", () => {
       attempted: 2,
       accepted: 1,
       failed: 1,
+      deleted: 0,
     });
     f.failUploads.clear();
     expect((await ingestWebhookReceipts(receipts, f.deps)).success).toBe(true);
@@ -354,13 +414,13 @@ describe("Postmark durable receipt handoff", () => {
     expect([f.objects.size, f.rows.size, f.jobs.size]).toEqual([1, 1, 1]);
   });
 
-  test("completed or deleted receipts are not reuploaded or reprocessed after queue eviction", async () => {
+  test("completed receipts are not reuploaded or reprocessed after queue eviction", async () => {
     const f = fixture();
     const receipts = await prepare();
     await ingestWebhookReceipts(receipts, f.deps);
     const row = only(f.rows.values());
     const before = f.metrics().processingCalls;
-    for (const status of ["done", "pending", "other", "deleted", "archived"]) {
+    for (const status of ["done", "pending", "other", "archived"]) {
       row.status = status;
       f.objects.clear();
       f.jobs.clear();
@@ -480,4 +540,133 @@ describe("Postmark durable receipt handoff", () => {
     only(f.rows.values()).status = "done";
     expect((await ingestWebhookReceipts(receipts, f.deps)).success).toBe(true);
   });
+});
+
+describe("erased receipt replay proof", () => {
+  test("physical deletion is acknowledged after object and job removal without another handoff", async () => {
+    const receipts = await prepare();
+    const f = fixture();
+    await ingestWebhookReceipts(receipts, f.deps);
+    const calls = f.metrics().processingCalls;
+    f.erase(receipts[0]!);
+    f.jobs.clear();
+    f.events.length = 0;
+    expect(await ingestWebhookReceipts(receipts, f.deps)).toEqual({
+      success: true,
+      attempted: 1,
+      accepted: 1,
+      failed: 0,
+      deleted: 1,
+    });
+    expect([f.rows.size, f.objects.size, f.jobs.size]).toEqual([0, 0, 0]);
+    expect(f.events).toEqual([]);
+    expect(f.metrics().processingCalls).toBe(calls);
+  });
+
+  test("erasure proof rejects changed same-length bytes, MIME and retained attachment metadata", async () => {
+    const receipts = await prepare();
+    const f = fixture();
+    await ingestWebhookReceipts(receipts, f.deps);
+    f.erase(receipts[0]!);
+    f.jobs.clear();
+    f.events.length = 0;
+    for (const changed of [
+      attachment("%PDF-two"),
+      attachment("%PDF-one", "renamed.pdf"),
+      { ...attachment(), ContentType: "application/octet-stream" },
+      { ...attachment(), ContentID: "changed-content-id" },
+    ]) {
+      const result = await ingestWebhookReceipts(
+        await prepare([changed]),
+        f.deps,
+      );
+      expect(result.success).toBe(false);
+      expect(result.deleted).toBe(0);
+    }
+    expect(f.events).toEqual([]);
+    expect(f.rows.size).toBe(0);
+  });
+
+  test("a legacy random path can acknowledge from a retained exact digest after its bytes were erased", async () => {
+    const receipts = await prepare();
+    const f = fixture();
+    const row = legacyRow(receipts[0]!);
+    f.rows.set(row.referenceId!, row);
+    f.erase(receipts[0]!, { legacy: true });
+    expect((await ingestWebhookReceipts(receipts, f.deps)).deleted).toBe(1);
+    expect(f.events).toEqual([]);
+    expect(f.rows.size).toBe(0);
+    expect(
+      (
+        await ingestWebhookReceipts(
+          await prepare([attachment("%PDF-two")]),
+          f.deps,
+        )
+      ).success,
+    ).toBe(false);
+  });
+
+  test("unknown legacy evidence and old soft-deleted rows do not turn absence into equality", async () => {
+    const receipts = await prepare();
+    for (const legacy of [false, true]) {
+      const f = fixture();
+      f.erase(receipts[0]!, { legacy, known: false });
+      expect((await ingestWebhookReceipts(receipts, f.deps)).success).toBe(
+        false,
+      );
+      expect(f.events).toEqual([]);
+      expect(f.rows.size).toBe(0);
+    }
+    const f = fixture();
+    const row = legacyRow(receipts[0]!);
+    row.status = "deleted";
+    f.rows.set(row.referenceId!, row);
+    expect((await ingestWebhookReceipts(receipts, f.deps)).success).toBe(false);
+    expect(f.events).toEqual([]);
+  });
+
+  for (const stage of ["upload", "download", "register", "enqueue"] as const) {
+    test(`deletion during ${stage} is recovered only from exact erasure proof`, async () => {
+      const receipts = await prepare();
+      const expected = receipts[0]!;
+      const f = fixture();
+      if (stage !== "register") await ingestWebhookReceipts(receipts, f.deps);
+      f.jobs.clear();
+      f.events.length = 0;
+      const deps = { ...f.deps };
+      if (stage === "upload") {
+        deps.upload = async () => {
+          f.erase(expected, { keepBytes: true });
+          throw new Error("deletion raced the upload response");
+        };
+      } else if (stage === "download") {
+        deps.upload = async () => ({ error: "conflict" });
+        deps.download = async (path) => {
+          f.erase(expected);
+          return f.deps.download(path);
+        };
+      } else if (stage === "register") {
+        deps.register = async (input) => {
+          await f.deps.register(input);
+          f.erase(expected);
+          throw new Error("deleted before registration response");
+        };
+      } else {
+        deps.enqueue = async () => {
+          f.erase(expected);
+          throw new Error("deletion raced the queue response");
+        };
+      }
+      const result = await ingestWebhookReceipts(receipts, deps);
+      expect(result).toEqual({
+        success: true,
+        attempted: 1,
+        accepted: 1,
+        failed: 0,
+        deleted: 1,
+      });
+      expect(f.rows.size).toBe(0);
+      expect(f.jobs.size).toBe(0);
+    });
+  }
 });
