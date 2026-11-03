@@ -35,9 +35,25 @@ async function seed(client: PoolClient, f: Fixture) {
     "INSERT INTO public.teams (id, name, inbox_id) VALUES ($1, 'OAuth upgrade fixture', $2)",
     [f.teamId, f.teamId],
   );
+  // Seed Auth first: the baseline profile trigger may create public.users.
+  await client.query(
+    `INSERT INTO auth.users (id, email, raw_user_meta_data)
+     VALUES ($1, $3, jsonb_build_object('full_name','OAuth upgrade author')),
+            ($2, $4, jsonb_build_object('full_name','OAuth upgrade survivor'))
+     ON CONFLICT (id) DO UPDATE SET
+       email=excluded.email, raw_user_meta_data=excluded.raw_user_meta_data`,
+    [
+      f.authorId,
+      f.survivorId,
+      `${f.authorId}@example.test`,
+      `${f.survivorId}@example.test`,
+    ],
+  );
   await client.query(
     `INSERT INTO public.users (id, team_id, email)
-     VALUES ($1, $3, $4), ($2, $3, $5)`,
+     VALUES ($1, $3, $4), ($2, $3, $5)
+     ON CONFLICT (id) DO UPDATE SET
+       team_id=excluded.team_id, email=excluded.email`,
     [
       f.authorId,
       f.survivorId,
@@ -134,13 +150,21 @@ describe.skipIf(!isTestDatabaseAvailable())(
             `SELECT
               (SELECT count(*)::integer FROM public.teams WHERE id = $1) AS teams,
               (SELECT count(*)::integer FROM public.users WHERE id IN ($2, $3)) AS users,
+              (SELECT count(*)::integer FROM auth.users WHERE id IN ($2, $3)) AS auth_users,
               (SELECT count(*)::integer FROM public.oauth_applications WHERE id = $4) AS applications,
               (SELECT count(*)::integer FROM public.oauth_access_tokens WHERE application_id = $4) AS tokens,
               (SELECT count(*)::integer FROM public.oauth_authorization_codes WHERE application_id = $4) AS codes`,
             [f.teamId, f.authorId, f.survivorId, f.applicationId],
           );
           expect(cleanup.rows).toEqual([
-            { teams: 0, users: 0, applications: 0, tokens: 0, codes: 0 },
+            {
+              teams: 0,
+              users: 0,
+              auth_users: 0,
+              applications: 0,
+              tokens: 0,
+              codes: 0,
+            },
           ]);
         }
       } finally {
