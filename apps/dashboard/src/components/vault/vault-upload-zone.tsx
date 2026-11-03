@@ -10,12 +10,13 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type FileRejection, useDropzone } from "react-dropzone";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
-import { resumableUpload } from "@/utils/upload";
+import {
+  prepareVaultUploads,
+  type ResumableUploadResult,
+  resumableUpload,
+} from "@/utils/upload";
 
-type UploadResult = {
-  filename: string;
-  file: File;
-};
+type UploadResult = ResumableUploadResult;
 
 type Props = {
   children: ReactNode;
@@ -37,6 +38,8 @@ export function VaultUploadZone({ onUpload, children }: Props) {
   const [showProgress, setShowProgress] = useState(false);
   const [toastId, setToastId] = useState<string | null>(null);
   const uploadProgress = useRef<number[]>([]);
+  const progressToastRef = useRef<string | undefined>(undefined);
+  const uploadingRef = useRef(false);
   const { toast, dismiss, update } = useToast();
 
   const processDocumentMutation = useMutation(
@@ -53,6 +56,7 @@ export function VaultUploadZone({ onUpload, children }: Props) {
         duration: Number.POSITIVE_INFINITY,
       });
 
+      progressToastRef.current = id;
       setToastId(id);
     } else if (toastId) {
       update(toastId, {
@@ -66,10 +70,11 @@ export function VaultUploadZone({ onUpload, children }: Props) {
 
   const onDrop = async (files: File[]) => {
     // NOTE: If onDropRejected
-    if (!files.length) {
+    if (!files.length || uploadingRef.current) {
       return;
     }
 
+    uploadingRef.current = true;
     // Set default progress
     uploadProgress.current = files.map(() => 0);
 
@@ -79,12 +84,12 @@ export function VaultUploadZone({ onUpload, children }: Props) {
     const path = [user?.teamId] as string[];
 
     try {
+      const uploads = prepareVaultUploads(files, path);
       const results = (await Promise.all(
-        files.map(async (file: File, idx: number) =>
+        uploads.map(async (upload, idx: number) =>
           resumableUpload(supabase, {
             bucket: "vault",
-            path,
-            file,
+            ...upload,
             onProgress: (bytesUploaded: number, bytesTotal: number) => {
               uploadProgress.current[idx] = (bytesUploaded / bytesTotal) * 100;
 
@@ -102,9 +107,9 @@ export function VaultUploadZone({ onUpload, children }: Props) {
       )) as UploadResult[];
 
       // Trigger the upload jobs
-      processDocumentMutation.mutate(
+      await processDocumentMutation.mutateAsync(
         results.map((result) => ({
-          filePath: [...path, result.filename],
+          filePath: result.filePath,
           mimetype: result.file.type,
           size: result.file.size,
         })),
@@ -124,13 +129,14 @@ export function VaultUploadZone({ onUpload, children }: Props) {
 
       setShowProgress(false);
       setToastId(null);
-      if (toastId) {
-        dismiss(toastId);
+      if (progressToastRef.current) {
+        dismiss(progressToastRef.current);
+        progressToastRef.current = undefined;
       }
 
       // Type the results properly for onUpload callback
       const typedResults = results.map((result) => ({
-        file_path: [...path, result.filename],
+        file_path: result.filePath,
         mimetype: result.file.type,
         size: result.file.size,
       }));
@@ -140,19 +146,30 @@ export function VaultUploadZone({ onUpload, children }: Props) {
       toast({
         duration: 2500,
         variant: "error",
-        title: "Something went wrong please try again.",
+        title: "Upload could not be completed. Please try again.",
       });
+    } finally {
+      uploadingRef.current = false;
+      uploadProgress.current = [];
+      setProgress(0);
+      setShowProgress(false);
+      setToastId(null);
+      if (progressToastRef.current) {
+        dismiss(progressToastRef.current);
+        progressToastRef.current = undefined;
+      }
     }
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
+    disabled: showProgress,
     onDropRejected: ([reject]: FileRejection[]) => {
       if (reject?.errors.find(({ code }) => code === "file-too-large")) {
         toast({
           duration: 2500,
           variant: "error",
-          title: "File size to large.",
+          title: "File size too large.",
         });
       }
 

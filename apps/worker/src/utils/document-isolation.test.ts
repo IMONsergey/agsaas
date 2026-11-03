@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withOperationSignal } from "@midday/utils/operation-context";
 import { documentInputBase64, runDocumentTask } from "./document-isolation";
+import { syntheticPdf } from "./fixtures/synthetic-pdf";
 import { TimeoutError } from "./timeout";
 
 const entrypoint = new URL(
@@ -143,6 +144,39 @@ describe("isolated document lifetime", () => {
         { timeoutMs: 10000 },
       ),
     ).toBe("Synthetic document");
+  });
+  it("parses a real synthetic PDF and releases the PDF.js loading task", async () => {
+    const text = await runDocumentTask(
+      {
+        kind: "parse",
+        base64: documentInputBase64(syntheticPdf()),
+        mimetype: "application/pdf",
+      },
+      { timeoutMs: 10000 },
+    );
+    expect(text).toContain("Synthetic invoice");
+  });
+  it("rejects an excessive-page PDF and leaves the child slot usable", async () => {
+    await expect(
+      runDocumentTask(
+        {
+          kind: "parse",
+          base64: documentInputBase64(syntheticPdf(201)),
+          mimetype: "application/pdf",
+        },
+        { timeoutMs: 10000 },
+      ),
+    ).rejects.toThrow("original file is preserved");
+    expect(
+      await runDocumentTask(
+        {
+          kind: "parse",
+          base64: documentInputBase64(syntheticPdf()),
+          mimetype: "application/pdf",
+        },
+        { timeoutMs: 10000 },
+      ),
+    ).toContain("Synthetic invoice");
   });
   it("rejects an already cancelled parent context before starting a process", async () => {
     const controller = new AbortController();

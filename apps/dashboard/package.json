@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "NODE_ENV=production next build --turbopack",
+    "build": "node scripts/prepare-browser-assets.mjs && NODE_ENV=production next build --turbopack",
     "clean": "git clean -xdf .next .turbo node_modules",
-    "dev": "TZ=UTC next dev -p 3001 --turbopack",
+    "dev": "node scripts/prepare-browser-assets.mjs && TZ=UTC next dev -p 3001 --turbopack",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

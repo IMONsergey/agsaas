@@ -1,5 +1,6 @@
 import "@/styles/globals.css";
 import { cn } from "@midday/ui/cn";
+import { getAppUrl } from "@midday/utils/envs";
 import "@midday/ui/globals.css";
 import { Provider as Analytics } from "@midday/events/client";
 import { Toaster } from "@midday/ui/toaster";
@@ -11,7 +12,7 @@ import { DesktopHeader } from "@/components/desktop-header";
 import { isDesktopApp } from "@/utils/desktop";
 import { Providers } from "./providers";
 
-const dashboardUrl = process.env.NEXT_PUBLIC_URL || "http://localhost:3001";
+const dashboardUrl = getAppUrl();
 
 export const metadata: Metadata = {
   metadataBase: new URL(dashboardUrl),

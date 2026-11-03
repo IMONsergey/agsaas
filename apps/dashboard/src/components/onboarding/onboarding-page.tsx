@@ -22,7 +22,6 @@ import { Icons } from "@midday/ui/icons";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { parseAsString, useQueryStates } from "nuqs";
@@ -60,30 +59,35 @@ type StepConfig = {
 function DashboardImageAnimation() {
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.4, ease: "easeOut" }}
-      className="flex items-center justify-center overflow-visible"
-      style={{ width: "100%", height: "100%", transformOrigin: "center" }}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="w-full rounded-xl border border-border bg-background p-8 shadow-sm"
     >
-      <Image
-        src="https://cdn.midday.ai/web/dashboard-light.svg"
-        alt="Dashboard illustration"
-        width={2400}
-        height={1800}
-        className="h-auto transform -rotate-[2deg] dark:hidden"
-        style={{ width: "140%", minWidth: "1400px" }}
-        priority
-      />
-      <Image
-        src="https://cdn.midday.ai/web/dashboard-dark.svg"
-        alt="Dashboard illustration"
-        width={2400}
-        height={1800}
-        className="h-auto transform -rotate-[2deg] hidden dark:block"
-        style={{ width: "140%", minWidth: "1400px" }}
-        priority
-      />
+      <p className="text-sm font-medium tracking-wider">AGSaaS</p>
+      <h2 className="mt-6 text-3xl font-serif">Your business workspace</h2>
+      <p className="mt-3 text-sm text-muted-foreground">
+        Start with your business details. Add customers, prepare invoices and
+        keep your documents together.
+      </p>
+      <div className="mt-8 grid grid-cols-3 gap-3">
+        {["Customers", "Invoices", "Documents"].map((label) => (
+          <div key={label} className="rounded border border-border p-3 text-xs">
+            <div
+              aria-hidden="true"
+              className="mb-4 h-1 w-8 rounded bg-primary/30"
+            />
+            {label}
+          </div>
+        ))}
+      </div>
+      <div
+        aria-hidden="true"
+        className="mt-8 space-y-4 border-t border-border pt-6"
+      >
+        <div className="h-2 w-3/4 rounded bg-muted" />
+        <div className="h-2 w-full rounded bg-muted" />
+        <div className="h-2 w-1/2 rounded bg-muted" />
+      </div>
     </motion.div>
   );
 }
