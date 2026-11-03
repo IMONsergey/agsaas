@@ -25,3 +25,9 @@ Website-domain avatars use the existing local initials fallback; no Logo.dev req
 The packet contains real PDF rendering and text extraction, actual PNG rendering through all three OG route functions, no-network assertions including unsupported glyphs, exact font hash checks, loopback HTTP redirect and stalled-stream tests, and bounds for malformed images. Run these in isolated Bun processes through the shared job queue. Type checks cover dashboard, worker and API consumers. Rendering artifacts should also be viewed before accepting visual quality.
 
 The public preview response is private/no-store so revocation or expiry is not hidden behind a long-lived image response. Production builds and actual browser flows remain separate acceptance gates.
+
+## Remaining upstream routing closed in this packet
+
+OAuth discovery, chat/bot MCP context and Slack destination links now use validated installation origins. The invoice MCP display path uses the same bounded own-logo loader and removes untrusted database data URIs. The upstream Sendblue contact-card side effect was removed, and invoice email previews use the own application icon. OAuth consent no longer infers a developer, provider website or familiar icon from a user-supplied application name. It labels supplied developer metadata as self-reported and displays the callback origin without query parameters. Unsafe developer website schemes and credentials do not become links.
+
+These paths require the new route, rendering and identity regressions in addition to type checks. No messages, email or provider operations were executed during development.

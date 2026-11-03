@@ -23,12 +23,12 @@ import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, X } from "lucide-react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useOAuthParams } from "@/hooks/use-oauth-params";
 import { useTeamQuery } from "@/hooks/use-team";
 import { useTRPC } from "@/trpc/client";
-import { getKnownClient } from "@/utils/known-oauth-clients";
 import { getScopeDescription } from "@/utils/scopes";
+import { OAuthApplicationIdentity } from "./oauth-application-identity";
 
 export function OAuthConsentScreen() {
   const router = useRouter();
@@ -61,11 +61,6 @@ export function OAuthConsentScreen() {
       scope: scope!,
       state: state || undefined,
     }),
-  );
-
-  const knownClient = useMemo(
-    () => (applicationInfo ? getKnownClient(applicationInfo.name) : null),
-    [applicationInfo?.name],
   );
 
   const { data: teams } = useSuspenseQuery(trpc.team.list.queryOptions());
@@ -145,8 +140,6 @@ export function OAuthConsentScreen() {
                     height={40}
                     className="object-contain"
                   />
-                ) : knownClient?.icon ? (
-                  knownClient.icon
                 ) : (
                   <div className="w-8 h-8 bg-muted rounded-full" />
                 )}
@@ -160,7 +153,7 @@ export function OAuthConsentScreen() {
               Successfully connected
             </CardTitle>
             <CardDescription className="text-sm text-muted-foreground text-center">
-              {applicationInfo?.name} now has access to your Midday team. You
+              {applicationInfo?.name} now has access to your AGSaaS team. You
               can close this window and return to {applicationInfo?.name}.
             </CardDescription>
           </CardHeader>
@@ -222,8 +215,6 @@ export function OAuthConsentScreen() {
                   height={40}
                   className="object-contain"
                 />
-              ) : knownClient?.icon ? (
-                knownClient.icon
               ) : (
                 <div className="w-8 h-8 bg-muted rounded-full" />
               )}
@@ -240,19 +231,11 @@ export function OAuthConsentScreen() {
           </CardTitle>
 
           <CardDescription className="text-sm text-muted-foreground text-center">
-            <span className="flex items-center justify-center gap-1 text-[#878787] text-sm mb-8">
-              Built by{" "}
-              <a
-                href={applicationInfo.website || knownClient?.website || "/"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 underline"
-              >
-                {applicationInfo.developerName ||
-                  knownClient?.developerName ||
-                  "Midday"}
-              </a>
-            </span>
+            <OAuthApplicationIdentity
+              developerName={applicationInfo.developerName}
+              website={applicationInfo.website}
+              redirectUri={redirectUri ?? ""}
+            />
           </CardDescription>
         </CardHeader>
 
@@ -261,7 +244,7 @@ export function OAuthConsentScreen() {
             <div className="flex items-center gap-2">
               <AlertTriangle className="size-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
               <span className="text-sm text-amber-700 dark:text-amber-300">
-                This app hasn't been verified by Midday yet
+                This app has not been verified by this installation
               </span>
             </div>
           </div>

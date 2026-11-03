@@ -19,6 +19,7 @@ import {
   processInboxUpload,
 } from "@midday/bot";
 import { logger } from "@midday/logger";
+import { getApiUrl } from "@midday/utils/envs";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -147,7 +148,7 @@ app.post("/", async (c) => {
         c.get("authType") === "session" ? session.sessionId : undefined,
       userEmail: user?.email ?? session.user.email ?? null,
       scopes,
-      apiUrl: process.env.MIDDAY_API_URL || "https://api.midday.ai",
+      apiUrl: getApiUrl(),
       timezone: resolvedTimezone,
       locale: user?.locale || geo.locale,
       countryCode: geo.country,

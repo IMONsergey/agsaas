@@ -13,6 +13,7 @@ import {
 import { triggerJob } from "@midday/job-client";
 import { createTeamClient } from "@midday/supabase/job";
 import { getExtensionFromMimeType } from "@midday/utils";
+import { getAppUrl } from "@midday/utils/envs";
 import {
   createReceiptObjectPath,
   createReceiptReferenceId,
@@ -499,7 +500,7 @@ Focus on what was purchased (e.g., "office supplies", "software subscription", "
                   text: "View in Midday",
                   emoji: true,
                 },
-                url: `https://app.midday.ai/inbox?inboxId=${encodeURIComponent(updatedInbox.id)}`,
+                url: `${getAppUrl()}/inbox?inboxId=${encodeURIComponent(updatedInbox.id)}`,
                 action_id: "view_receipt",
               },
             ],

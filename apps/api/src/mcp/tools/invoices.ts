@@ -6,6 +6,7 @@ import {
   invoiceSummarySchema,
   updateInvoiceSchema,
 } from "@api/schemas/invoice";
+import { embedInvoiceLogoForDisplay } from "@api/services/invoice-display-assets";
 import {
   deleteInvoice,
   draftInvoice,
@@ -59,40 +60,6 @@ import {
   truncateListResponse,
   withErrorHandling,
 } from "../utils";
-
-function isAllowedLogoUrl(url: string): boolean {
-  return url.startsWith("https://service.midday.ai/");
-}
-
-async function embedLogoAsDataUrl(
-  invoice: Record<string, any>,
-): Promise<Record<string, any>> {
-  const logoUrl = invoice.template?.logoUrl;
-  if (!logoUrl || typeof logoUrl !== "string") return invoice;
-  if (logoUrl.startsWith("data:")) return invoice;
-  if (!isAllowedLogoUrl(logoUrl)) return invoice;
-
-  try {
-    const res = await fetch(logoUrl, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return invoice;
-
-    const contentType = res.headers.get("content-type") || "image/png";
-    const buffer = await res.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString("base64");
-
-    return {
-      ...invoice,
-      template: {
-        ...invoice.template,
-        logoUrl: `data:${contentType};base64,${base64}`,
-      },
-    };
-  } catch {
-    return invoice;
-  }
-}
 
 export const registerInvoiceTools: RegisterTools = (server, ctx) => {
   const { db, teamId, userId, apiUrl } = ctx;
@@ -257,7 +224,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
           }
         }
 
-        const invoiceForUI = await embedLogoAsDataUrl(clean);
+        const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
         return { content, structuredContent: { invoice: invoiceForUI } };
       }, "Failed to get invoice"),
     );
@@ -1169,7 +1136,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
                 ? "saved as draft — use invoices_send to send, or open the previewUrl to review"
                 : "created";
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Invoice ${invoiceNumber} ${action}. Total: ${total} ${mergedTemplate.currency}`,
@@ -1507,7 +1474,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             previewUrl,
           });
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Draft invoice ${existing.invoiceNumber} updated. Total: ${total} ${templateCurrency}`,
@@ -1922,7 +1889,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             previewUrl,
           });
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Invoice ${invoiceNumber} created from ${totalHours}h tracked on "${project.name}". Total: ${total} ${currency}`,

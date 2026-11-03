@@ -59,10 +59,10 @@ import {
   updatePlatformIdentityMetadata,
 } from "@midday/db/queries";
 import { createLoggerWithContext } from "@midday/logger";
+import { getApiUrl } from "@midday/utils/envs";
 import type { ModelMessage } from "ai";
 import type { Attachment, Message, Thread } from "chat";
 import { toAiMessages } from "chat";
-import type { SendblueAdapter } from "chat-adapter-sendblue";
 
 const logger = createLoggerWithContext("bot-runtime");
 
@@ -184,7 +184,7 @@ async function handleIncomingMessage(
     await forgetThreadState(thread);
     await thread
       .post(
-        "This chat is no longer linked to an authorized Midday workspace. Reconnect it from Midday and try again.",
+        "This chat is no longer linked to an authorized AGSaaS workspace. Reconnect it from AGSaaS and try again.",
       )
       .catch(() => {});
     return;
@@ -203,12 +203,12 @@ async function handleIncomingMessage(
 
   if (!user) {
     await thread.post(
-      "I couldn't resolve the Midday user for this connection. Reconnect it from the dashboard and try again.",
+      "I couldn't resolve the AGSaaS user for this connection. Reconnect it from the dashboard and try again.",
     );
     return;
   }
 
-  await thread.startTyping("Working in Midday...").catch(() => {});
+  await thread.startTyping("Working in AGSaaS...").catch(() => {});
 
   const { summaries: recentUploadSummaries, richMessages: uploadMessages } =
     await processIncomingAttachments({
@@ -238,7 +238,7 @@ async function handleIncomingMessage(
     userId: user.id,
     userEmail: user.email ?? null,
     scopes: ALL_ASSISTANT_SCOPES,
-    apiUrl: process.env.MIDDAY_API_URL || "https://api.midday.ai",
+    apiUrl: getApiUrl(),
     timezone: user.timezone ?? "UTC",
     locale: user.locale ?? "en",
     countryCode: user.team?.countryCode ?? null,
@@ -438,14 +438,14 @@ function resolveWhatsAppConversation(
       {
         errorClass: WhatsAppAlreadyConnectedToAnotherTeamError,
         message:
-          "This WhatsApp number is already connected to another Midday workspace.",
+          "This WhatsApp number is already connected to another AGSaaS workspace.",
       },
     ],
     welcomeMessage: (name) => buildWelcomeMessage(name, "whatsapp"),
     invalidCodeMessage:
-      "That WhatsApp link code is invalid or expired. Open Midday and generate a new one.",
+      "That WhatsApp link code is invalid or expired. Open AGSaaS and generate a new one.",
     promptConnectMessage:
-      "Connect WhatsApp from Midday first, then send the prefilled connection message here.",
+      "Connect WhatsApp from AGSaaS first, then send the prefilled connection message here.",
   });
 }
 
@@ -462,21 +462,11 @@ function resolveSendblueConversation(
           msg?.author?.fullName || msg?.author?.userName || undefined,
       },
     }),
-    afterConnect: async ({ thread: t }) => {
-      try {
-        await (t.adapter as SendblueAdapter).sendMediaMessage(
-          t.id,
-          "https://cdn.midday.ai/midday-contact.vcf",
-        );
-      } catch {
-        // Contact card is best-effort
-      }
-    },
     welcomeMessage: (name) => buildWelcomeMessage(name, "sendblue"),
     invalidCodeMessage:
-      "That iMessage link code is invalid or expired. Open Midday and generate a new one.",
+      "That iMessage link code is invalid or expired. Open AGSaaS and generate a new one.",
     promptConnectMessage:
-      "Connect iMessage from Midday first, then send the connection code here.",
+      "Connect iMessage from AGSaaS first, then send the connection code here.",
   });
 }
 
@@ -518,14 +508,14 @@ function resolveTelegramConversation(
       {
         errorClass: TelegramAlreadyConnectedToAnotherTeamError,
         message:
-          "This Telegram account is already connected to another Midday workspace.",
+          "This Telegram account is already connected to another AGSaaS workspace.",
       },
     ],
     welcomeMessage: (name) => buildWelcomeMessage(name, "telegram"),
     invalidCodeMessage:
-      "That Telegram link code is invalid or expired. Open Midday and generate a new one.",
+      "That Telegram link code is invalid or expired. Open AGSaaS and generate a new one.",
     promptConnectMessage:
-      "Open Telegram from Midday to connect this chat, then come back here.",
+      "Open Telegram from AGSaaS to connect this chat, then come back here.",
   });
 }
 
@@ -599,7 +589,7 @@ async function resolveSlackConversation(
     if (token) {
       if (app?.teamId && app.teamId !== token.teamId) {
         await thread.post(
-          "That Slack link code belongs to another Midday workspace. Generate a new code for this workspace.",
+          "That Slack link code belongs to another AGSaaS workspace. Generate a new code for this workspace.",
         );
         return { connected: false as const };
       }
@@ -635,7 +625,7 @@ async function resolveSlackConversation(
           externalUserId: slackUserId,
         });
 
-        await thread.post(buildWelcomeMessage(team?.name ?? "Midday", "slack"));
+        await thread.post(buildWelcomeMessage(team?.name ?? "AGSaaS", "slack"));
 
         return consumeResolvedConversation({
           connected: true as const,
@@ -658,7 +648,7 @@ async function resolveSlackConversation(
       isExplicitConnectionAttempt("slack", message?.text)
     ) {
       await thread.post(
-        "That Slack link code is invalid or expired. Open Midday and generate a new one.",
+        "That Slack link code is invalid or expired. Open AGSaaS and generate a new one.",
       );
       return { connected: false as const };
     }
@@ -666,7 +656,7 @@ async function resolveSlackConversation(
 
   if (!existingIdentity?.userId) {
     await thread.post(
-      "Slack is installed, but this Slack user is not linked yet. Open Midday, choose Link Slack User, and send the generated code to the Midday bot in Slack.",
+      "Slack is installed, but this Slack user is not linked yet. Open AGSaaS, choose Link Slack User, and send the generated code to the AGSaaS bot in Slack.",
     );
     return { connected: false as const };
   }
@@ -674,7 +664,7 @@ async function resolveSlackConversation(
   const resolvedTeamId = thread.isDM ? existingIdentity.teamId : app?.teamId;
   if (!resolvedTeamId) {
     await thread.post(
-      "Slack is installed, but I couldn't map this conversation to a Midday workspace.",
+      "Slack is installed, but I couldn't map this conversation to an AGSaaS workspace.",
     );
     return { connected: false as const };
   }
