@@ -90,7 +90,8 @@
     "./queries/security-audit": "./src/queries/security-audit.ts",
     "./queries/resource-admission": "./src/queries/resource-admission.ts",
     "./queries/bank-sync": "./src/queries/bank-sync.ts",
-    "./queries/onboarding-deliveries": "./src/queries/onboarding-deliveries.ts"
+    "./queries/onboarding-deliveries": "./src/queries/onboarding-deliveries.ts",
+    "./queries/revoke-sessions-audited": "./src/queries/revoke-sessions-audited.ts"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",

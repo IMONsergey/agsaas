@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { getOperationSignal } from "@midday/utils/operation-context";
 import { MAX_DOCUMENT_INPUT_BYTES } from "./document-limits";
 import type { DocumentTask, DocumentTaskResult } from "./document-task-types";
 import { TimeoutError } from "./timeout";
@@ -53,10 +54,15 @@ export async function runDocumentTask<T extends DocumentTask>(
   options: { timeoutMs?: number; signal?: AbortSignal; entrypoint?: URL } = {},
 ): Promise<DocumentTaskResult<T>> {
   const timeoutMs = options.timeoutMs ?? 60_000;
-  if (timeoutMs <= 0 || timeoutMs > 600_000)
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000)
     throw new Error("Invalid isolated document deadline");
-  shutdown.signal.throwIfAborted();
-  options.signal?.throwIfAborted();
+  const inherited = getOperationSignal();
+  const signal = AbortSignal.any([
+    shutdown.signal,
+    ...(options.signal ? [options.signal] : []),
+    ...(inherited ? [inherited] : []),
+  ]);
+  signal.throwIfAborted();
   if (active >= 2)
     throw new Error("Document processor is busy; retry this operation");
   const id = randomUUID();
@@ -82,9 +88,6 @@ export async function runDocumentTask<T extends DocumentTask>(
         },
       );
       children.add(child);
-      const signal = options.signal
-        ? AbortSignal.any([options.signal, shutdown.signal])
-        : shutdown.signal;
       const kill = (error: Error) => {
         terminalError ??= error;
         child.kill("SIGKILL");

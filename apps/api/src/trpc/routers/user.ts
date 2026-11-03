@@ -8,12 +8,12 @@ import { teamCache } from "@midday/cache/team-cache";
 import {
   deleteUser,
   getOwnAuthSessions,
-  revokeAuthSessions,
   getUserById,
   getUserInvites,
   switchUserTeam,
   updateUser,
 } from "@midday/db/queries";
+import { revokeAuthSessionsWithAudit } from "@midday/db/queries/revoke-sessions-audited";
 import { FILE_KEY_TTL_SECONDS, generateFileKey } from "@midday/encryption";
 import { logger } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
@@ -33,30 +33,45 @@ export const userRouter = createTRPCRouter({
 
     return {
       ...result,
-      fileKey: result.teamId && session.sessionId
-        ? await generateFileKey({
-            teamId: result.teamId,
-            sessionId: session.sessionId,
-            userId: session.user.id,
-            aal: session.aal ?? "aal1",
-          })
-        : null,
+      fileKey:
+        result.teamId && session.sessionId
+          ? await generateFileKey({
+              teamId: result.teamId,
+              sessionId: session.sessionId,
+              userId: session.user.id,
+              aal: session.aal ?? "aal1",
+            })
+          : null,
       // Conservative browser deadline prevents reusing cached expired URLs
       // after a suspended tab wakes up, while user.me refreshes its key.
-      fileKeyExpiresAt: result.teamId && session.sessionId
-        ? Date.now() + (FILE_KEY_TTL_SECONDS - 5) * 1000
-        : null,
+      fileKeyExpiresAt:
+        result.teamId && session.sessionId
+          ? Date.now() + (FILE_KEY_TTL_SECONDS - 5) * 1000
+          : null,
     };
   }),
 
-  sessions: protectedProcedure.query(({ctx:{db,session}})=>{
-    if(!session.sessionId)throw new TRPCError({code:"UNAUTHORIZED",message:"A current browser session is required."});
-    return getOwnAuthSessions(db,session.user.id,session.sessionId);
+  sessions: protectedProcedure.query(({ ctx: { db, session } }) => {
+    if (!session.sessionId)
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "A current browser session is required.",
+      });
+    return getOwnAuthSessions(db, session.user.id, session.sessionId);
   }),
-  revokeSessions: protectedProcedure.input(z.object({scope:z.enum(["all","others"])}))
-    .mutation(({ctx:{db,session},input})=>{
-      if(!session.sessionId)throw new TRPCError({code:"UNAUTHORIZED",message:"A current browser session is required."});
-      return revokeAuthSessions(db,session.user.id,session.sessionId,input.scope);
+  revokeSessions: protectedProcedure
+    .input(z.object({ scope: z.enum(["all", "others"]) }))
+    .mutation(({ ctx: { db, session }, input }) => {
+      if (!session.sessionId)
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "A current browser session is required.",
+        });
+      return revokeAuthSessionsWithAudit(db, {
+        userId: session.user.id,
+        currentSessionId: session.sessionId,
+        scope: input.scope,
+      });
     }),
 
   update: protectedProcedure

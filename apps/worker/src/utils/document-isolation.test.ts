@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withOperationSignal } from "@midday/utils/operation-context";
 import { documentInputBase64, runDocumentTask } from "./document-isolation";
 import { TimeoutError } from "./timeout";
 
@@ -92,5 +93,17 @@ describe("isolated document lifetime", () => {
         { timeoutMs: 10000 },
       ),
     ).toBe("Synthetic document");
+  });
+  it("rejects an already cancelled parent context before starting a process", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Parent task cancelled"));
+    await expect(
+      withOperationSignal(controller.signal, () =>
+        runDocumentTask(
+          { kind: "classify-document", content: "ok" },
+          { entrypoint },
+        ),
+      ),
+    ).rejects.toThrow("Parent task cancelled");
   });
 });

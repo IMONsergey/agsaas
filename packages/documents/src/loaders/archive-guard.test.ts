@@ -2,7 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { deflateRawSync } from "node:zlib";
 import { assertBoundedOfficeArchive } from "./archive-guard";
 
-function zip(name: string, text: string, declaredSize?: number) {
+function zip(
+  name: string,
+  text: string,
+  declaredSize?: number,
+  extra = Buffer.alloc(0),
+) {
   const content = Buffer.from(text),
     compressed = deflateRawSync(content),
     filename = Buffer.from(name);
@@ -18,13 +23,22 @@ function zip(name: string, text: string, declaredSize?: number) {
   central.writeUInt32LE(compressed.length, 20);
   central.writeUInt32LE(declaredSize ?? content.length, 24);
   central.writeUInt16LE(filename.length, 28);
+  central.writeUInt16LE(extra.length, 30);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50);
   end.writeUInt16LE(1, 8);
   end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + filename.length, 12);
+  end.writeUInt32LE(central.length + filename.length + extra.length, 12);
   end.writeUInt32LE(local.length + filename.length + compressed.length, 16);
-  return Buffer.concat([local, filename, compressed, central, filename, end]);
+  return Buffer.concat([
+    local,
+    filename,
+    compressed,
+    central,
+    filename,
+    extra,
+    end,
+  ]);
 }
 describe("office archive resource boundaries", () => {
   it("accepts a small ordinary entry", () =>
@@ -53,5 +67,25 @@ describe("office archive resource boundaries", () => {
     expect(() =>
       assertBoundedOfficeArchive(zip("a", "b").subarray(0, 40)),
     ).toThrow();
+  });
+  it("rejects alternate ZIP64 sizes and Unicode path metadata", () => {
+    for (const kind of [0x0001, 0x7075]) {
+      const extra = Buffer.alloc(4);
+      extra.writeUInt16LE(kind);
+      expect(() =>
+        assertBoundedOfficeArchive(
+          zip("word/document.xml", "safe", undefined, extra),
+        ),
+      ).toThrow("alternate metadata");
+    }
+  });
+  it("rejects mismatched flags and per-entry multipart references", () => {
+    const flags = zip("a", "b");
+    flags.writeUInt16LE(8, 6);
+    expect(() => assertBoundedOfficeArchive(flags)).toThrow("Mismatched");
+    const multipart = zip("a", "b"),
+      directory = multipart.readUInt32LE(multipart.length - 6);
+    multipart.writeUInt16LE(1, directory + 34);
+    expect(() => assertBoundedOfficeArchive(multipart)).toThrow("Multipart");
   });
 });

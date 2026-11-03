@@ -3,6 +3,20 @@ import { inflateRawSync } from "node:zlib";
 const MAX_ENTRIES = 512,
   MAX_EXPANDED = 64 * 1024 * 1024,
   MAX_ENTRY = 16 * 1024 * 1024;
+function assertExtraFields(data: Buffer, start: number, length: number) {
+  const end = start + length;
+  for (let offset = start; offset < end; ) {
+    if (offset + 4 > end) throw new Error("Invalid office archive extra field");
+    const kind = data.readUInt16LE(offset),
+      size = data.readUInt16LE(offset + 2);
+    if (offset + 4 + size > end)
+      throw new Error("Invalid office archive extra bounds");
+    // Alternative sizes and paths must not change the entries validated here.
+    if (kind === 0x0001 || kind === 0x7075)
+      throw new Error("Unsupported office archive alternate metadata");
+    offset += 4 + size;
+  }
+}
 /** ZIP preflight validates actual expansion, not only attacker-supplied sizes. */
 export function assertBoundedOfficeArchive(data: Buffer) {
   if (data.length < 22) throw new Error("Invalid office archive");
@@ -65,15 +79,19 @@ export function assertBoundedOfficeArchive(data: Buffer) {
       throw new Error("Unsafe office archive path");
     seen.add(name);
     if (
-      flags & 1 ||
+      flags & (1 | 64) ||
       ![0, 8].includes(method) ||
       uncompressed > MAX_ENTRY ||
       compressed === 0xffffffff ||
       uncompressed === 0xffffffff ||
       uncompressed > Math.max(1024 * 1024, compressed * 200) ||
-      (expanded += uncompressed) > MAX_EXPANDED
+      expanded + uncompressed > MAX_EXPANDED
     )
       throw new Error("Office archive expansion exceeds processing limits");
+    expanded += uncompressed;
+    if (data.readUInt16LE(offset + 34) !== 0)
+      throw new Error("Multipart office archive entry");
+    assertExtraFields(data, offset + 46 + nameLength, extraLength);
     if (
       localOffset + 30 > directoryOffset ||
       data.readUInt32LE(localOffset) !== 0x04034b50
@@ -85,11 +103,17 @@ export function assertBoundedOfficeArchive(data: Buffer) {
     if (
       start + compressed > directoryOffset ||
       data.readUInt16LE(localOffset + 8) !== method ||
+      data.readUInt16LE(localOffset + 6) !== flags ||
       data
         .subarray(localOffset + 30, localOffset + 30 + localNameLength)
         .toString("utf8") !== name
     )
       throw new Error("Mismatched office archive entry");
+    assertExtraFields(
+      data,
+      localOffset + 30 + localNameLength,
+      localExtraLength,
+    );
     const payload = data.subarray(start, start + compressed);
     const actual =
       method === 0
