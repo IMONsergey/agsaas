@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { HostedConsentActor } from "../bank-consent";
-import type { Database } from "../client";
+import type { Database, TransactionClient } from "../client";
 import {
   getBankConnectionCleanup,
   openBankConnectionCleanup,
@@ -21,6 +21,7 @@ import {
   retainHostedBankAccess,
   retainHostedBankGrant,
   retainHostedBankLink,
+  type HostedBankConsent,
 } from "../queries/hosted-bank-consents";
 import {
   bankAccounts,
@@ -73,6 +74,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       };
       const coOwner = randomUUID();
       const ids = [actor.userId, coOwner];
+      let bodyFailure: { error: unknown } | undefined;
       try {
         await db.transaction(async (tx) => {
           await tx.insert(teams).values({
@@ -101,24 +103,131 @@ describe.skipIf(!isTestDatabaseAvailable())(
           );
         });
         await work(actor, coOwner);
+      } catch (error) {
+        bodyFailure = { error };
+        throw error;
       } finally {
-        await db.execute(
-          sql`DELETE FROM public.hosted_bank_consents WHERE team_id=${actor.teamId}::uuid`,
-        );
-        await db.execute(
-          sql`DELETE FROM public.bank_connection_cleanups WHERE team_id=${actor.teamId}::uuid`,
-        );
-        await db.execute(
-          sql`DELETE FROM public.resource_cleanups WHERE team_id=${actor.teamId}::uuid`,
-        );
-        await db.execute(
-          sql`DELETE FROM public.security_audit_events WHERE team_id=${actor.teamId}::uuid`,
-        );
-        await db.delete(teams).where(eq(teams.id, actor.teamId));
-        await db.delete(users).where(inArray(users.id, ids));
-        await removeTestProfiles(db, ids);
+        try {
+          await db.transaction(async (tx) => {
+            // Let the actual deletion/revocation triggers run before removing
+            // this fixture's retained rows. No production guard is disabled.
+            await tx.delete(teams).where(eq(teams.id, actor.teamId));
+            await tx.delete(users).where(inArray(users.id, ids));
+            await removeTestProfiles(tx, ids);
+            const actors = sql.join(
+              ids.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.hosted_bank_consents WHERE team_id=${actor.teamId}::uuid`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.bank_connection_cleanups WHERE team_id=${actor.teamId}::uuid`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.resource_cleanups WHERE team_id=${actor.teamId}::uuid OR actor_user_id IN (${actors})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.security_audit_events WHERE team_id=${actor.teamId}::uuid OR actor_user_id IN (${actors})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id=${actor.teamId}::uuid`,
+            );
+            const retained = await tx.execute<{ remains: boolean }>(sql`SELECT
+              EXISTS(SELECT 1 FROM public.hosted_bank_consents WHERE team_id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.bank_connection_cleanups WHERE team_id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.resource_cleanups WHERE team_id=${actor.teamId}::uuid OR actor_user_id IN (${actors})) OR
+              EXISTS(SELECT 1 FROM public.security_audit_events WHERE team_id=${actor.teamId}::uuid OR actor_user_id IN (${actors})) OR
+              EXISTS(SELECT 1 FROM public.storage_deletion_tombstones WHERE team_id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.bank_connections WHERE team_id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.bank_accounts WHERE team_id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.teams WHERE id=${actor.teamId}::uuid) OR
+              EXISTS(SELECT 1 FROM public.users WHERE id IN (${actors})) OR
+              EXISTS(SELECT 1 FROM auth.users WHERE id IN (${actors})) OR
+              EXISTS(SELECT 1 FROM auth.sessions WHERE user_id IN (${actors})) OR
+              EXISTS(SELECT 1 FROM auth.mfa_factors WHERE user_id IN (${actors})) AS remains`);
+            expect(retained.rows[0]?.remains).toBe(false);
+          });
+        } catch (error) {
+          console.error("Native bank consent fixture cleanup failed", {
+            teamId: actor.teamId,
+            userIds: ids,
+            sessionId: actor.sessionId,
+          });
+          if (bodyFailure)
+            throw new AggregateError(
+              [bodyFailure.error, error],
+              "Native bank consent fixture body and cleanup both failed",
+            );
+          throw error;
+        }
       }
     }
+
+    type Outcome<T> = { value?: T; error?: unknown };
+    const observe = <T>(promise: Promise<T>): Promise<Outcome<T>> =>
+      promise.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+
+    async function waitForBlock(
+      waiter: () => number | undefined,
+      blocker: number,
+    ) {
+      const deadline = performance.now() + 5000;
+      while (performance.now() < deadline) {
+        const pid = waiter();
+        if (pid) {
+          const result = await db.execute<{ blocked: boolean }>(
+            sql`SELECT ${blocker}::integer = ANY(pg_blocking_pids(${pid}::integer)) AS blocked`,
+          );
+          if (result.rows[0]?.blocked) return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(
+        "Expected the competing transaction to wait for the held Auth lock",
+      );
+    }
+
+    async function acceptanceAfterAuthChange(
+      actor: HostedConsentActor,
+      id: string,
+      hold: (tx: TransactionClient) => Promise<unknown>,
+      change: (tx: TransactionClient) => Promise<unknown>,
+    ) {
+      let pending: Promise<Outcome<HostedBankConsent>> | undefined;
+      let waiterPid: number | undefined;
+      try {
+        await db.transaction(async (holder) => {
+          await holder.execute(sql`SET LOCAL statement_timeout='10s'`);
+          await hold(holder);
+          const holderPid = await holder.execute<{ pid: number }>(
+            sql`SELECT pg_backend_pid() AS pid`,
+          );
+          pending = observe(
+            db.transaction(async (waiter) => {
+              await waiter.execute(sql`SET LOCAL lock_timeout='10s'`);
+              const own = await waiter.execute<{ pid: number }>(
+                sql`SELECT pg_backend_pid() AS pid`,
+              );
+              waiterPid = own.rows[0]?.pid;
+              return acceptHostedBankConsent(waiter, actor, id);
+            }),
+          );
+          await waitForBlock(() => waiterPid, holderPid.rows[0]!.pid);
+          await change(holder);
+        });
+      } finally {
+        // Release/rollback the holder before awaiting its waiter, including
+        // assertion failure, so fixture cleanup cannot race a live transaction.
+        if (pending) await pending;
+      }
+      if (!pending) throw new Error("Competing acceptance was not started");
+      return pending;
+    }
+
     const start = (actor: HostedConsentActor, requestId = randomUUID()) =>
       beginHostedBankConsent(db, {
         ...actor,
@@ -401,6 +510,137 @@ describe.skipIf(!isTestDatabaseAvailable())(
           (await acceptHostedBankConsent(db, { ...actor, aal: "aal2" }, row.id))
             .status,
         ).toBe("completed");
+      }));
+    test("committed session revocation wins an acceptance waiting on the Auth parent lock", async () =>
+      fixture(async (actor) => {
+        const row = await verified(actor);
+        const outcome = await acceptanceAfterAuthChange(
+          actor,
+          row.id,
+          (tx) =>
+            tx.execute(
+              sql`SELECT id FROM auth.users WHERE id=${actor.userId}::uuid FOR UPDATE`,
+            ),
+          (tx) =>
+            tx.execute(
+              sql`SELECT private.revoke_auth_sessions(${actor.userId}::uuid,${actor.sessionId}::uuid,'all')`,
+            ),
+        );
+        expect(outcome.value).toBeUndefined();
+        expect(outcome.error).toMatchObject({ reason: "session_expired" });
+        expect(
+          await db
+            .select()
+            .from(bankConnections)
+            .where(eq(bankConnections.teamId, actor.teamId)),
+        ).toHaveLength(0);
+        const retained = await db.execute<{ status: string; reason: string }>(
+          sql`SELECT status,reason FROM public.hosted_bank_consents WHERE id=${row.id}::uuid`,
+        );
+        expect(retained.rows[0]).toEqual({
+          status: "cleanup_requested",
+          reason: "scope_revoked",
+        });
+      }));
+    test("MFA enrollment committed before the Auth parent lock is visible to a waited aal1 acceptance", async () =>
+      fixture(async (actor) => {
+        const row = await verified(actor);
+        const outcome = await acceptanceAfterAuthChange(
+          actor,
+          row.id,
+          (tx) =>
+            tx.execute(
+              sql`SELECT id FROM auth.users WHERE id=${actor.userId}::uuid FOR UPDATE`,
+            ),
+          (tx) =>
+            tx.execute(
+              sql`INSERT INTO auth.mfa_factors(id,user_id,status) VALUES(${randomUUID()}::uuid,${actor.userId}::uuid,'verified')`,
+            ),
+        );
+        expect(outcome.value).toBeUndefined();
+        expect(outcome.error).toMatchObject({ reason: "session_expired" });
+        expect(
+          await db
+            .select()
+            .from(bankConnections)
+            .where(eq(bankConnections.teamId, actor.teamId)),
+        ).toHaveLength(0);
+        expect(
+          (await acceptHostedBankConsent(db, { ...actor, aal: "aal2" }, row.id))
+            .status,
+        ).toBe("completed");
+      }));
+    test("verification of an existing MFA factor is fenced even when its user FK does not change", async () =>
+      fixture(async (actor) => {
+        const factorId = randomUUID();
+        await db.execute(
+          sql`INSERT INTO auth.mfa_factors(id,user_id,status) VALUES(${factorId}::uuid,${actor.userId}::uuid,'unverified')`,
+        );
+        const row = await verified(actor);
+        const outcome = await acceptanceAfterAuthChange(
+          actor,
+          row.id,
+          (tx) =>
+            tx.execute(
+              sql`SELECT id FROM auth.mfa_factors WHERE id=${factorId}::uuid FOR UPDATE`,
+            ),
+          (tx) =>
+            tx.execute(
+              sql`UPDATE auth.mfa_factors SET status='verified' WHERE id=${factorId}::uuid`,
+            ),
+        );
+        expect(outcome.value).toBeUndefined();
+        expect(outcome.error).toMatchObject({ reason: "session_expired" });
+        expect(
+          await db
+            .select()
+            .from(bankConnections)
+            .where(eq(bankConnections.teamId, actor.teamId)),
+        ).toHaveLength(0);
+      }));
+    test("an accepted transaction holds the Auth parent fence until a new MFA factor can commit", async () =>
+      fixture(async (actor) => {
+        const row = await verified(actor);
+        let pending: Promise<Outcome<unknown>> | undefined;
+        let waiterPid: number | undefined;
+        try {
+          await db.transaction(async (holder) => {
+            await holder.execute(sql`SET LOCAL statement_timeout='10s'`);
+            expect(
+              (await acceptHostedBankConsent(holder, actor, row.id)).status,
+            ).toBe("completed");
+            const holderPid = await holder.execute<{ pid: number }>(
+              sql`SELECT pg_backend_pid() AS pid`,
+            );
+            pending = observe(
+              db.transaction(async (waiter) => {
+                await waiter.execute(sql`SET LOCAL lock_timeout='10s'`);
+                const own = await waiter.execute<{ pid: number }>(
+                  sql`SELECT pg_backend_pid() AS pid`,
+                );
+                waiterPid = own.rows[0]?.pid;
+                return waiter.execute(
+                  sql`INSERT INTO auth.mfa_factors(id,user_id,status) VALUES(${randomUUID()}::uuid,${actor.userId}::uuid,'verified')`,
+                );
+              }),
+            );
+            await waitForBlock(() => waiterPid, holderPid.rows[0]!.pid);
+          });
+        } finally {
+          if (pending) await pending;
+        }
+        if (!pending)
+          throw new Error("Competing MFA enrollment was not started");
+        expect((await pending).error).toBeUndefined();
+        expect(
+          await db
+            .select()
+            .from(bankConnections)
+            .where(eq(bankConnections.teamId, actor.teamId)),
+        ).toHaveLength(1);
+        await expect(start(actor)).rejects.toMatchObject({
+          reason: "session_expired",
+        });
       }));
     test("an expired unknown creation is reconciliation, never fictitious cancellation", async () =>
       fixture(async (actor) => {
