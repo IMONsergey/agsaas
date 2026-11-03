@@ -230,6 +230,23 @@ mock.module("@midday/db/queries/financial-job-dispatches", () => ({
 }));
 mock.module("@midday/db/worker-client", () => ({ getWorkerDb: () => ({}) }));
 mock.module("@midday/job-client", () => ({ decodeJobId }));
+// These processor fixtures use fake queues. Admission has its own real-Redis
+// generation/lock race gate; no production Redis is opened by money fixtures.
+mock.module("@midday/job-client/resource-admission", () => ({
+  queuePayloadTeam: (payload: { teamId?: string } | null) =>
+    payload?.teamId ?? null,
+  reserveQueuedJob: async (_queue: string, _payload: unknown, id?: string) =>
+    id ?? crypto.randomUUID(),
+  captureQueuedJobReservation: async () => ({
+    generation: "fixture-admission",
+    retry: "none",
+  }),
+  captureWorkerQueuedJobReservation: async () => ({
+    generation: "fixture-admission",
+    retry: "none",
+  }),
+  releaseQueuedJob: async () => true,
+}));
 mock.module("../../queues/invoices", () => ({
   invoicesQueue: {
     add: async (name: string, payload: unknown) => {

@@ -4,6 +4,7 @@ import {
   withHeavyJobAdmission,
 } from "@midday/db/queries/resource-admission";
 import {
+  captureWorkerQueuedJobReservation,
   queuePayloadTeam,
   releaseQueuedJob,
 } from "@midday/job-client/resource-admission";
@@ -100,6 +101,7 @@ export abstract class BaseProcessor<TData = unknown> {
     const startTime = Date.now();
     const admissionTeamId = queuePayloadTeam(job.data);
     let releaseAdmission = true;
+    let admissionGeneration: string | null = null;
 
     this.logger.info("Processing job", {
       jobId: job.id,
@@ -109,6 +111,17 @@ export abstract class BaseProcessor<TData = unknown> {
     });
 
     try {
+      if (admissionTeamId && job.id) {
+        // Capture before this attempt can finish. A later explicit retry owns
+        // another generation; this worker may only release its original slot.
+        const reservation = await captureWorkerQueuedJobReservation(
+          job.queueName,
+          job.id,
+          admissionTeamId,
+          job.token,
+        );
+        admissionGeneration = reservation?.generation ?? null;
+      }
       // Validate payload if schema is provided (throws on validation error)
       // Store the validated data and update job.data to include any Zod transformations/defaults
       const validatedData = this.validatePayload(job);
@@ -275,9 +288,19 @@ export abstract class BaseProcessor<TData = unknown> {
       // Re-throw original error for retryable cases
       throw error;
     } finally {
-      if (releaseAdmission && admissionTeamId && job.id) {
+      if (
+        releaseAdmission &&
+        admissionTeamId &&
+        job.id &&
+        admissionGeneration
+      ) {
         try {
-          await releaseQueuedJob(job.queueName, job.id, admissionTeamId);
+          await releaseQueuedJob(
+            job.queueName,
+            job.id,
+            admissionTeamId,
+            admissionGeneration,
+          );
         } catch {
           this.logger.warn("Job admission cleanup deferred", { jobId: job.id });
         }

@@ -1,6 +1,7 @@
 import { createLoggerWithContext } from "@midday/logger";
 import { getQueue } from "./queues";
 import {
+  captureQueuedJobReservation,
   queuePayloadTeam,
   releaseQueuedJob,
   reserveQueuedJob,
@@ -68,10 +69,22 @@ export async function triggerJob(
       );
     }
 
-    const knownState = await job.getState();
     const admissionTeamId = queuePayloadTeam(payload);
-    if (admissionTeamId && ["completed", "failed"].includes(knownState))
-      await releaseQueuedJob(queueName, job.id, admissionTeamId);
+    const reservation = admissionTeamId
+      ? await captureQueuedJobReservation(queueName, job.id, admissionTeamId)
+      : null;
+    const knownState = await job.getState();
+    if (
+      admissionTeamId &&
+      reservation &&
+      ["completed", "failed"].includes(knownState)
+    )
+      await releaseQueuedJob(
+        queueName,
+        job.id,
+        admissionTeamId,
+        reservation.generation,
+      );
 
     const enqueueDuration = Date.now() - enqueueStartTime;
     const compositeId = encodeJobId(queueName, job.id);
@@ -136,6 +149,10 @@ export async function triggerJobAndWait(
       );
     }
 
+    const admissionTeamId = queuePayloadTeam(payload);
+    const reservation = admissionTeamId
+      ? await captureQueuedJobReservation(queueName, job.id, admissionTeamId)
+      : null;
     const compositeId = encodeJobId(queueName, job.id);
     const enqueueDuration = Date.now() - enqueueStartTime;
     logger.info("Enqueued job (waiting for completion)", {
@@ -174,6 +191,13 @@ export async function triggerJobAndWait(
       }
 
       if (jobState === "failed") {
+        if (admissionTeamId && reservation)
+          await releaseQueuedJob(
+            queueName,
+            job.id,
+            admissionTeamId,
+            reservation.generation,
+          );
         const failedReason = job.failedReason || "Unknown error";
         throw new Error(`Job failed: ${failedReason}`);
       }
@@ -210,6 +234,13 @@ export async function triggerJobAndWait(
     // The original job object doesn't automatically sync after completion
     const completedJob = await queue.getJob(job.id);
     const result = completedJob?.returnvalue;
+    if (admissionTeamId && reservation)
+      await releaseQueuedJob(
+        queueName,
+        job.id,
+        admissionTeamId,
+        reservation.generation,
+      );
 
     logger.info("Job completed successfully", {
       jobName,

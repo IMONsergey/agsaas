@@ -10,7 +10,9 @@
     "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "test:native-wakeup": "bun --no-env-file test --exit src/native-wakeup.test.ts",
-    "test": "bun run test:native-wakeup"
+    "test": "bun run test:native-wakeup && bun run test:admission",
+    "test:admission": "bun --no-env-file test --exit src/queued-admission-protocol.test.ts",
+    "test:admission:redis": "bun --no-env-file test --exit --timeout 30000 src/resource-admission.test.ts src/retry-inbox-job.test.ts"
   },
   "dependencies": {
     "@midday/logger": "workspace:*",

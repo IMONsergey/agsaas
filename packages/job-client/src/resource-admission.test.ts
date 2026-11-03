@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { Queue } from "bullmq";
+import { parseQueuedJobReservation } from "./queued-admission-protocol";
 import { runQueuedAdmissionCommand } from "./resource-admission";
 
 const configured = process.env.TEST_REDIS_URL;
@@ -11,6 +12,13 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
     own = `agsaas:{admission-test-${tag}}:team`;
   const raceGlobal = `${global}:race`,
     raceOwn = `${own}:race`;
+  const keys = [global, own, `${global}:generations`, `${global}:retry`];
+  const raceKeys = [
+    raceGlobal,
+    raceOwn,
+    `${raceGlobal}:generations`,
+    `${raceGlobal}:retry`,
+  ];
   beforeAll(() => {
     const url = new URL(configured!);
     if (
@@ -33,7 +41,7 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
   afterAll(async () => {
     if (queue) {
       const client = await queue.client;
-      await client.del(global, own, raceGlobal, raceOwn);
+      await client.del(...keys, ...raceKeys);
       await queue.close();
     }
   });
@@ -41,45 +49,55 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
     const redis = await queue.client;
     const results = await Promise.all(
       Array.from({ length: 220 }, (_, index) =>
-        runQueuedAdmissionCommand(
-          redis,
-          "reserve",
-          [global, own],
-          [`job-${index}`, Date.now(), 200, 2000],
-        ),
+        runQueuedAdmissionCommand(redis, "reserve", keys, [
+          `job-${index}`,
+          Date.now(),
+          200,
+          2000,
+          randomUUID(),
+        ]),
       ),
     );
     expect(results.filter((value) => value === 1)).toHaveLength(200);
     expect(await redis.zcard(own)).toBe(200);
     const first = (await redis.zrange(own, 0, 0))[0]!;
     expect(
-      await runQueuedAdmissionCommand(
-        redis,
-        "reserve",
-        [global, own],
-        [first, Date.now(), 200, 2000],
-      ),
+      await runQueuedAdmissionCommand(redis, "reserve", keys, [
+        first,
+        Date.now(),
+        200,
+        2000,
+        randomUUID(),
+      ]),
     ).toBe(1);
     expect(await redis.zcard(own)).toBe(200);
-    await runQueuedAdmissionCommand(redis, "release", [global, own], [first]);
+    const reservation = parseQueuedJobReservation(
+      await runQueuedAdmissionCommand(redis, "capture", keys, [first]),
+    );
+    await runQueuedAdmissionCommand(redis, "release", keys, [
+      first,
+      reservation!.generation,
+    ]);
     expect(
-      await runQueuedAdmissionCommand(
-        redis,
-        "reserve",
-        [global, own],
-        ["replacement", Date.now(), 200, 2000],
-      ),
+      await runQueuedAdmissionCommand(redis, "reserve", keys, [
+        "replacement",
+        Date.now(),
+        200,
+        2000,
+        randomUUID(),
+      ]),
     ).toBe(1);
   });
   test("reconciliation rotates only existing reservations and cannot resurrect a released job", async () => {
     const redis = await queue.client;
     expect(
-      await runQueuedAdmissionCommand(
-        redis,
-        "reserve",
-        [raceGlobal, raceOwn],
-        ["race-job", 10, 2, 2],
-      ),
+      await runQueuedAdmissionCommand(redis, "reserve", raceKeys, [
+        "race-job",
+        10,
+        2,
+        2,
+        randomUUID(),
+      ]),
     ).toBe(1);
     await runQueuedAdmissionCommand(
       redis,
@@ -92,12 +110,13 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
     );
     expect(await redis.zscore(raceOwn, "race-job")).toBe("10");
     // Simulate completion winning the race after reconciliation read the job.
-    await runQueuedAdmissionCommand(
-      redis,
-      "release",
-      [raceGlobal, raceOwn],
-      ["race-job"],
+    const reservation = parseQueuedJobReservation(
+      await runQueuedAdmissionCommand(redis, "capture", raceKeys, ["race-job"]),
     );
+    await runQueuedAdmissionCommand(redis, "release", raceKeys, [
+      "race-job",
+      reservation!.generation,
+    ]);
     await runQueuedAdmissionCommand(
       redis,
       "rotate",

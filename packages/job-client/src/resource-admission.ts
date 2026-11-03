@@ -1,10 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { IRedisClient } from "bullmq";
+import {
+  captureQueuedJobScript,
+  captureWorkerQueuedJobScript,
+  parseQueuedJobReservation,
+  queuedAdmissionKeys,
+  releaseQueuedJobScript,
+  reserveQueuedJobScript,
+} from "./queued-admission-protocol";
 import { getQueue } from "./queues";
 
-const globalKey = "agsaas:{resource-admission}:queued";
-const teamKey = (teamId: string) =>
-  `agsaas:{resource-admission}:team:${teamId}`;
+export { reserveQueuedJobScript } from "./queued-admission-protocol";
+
+const globalKey = queuedAdmissionKeys.global;
+const teamKey = queuedAdmissionKeys.team;
+function admissionKeys(teamId: string) {
+  return [
+    globalKey,
+    teamKey(teamId),
+    queuedAdmissionKeys.generations,
+    queuedAdmissionKeys.retries,
+  ];
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class QueueCapacityError extends Error {
   constructor() {
@@ -21,21 +38,26 @@ export function queuePayloadTeam(payload: unknown): string | null {
     ? teamId.toLowerCase()
     : null;
 }
-export const reserveQueuedJobScript = `
-if redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 1 end
-if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) or redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[3]) then return 0 end
-redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1]); redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1]); return 1`;
-
 const commands = {
   reserve: {
-    name: "agsaasReserveQueuedJobV1",
-    numberOfKeys: 2,
+    name: "agsaasReserveQueuedJobV2",
+    numberOfKeys: 4,
     lua: reserveQueuedJobScript,
   },
   release: {
-    name: "agsaasReleaseQueuedJobV1",
-    numberOfKeys: 2,
-    lua: "redis.call('ZREM', KEYS[1], ARGV[1]); redis.call('ZREM', KEYS[2], ARGV[1]); return 1",
+    name: "agsaasReleaseQueuedJobV2",
+    numberOfKeys: 4,
+    lua: releaseQueuedJobScript,
+  },
+  capture: {
+    name: "agsaasCaptureQueuedJobV2",
+    numberOfKeys: 4,
+    lua: captureQueuedJobScript,
+  },
+  captureWorker: {
+    name: "agsaasCaptureWorkerQueuedJobV2",
+    numberOfKeys: 5,
+    lua: captureWorkerQueuedJobScript,
   },
   rotate: {
     name: "agsaasRotateQueuedJobV1",
@@ -94,28 +116,79 @@ export async function reserveQueuedJob(
   const admitted = await runQueuedAdmissionCommand(
     redis,
     "reserve",
-    [globalKey, teamKey(teamId)],
-    [member, Date.now(), continuation ? 200 : 160, continuation ? 2000 : 1600],
+    admissionKeys(teamId),
+    [
+      member,
+      Date.now(),
+      continuation ? 200 : 160,
+      continuation ? 2000 : 1600,
+      randomUUID(),
+    ],
   );
-  if (admitted !== 1) throw new QueueCapacityError();
+  if (admitted === 0) throw new QueueCapacityError();
+  if (admitted !== 1)
+    throw new Error(
+      "Queued admission metadata requires operator reconciliation",
+    );
   return id;
+}
+
+/** Capture before processing or observing terminal state, never after it. A
+ * later retry changes generation so this observer cannot release its slot. */
+export async function captureQueuedJobReservation(
+  queueName: string,
+  id: string,
+  teamId: string,
+) {
+  if (!uuid.test(teamId)) throw new Error("Invalid queued admission team");
+  const team = teamId.toLowerCase();
+  const client = await getQueue(queueName).client;
+  return parseQueuedJobReservation(
+    await runQueuedAdmissionCommand(client, "capture", admissionKeys(team), [
+      JSON.stringify({ teamId: team, queueName, id }),
+    ]),
+  );
+}
+
+export async function captureWorkerQueuedJobReservation(
+  queueName: string,
+  id: string,
+  teamId: string,
+  token: string | undefined,
+) {
+  if (!uuid.test(teamId) || !token)
+    throw new Error("Active worker admission requires its BullMQ lock");
+  const team = teamId.toLowerCase();
+  const queue = getQueue(queueName);
+  return parseQueuedJobReservation(
+    await runQueuedAdmissionCommand(
+      await queue.client,
+      "captureWorker",
+      [...admissionKeys(team), `${queue.toKey(id)}:lock`],
+      [JSON.stringify({ teamId: team, queueName, id }), token],
+    ),
+  );
 }
 
 export async function releaseQueuedJob(
   queueName: string,
   id: string,
   teamId: string,
+  generation: string,
 ) {
   if (!uuid.test(teamId)) return;
   const normalizedTeam = teamId.toLowerCase();
   const redis = await getQueue(queueName).client;
   const member = JSON.stringify({ teamId: normalizedTeam, queueName, id });
-  await runQueuedAdmissionCommand(
+  const released = await runQueuedAdmissionCommand(
     redis,
     "release",
-    [globalKey, teamKey(normalizedTeam)],
-    [member],
+    admissionKeys(normalizedTeam),
+    [member, generation],
   );
+  if (released !== 0 && released !== 1)
+    throw new Error("Queued admission release requires reconciliation");
+  return released === 1;
 }
 
 /** Only a confirmed terminal job releases its reservation automatically.
@@ -141,11 +214,24 @@ export async function reconcileQueuedJobs() {
         typeof value.id !== "string"
       )
         continue;
+      const reservation = await captureQueuedJobReservation(
+        value.queueName,
+        value.id,
+        value.teamId,
+      );
+      if (!reservation) continue;
       const job = await getQueue(value.queueName).getJob(value.id);
       const state = job ? await job.getState() : "missing";
       if (["completed", "failed"].includes(state)) {
-        await releaseQueuedJob(value.queueName, value.id, value.teamId);
-        released++;
+        if (
+          await releaseQueuedJob(
+            value.queueName,
+            value.id,
+            value.teamId,
+            reservation.generation,
+          )
+        )
+          released++;
       } else
         await runQueuedAdmissionCommand(
           redis,
@@ -154,7 +240,13 @@ export async function reconcileQueuedJobs() {
           [text, Date.now()],
         ); // rotate live jobs so old failures are not starved
     } catch {
-      /* keep ambiguous reservations */
+      // Retain uncertain slots but let the next bounded scan reach other jobs.
+      await runQueuedAdmissionCommand(
+        redis,
+        "rotate",
+        [globalKey],
+        [text, Date.now()],
+      ).catch(() => {});
     }
   }
   return released;
@@ -175,6 +267,7 @@ export async function inspectQueuedReservations(limit = 100) {
     id: string;
     lastCheckedAt: number;
     state: string;
+    admission: string;
   }> = [];
   for (let index = 0; index < members.length; index += 2) {
     try {
@@ -189,11 +282,23 @@ export async function inspectQueuedReservations(limit = 100) {
         typeof value.id !== "string"
       )
         continue;
+      const metadata = await runQueuedAdmissionCommand(
+        redis,
+        "capture",
+        admissionKeys(value.teamId.toLowerCase()),
+        [members[index]!],
+      );
+      const admission = Array.isArray(metadata)
+        ? metadata[0] === "reserved" && metadata[2]
+          ? String(metadata[2])
+          : String(metadata[1] || metadata[0])
+        : "invalid";
       const job = await getQueue(value.queueName).getJob(value.id);
       output.push({
         ...value,
         lastCheckedAt: Number(members[index + 1]),
         state: job ? await job.getState() : "missing-unconfirmed",
+        admission,
       });
     } catch {
       /* ambiguous/malformed entries remain reserved */
