@@ -12,6 +12,7 @@ import { Spinner } from "@midday/ui/spinner";
 import { useRef, useState } from "react";
 import { useTeamMutation, useTeamQuery } from "@/hooks/use-team";
 import { useUpload } from "@/hooks/use-upload";
+import { prepareLogoImage } from "@/utils/prepare-logo-image";
 import {
   PUBLIC_IMAGE_ACCEPT,
   PUBLIC_IMAGE_NOTICE,
@@ -33,10 +34,11 @@ export function CompanyLogo() {
     if (!file) return;
     setUploadError(null);
     try {
+      const prepared = await prepareLogoImage(file);
       const { url } = await uploadFile({
         bucket: "avatars",
-        path: publicImagePath(file, data?.id ?? "", "team-logo"),
-        file,
+        path: publicImagePath(prepared, data?.id ?? "", "team-logo"),
+        file: prepared,
       });
 
       if (url) {

@@ -7,6 +7,7 @@ import { useFormContext } from "react-hook-form";
 import { useTemplateUpdate } from "@/hooks/use-template-update";
 import { useUpload } from "@/hooks/use-upload";
 import { useUserQuery } from "@/hooks/use-user";
+import { prepareLogoImage } from "@/utils/prepare-logo-image";
 import {
   PUBLIC_IMAGE_ACCEPT,
   PUBLIC_IMAGE_NOTICE,
@@ -26,9 +27,10 @@ export function Logo() {
     const file = event.target.files?.[0];
     if (file) {
       try {
+        const prepared = await prepareLogoImage(file);
         const { url } = await uploadFile({
-          file,
-          path: publicImagePath(file, user?.teamId ?? "", "invoice-logo"),
+          file: prepared,
+          path: publicImagePath(prepared, user?.teamId ?? "", "invoice-logo"),
           bucket: "avatars",
         });
 

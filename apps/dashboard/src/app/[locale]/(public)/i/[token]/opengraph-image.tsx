@@ -1,7 +1,6 @@
-import { isValidLogoUrl, OgTemplate } from "@midday/invoice";
-import { ImageResponse } from "next/og";
+import { loadPublicLogo, OgTemplate } from "@midday/invoice";
 import { getQueryClient, trpc } from "@/trpc/server";
-import { getWebsiteLogo } from "@/utils/logos";
+import { ownOgImageResponse } from "@/utils/own-og-image";
 
 export const contentType = "image/png";
 
@@ -25,27 +24,10 @@ export default async function Image({ params }: Props) {
     return new Response("Not found", { status: 404 });
   }
 
-  const hedvigSansFont = fetch(
-    "https://cdn.midday.ai/fonts/HedvigSans/HedvigLettersSans-Regular.ttf",
-  ).then((res) => res.arrayBuffer());
+  const logo = await loadPublicLogo(invoice.template.logoUrl);
 
-  const logoUrl = getWebsiteLogo(invoice.customer?.website);
-
-  const isValidLogo = await isValidLogoUrl(logoUrl);
-
-  return new ImageResponse(
-    <OgTemplate data={invoice} isValidLogo={isValidLogo} />,
-    {
-      width: 1200,
-      height: 630,
-      fonts: [
-        {
-          name: "hedvig-sans",
-          data: await hedvigSansFont,
-          style: "normal",
-          weight: 400,
-        },
-      ],
-    },
-  );
+  return ownOgImageResponse(<OgTemplate data={invoice} logoDataUrl={logo} />, {
+    width: 1200,
+    height: 630,
+  });
 }

@@ -1,5 +1,5 @@
-export function getWebsiteLogo(website?: string | null) {
-  if (!website) return "";
-
-  return `https://img.logo.dev/${website}?token=pk_X-1ZO13GSgeOoUrIuJ6GMQ&size=180&retina=true`;
+/** Website domains stay in the application. Components use their local avatar
+ * fallback; company and invoice images are uploaded to the installation's Storage. */
+export function getWebsiteLogo(_website?: string | null): string {
+  return "";
 }

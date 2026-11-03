@@ -100,6 +100,7 @@ RUN groupadd --system --gid 1001 nodejs && \
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/.next/standalone ./
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/public ./apps/dashboard/public
+COPY --from=installer /app/packages/invoice/src/fonts/LICENSE-Liberation.txt ./licenses/Liberation-OFL.txt
 
 # Carry the git SHA into the runtime container and use the shared entrypoint to
 # set GIT_COMMIT_SHA / SENTRY_RELEASE when Railway doesn't provide them.

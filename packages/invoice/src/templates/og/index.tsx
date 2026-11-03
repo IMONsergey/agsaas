@@ -1,4 +1,5 @@
 import type { Invoice } from "../../types";
+import { isInlineLogo } from "../../utils/logo";
 import { EditorContent } from "./components/editor-content";
 import { Header } from "./components/header";
 import { Logo } from "./components/logo";
@@ -6,10 +7,11 @@ import { Meta } from "./components/meta";
 
 type Props = {
   data: Invoice;
-  isValidLogo: boolean;
+  logoDataUrl?: string | null;
 };
 
-export function OgTemplate({ data, isValidLogo }: Props) {
+export function OgTemplate({ data, logoDataUrl }: Props) {
+  const logo = isInlineLogo(logoDataUrl) ? logoDataUrl : null;
   const {
     customerName,
     status,
@@ -24,17 +26,17 @@ export function OgTemplate({ data, isValidLogo }: Props) {
   return (
     <div
       tw="h-full w-full flex flex-col bg-[#0C0C0C] p-16 py-8"
-      style={{ fontFamily: "hedvig-sans" }}
+      style={{ fontFamily: "Liberation Sans" }}
     >
       <Header
         customerName={customerName || ""}
         status={status}
-        logoUrl={template.logoUrl}
-        isValidLogo={isValidLogo}
+        logoUrl={logo}
+        isValidLogo={Boolean(logo)}
       />
 
       <div tw="flex flex-col">
-        <Logo src={template.logoUrl} customerName={customerName || ""} />
+        <Logo src={logo} customerName={customerName || ""} />
       </div>
 
       <Meta
@@ -48,7 +50,7 @@ export function OgTemplate({ data, isValidLogo }: Props) {
         <div tw="flex flex-col flex-1 max-w-[50%]">
           <span
             tw="text-[#858585] text-[22px] mb-1"
-            style={{ fontFamily: "hedvig-sans" }}
+            style={{ fontFamily: "Liberation Sans" }}
           >
             {template.fromLabel}
           </span>
@@ -60,7 +62,7 @@ export function OgTemplate({ data, isValidLogo }: Props) {
         <div tw="flex flex-col flex-1 max-w-[50%]">
           <span
             tw="text-[#858585] text-[22px] mb-1"
-            style={{ fontFamily: "hedvig-sans" }}
+            style={{ fontFamily: "Liberation Sans" }}
           >
             {template.customerLabel}
           </span>

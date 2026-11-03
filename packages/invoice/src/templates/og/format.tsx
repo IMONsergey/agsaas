@@ -33,7 +33,7 @@ export function formatEditorContent(doc?: EditorDoc) {
                       <span
                         key={`text-${nodeIndex}-${inlineIndex.toString()}`}
                         tw={style}
-                        style={{ fontFamily: "hedvig-sans" }}
+                        style={{ fontFamily: "Liberation Sans" }}
                       >
                         {inlineContent.text}
                       </span>

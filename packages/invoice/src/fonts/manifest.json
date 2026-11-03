@@ -1,0 +1,31 @@
+{
+  "sourcePackage": "pdfjs-dist",
+  "sourceVersion": "5.4.296",
+  "license": "SIL Open Font License 1.1",
+  "files": [
+    {
+      "filename": "LiberationSans-Regular.ttf",
+      "module": "liberation-regular.ts",
+      "sha256": "f8ace1f892b2bd9dc1792ba7f097fa7588f84fed48321480e04de5390828221f",
+      "bytes": 139512
+    },
+    {
+      "filename": "LiberationSans-Bold.ttf",
+      "module": "liberation-bold.ts",
+      "sha256": "361c61b82d575c5c35fd9157fda8b0194bcfcd0d88ea8521a4fb5dd53d33dddc",
+      "bytes": 137052
+    },
+    {
+      "filename": "LiberationSans-Italic.ttf",
+      "module": "liberation-italic.ts",
+      "sha256": "832b4406dbef23628800d3aaad21048534ac84d7e3ad955be83b8172ed8ef512",
+      "bytes": 162036
+    },
+    {
+      "filename": "LiberationSans-BoldItalic.ttf",
+      "module": "liberation-bolditalic.ts",
+      "sha256": "a224075ac17495ad0a3af3bc0a419ac0704a8b3fd1095456201fb9b095fc281d",
+      "bytes": 135124
+    }
+  ]
+}
