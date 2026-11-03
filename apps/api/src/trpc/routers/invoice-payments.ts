@@ -27,13 +27,15 @@ async function settlementResult<T>(operation: () => Promise<T>): Promise<T> {
     if (error instanceof InvoicePaymentError)
       throw new TRPCError({
         code:
-          error.status === 400
-            ? "BAD_REQUEST"
-            : error.status === 404
-              ? "NOT_FOUND"
-              : error.status === 409
-                ? "CONFLICT"
-                : "INTERNAL_SERVER_ERROR",
+          error.status === 403
+            ? "FORBIDDEN"
+            : error.status === 400
+              ? "BAD_REQUEST"
+              : error.status === 404
+                ? "NOT_FOUND"
+                : error.status === 409
+                  ? "CONFLICT"
+                  : "INTERNAL_SERVER_ERROR",
         message: error.message,
       });
     throw error;
@@ -103,7 +105,11 @@ export const invoicePaymentsRouter = createTRPCRouter({
     )
     .mutation(async ({ input, ctx }) =>
       settlementResult(() =>
-        reconcileInvoiceSettlement(ctx.db, { ...input, teamId: ctx.teamId! }),
+        reconcileInvoiceSettlement(ctx.db, {
+          ...input,
+          teamId: ctx.teamId!,
+          actorId: ctx.session.user.id,
+        }),
       ),
     ),
 

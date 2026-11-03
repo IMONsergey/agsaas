@@ -1,21 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import type { DatabaseOrTransaction } from "../client";
-import { InvoicePaymentError } from "../errors";
+import type { DatabaseOrTransaction, TransactionClient } from "../client";
+import { InvoicePaymentError, TeamMembershipError } from "../errors";
 import {
   financialJobOperationKey,
   financialRequestHash,
 } from "../financial-job";
+import { getInvoiceLedgerAmount } from "../invoice-money";
 import {
   calculateInvoiceSettlement,
   exactMinor,
   type SettlementEntry,
   type SettlementKind,
 } from "../invoice-settlement";
-import { invoices, invoicePaymentReservations } from "../schema";
+import { invoicePaymentReservations, invoices } from "../schema";
+import {
+  lockTeamMembership,
+  lockUserMembership,
+  requireTeamOwner,
+} from "../utils/team-membership";
 import { ensureFinancialJobDispatch } from "./financial-job-dispatches";
-import { getInvoiceLedgerAmount } from "../invoice-money";
 import { prepareInvoiceDocument } from "./invoices";
+import { appendSecurityAuditEvent } from "./security-audit";
 
 function primary(db: DatabaseOrTransaction) {
   // biome-ignore lint/correctness/useHookAtTopLevel: Database routing, not React.
@@ -81,7 +87,12 @@ function validate(input: RecordInvoiceSettlementInput) {
     input.reason.length > 1000 ||
     [input.providerAccountId, input.providerResourceId].some(
       (value) =>
-        !value || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value),
+        !value ||
+        value.length > 256 ||
+        Array.from(value).some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 32 || code === 127;
+        }),
     ) ||
     (input.occurredAt !== undefined &&
       !Number.isFinite(Date.parse(input.occurredAt)))
@@ -93,6 +104,29 @@ function validate(input: RecordInvoiceSettlementInput) {
       "Manual settlement account must be its team",
     );
 }
+/** The same lock order as membership writers, before any invoice row is locked. */
+export async function lockInvoiceSettlementOwner(
+  tx: TransactionClient,
+  input: { teamId: string; actorId?: string },
+) {
+  if (!input.actorId)
+    throw new InvoicePaymentError(
+      403,
+      "A current workspace owner must confirm settlement",
+    );
+  try {
+    await lockUserMembership(tx, input.actorId);
+    requireTeamOwner(await lockTeamMembership(tx, input.teamId), input.actorId);
+  } catch (error) {
+    if (error instanceof TeamMembershipError)
+      throw new InvoicePaymentError(
+        403,
+        "A current workspace owner must confirm settlement",
+      );
+    throw error;
+  }
+}
+
 async function lockedInvoice(
   db: DatabaseOrTransaction,
   input: { invoiceId: string; teamId: string },
@@ -174,6 +208,8 @@ export async function recordInvoiceSettlement(
     input.provider === "stripe" ? financialIdentity : input,
   );
   return primary(db).transaction(async (tx) => {
+    if (input.provider === "manual")
+      await lockInvoiceSettlementOwner(tx, input);
     const invoice = await lockedInvoice(tx, input);
     if (invoice.status === "canceled")
       throw new InvoicePaymentError(
@@ -317,6 +353,20 @@ export async function recordInvoiceSettlement(
         },
       });
     }
+    if (input.provider === "manual") {
+      await appendSecurityAuditEvent(tx, {
+        teamId: input.teamId,
+        actorUserId: input.actorId,
+        operation: "invoice.settlement.record",
+        targetType: "invoice",
+        targetId: input.invoiceId,
+        metadata: {
+          provider: "manual",
+          source: input.kind,
+          status: projection.status,
+        },
+      });
+    }
     return { entry: candidate, projection, replayed: false };
   });
 }
@@ -370,9 +420,16 @@ export async function getInvoiceSettlement(
 /** Rebuild cached balances from immutable evidence; never creates payment or refund history. */
 export async function reconcileInvoiceSettlement(
   db: DatabaseOrTransaction,
-  input: { invoiceId: string; teamId: string; apply?: boolean },
+  input: {
+    invoiceId: string;
+    teamId: string;
+    apply?: boolean;
+    actorId?: string;
+  },
 ) {
   return primary(db).transaction(async (tx) => {
+    if (input.apply || input.actorId)
+      await lockInvoiceSettlementOwner(tx, input);
     const invoice = await lockedInvoice(tx, input);
     const rows = await getInvoiceSettlementEntries(
       tx,
@@ -398,7 +455,17 @@ export async function reconcileInvoiceSettlement(
       invoice.status !== invoiceStatus(invoice, expected);
     if (input.apply && invoice.status === "canceled")
       return { state: "requires_evidence" as const, changed: false };
-    if (input.apply && drift) await persistProjection(tx, invoice, rows);
+    if (input.apply && drift) {
+      await persistProjection(tx, invoice, rows);
+      await appendSecurityAuditEvent(tx, {
+        teamId: input.teamId,
+        actorUserId: input.actorId,
+        operation: "invoice.settlement.reconcile",
+        targetType: "invoice",
+        targetId: input.invoiceId,
+        metadata: { status: "repaired", count: rows.length },
+      });
+    }
     return {
       state: drift ? ("drift" as const) : ("consistent" as const),
       changed: input.apply === true && drift,
@@ -418,6 +485,7 @@ export async function confirmInvoicePaid(
   },
 ) {
   return primary(db).transaction(async (tx) => {
+    await lockInvoiceSettlementOwner(tx, input);
     await lockedInvoice(tx, input);
     const current = await getInvoiceSettlement(tx, input);
     if (current.reconciliationRequired || !current.projection)

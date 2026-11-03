@@ -1,0 +1,12 @@
+# Finance authority and verification continuation
+
+
+## Finance resume: actor fences and stable verification
+
+This user-owned source snapshot preserves readable source observed at b231e4fc10b8ee6132541084ef4066f313ba70ca. It has a new local Git root; original history remains in the protected /opt checkout and is not claimed as copied. Per-file provenance is retained in Reports/agsaas-completion-20261103/finance-readable-snapshot-20261103.json. The original source snapshot contains 2890 tracked files, 73664946 bytes.
+
+Manual settlement, Mark paid through the generic status command, and projection repair now verify current owner status inside the primary transaction using the existing user/team membership lock order before invoice locking. This prevents a generic member status update from bypassing the owner-only ledger API and serializes demotion/deletion with the money mutation. Successful new manual journal entries and explicit projection repair append a redacted security event in that same transaction. Replays do not create duplicate audit entries. APIs preserve HTTP/TRPC forbidden semantics, the invoice actions disable owner-only money actions for nonowners, and update failures are visible. This depends on the merged security audit helper and migration 094000.
+
+The finance verification scripts no longer rewrite source. Each mocked API suite runs in its own Bun process; the optional unit resource-admission preload is restricted to business mock tests. The old apply-finance-test-migrations helper is now read-only readiness verification and never replays DDL over a fully migrated catalog. It checks required finance tables/functions and canonical history prerequisites. An explicitly named unjournaled fixture option only permits separately labeled targeted regression and never claims full-chain evidence.
+
+Authored six new isolated PostgreSQL regressions: member/missing-actor refusal through both money routes, pending deletion, a two-connection demotion race observed through a waiting PostgreSQL lock, exact audit INSERT denial rollback, ordinary backend privilege success with replay/redaction, and owner-controlled projection repair. Two API authority assertions were added. Existing affected fixtures now supply the confirmed owner. Biome source checks, bash syntax for all three runners, and Git whitespace checks passed. PostgreSQL/Bun/type/browser acceptance has not run for this source and is parent-owned through imon-job. No provider request, live financial mutation, email, migration or sudo was performed for this resume packet.

@@ -2,22 +2,23 @@ import { randomUUID } from "node:crypto";
 import { InvoiceFinancialStateError } from "@midday/invoice/calculate";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseOrTransaction } from "../client";
+import { InvoicePaymentError } from "../errors";
 import {
   financialJobOperationKey,
   financialRequestHash,
 } from "../financial-job";
-import { invoices, customers } from "../schema";
-import { InvoicePaymentError } from "../errors";
+import { customers, invoices } from "../schema";
+import { ensureFinancialJobDispatch } from "./financial-job-dispatches";
 import {
   confirmInvoicePaid,
   getInvoiceSettlementEntries,
+  lockInvoiceSettlementOwner,
 } from "./invoice-settlements";
-import { ensureFinancialJobDispatch } from "./financial-job-dispatches";
 import {
-  updateInvoice,
   deleteInvoice,
   getInvoiceDocumentById,
   type UpdateInvoiceParams,
+  updateInvoice,
 } from "./invoices";
 
 type InvoiceScope = { id: string; teamId: string; userId?: string };
@@ -331,6 +332,12 @@ export async function updateInvoiceWithIntent(
   >,
 ) {
   return primary(db).transaction(async (tx) => {
+    if (input.status === "paid") {
+      await lockInvoiceSettlementOwner(tx, {
+        teamId: input.teamId,
+        actorId: input.userId,
+      });
+    }
     const [current] = await tx
       .select()
       .from(invoices)

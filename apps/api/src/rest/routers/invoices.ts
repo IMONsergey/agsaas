@@ -16,10 +16,9 @@ import {
 } from "@api/schemas/invoice";
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { InvoicePaymentError } from "@midday/db/errors";
 import {
   getCustomerById,
-  issueInvoice as persistInvoiceIssue,
-  scheduleInvoice as persistInvoiceSchedule,
   getInvoiceById,
   getInvoiceSummary,
   getInvoices,
@@ -29,6 +28,8 @@ import {
   isInvoiceNumberUsed,
   deleteInvoice as persistInvoiceDelete,
   draftInvoice as persistInvoiceDraft,
+  issueInvoice as persistInvoiceIssue,
+  scheduleInvoice as persistInvoiceSchedule,
   updateInvoiceWithIntent as persistInvoiceUpdate,
 } from "@midday/db/queries";
 import {
@@ -62,6 +63,8 @@ async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
   try {
     return await persistInvoiceUpdate(...args);
   } catch (error) {
+    if (error instanceof InvoicePaymentError && error.status === 403)
+      throw new HTTPException(403, { message: error.message });
     if (error instanceof InvoiceFinancialStateError) {
       throw new HTTPException(409, { message: error.message });
     }

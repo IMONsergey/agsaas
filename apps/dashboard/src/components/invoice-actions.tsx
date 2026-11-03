@@ -27,7 +27,7 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { useToast } from "@midday/ui/use-toast";
 import { useOpenPanel } from "@openpanel/nextjs";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
@@ -58,6 +58,10 @@ export function InvoiceActions({
   const queryClient = useQueryClient();
   const { setParams } = useInvoiceParams();
   const { data: user } = useUserQuery();
+  const { data: settlement } = useQuery(
+    trpc.invoicePayments.settlement.queryOptions({ invoiceId: id }),
+  );
+  const canManageSettlement = settlement?.canManage === true;
   const [cancelSeriesOpen, setCancelSeriesOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const duplicateInvoice = useMutation(
@@ -86,7 +90,7 @@ export function InvoiceActions({
   const canEditSeries =
     invoiceRecurringId &&
     (recurringStatus === "active" || recurringStatus === "paused");
-  const canRefund = status === "paid" && paymentIntentId;
+  const canRefund = canManageSettlement && status === "paid" && paymentIntentId;
   const canDownloadReceipt = status === "paid";
 
   const { url: receiptUrl } = useFileUrl(
@@ -98,6 +102,9 @@ export function InvoiceActions({
   const updateInvoiceMutation = useMutation(
     trpc.invoice.update.mutationOptions({
       onSuccess: () => {
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoicePayments.settlement.queryKey({ invoiceId: id }),
+        });
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.get.infiniteQueryKey(),
         });
@@ -114,6 +121,12 @@ export function InvoiceActions({
           queryKey: trpc.invoice.paymentStatus.queryKey(),
         });
       },
+      onError: (error) =>
+        toast({
+          title: "Invoice update failed",
+          description: error.message,
+          variant: "error",
+        }),
     }),
   );
 
@@ -492,7 +505,13 @@ export function InvoiceActions({
 
               <DropdownMenuContent sideOffset={10} align="end">
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>Mark as paid</DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger
+                    disabled={
+                      !canManageSettlement || updateInvoiceMutation.isPending
+                    }
+                  >
+                    Mark as paid
+                  </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent>
                     <Calendar
                       mode="single"

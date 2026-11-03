@@ -8,31 +8,31 @@ import {
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { financialRequestHash } from "../financial-job";
+import { getTopRevenueClient } from "../queries/customer-analytics";
+import { getCustomers } from "../queries/customers";
 import {
-  getInvoiceSettlement,
-  recordInvoiceSettlement,
-  reconcileInvoiceSettlement,
-} from "../queries/invoice-settlements";
+  getInvoiceCommandPreview,
+  updateInvoiceWithIntent,
+} from "../queries/invoice-commands";
 import {
   applyStripeInvoicePaymentEvent,
   attachInvoicePayment,
   reserveInvoicePayment,
 } from "../queries/invoice-payments";
 import {
-  getInvoiceCommandPreview,
-  updateInvoiceWithIntent,
-} from "../queries/invoice-commands";
-import { getTopRevenueClient } from "../queries/customer-analytics";
-import { getCustomers } from "../queries/customers";
+  getInvoiceSettlement,
+  reconcileInvoiceSettlement,
+  recordInvoiceSettlement,
+} from "../queries/invoice-settlements";
 import { getInvoiceSummary } from "../queries/invoices";
 import {
   financialJobDispatches,
+  invoicePaymentReservations,
   invoices,
   teams,
-  invoicePaymentReservations,
 } from "../schema";
 import {
   createTenantIsolationFixture,
@@ -40,8 +40,8 @@ import {
   type TenantIsolationFixture,
 } from "./helpers/tenant-isolation-fixture";
 import {
-  getTestDatabase,
   closeDatabase,
+  getTestDatabase,
   isTestDatabaseAvailable,
 } from "./helpers/test-database";
 
@@ -183,7 +183,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
           teamId: f.other.teamId,
           providerAccountId: f.other.teamId,
         }),
-      ).rejects.toMatchObject({ status: 404 });
+      ).rejects.toMatchObject({ status: 403 });
       await expect(
         recordInvoiceSettlement(db, { ...payment("1"), currency: "eur" }),
       ).rejects.toMatchObject({ status: 409 });
@@ -235,7 +235,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
         changed: false,
       });
       expect(
-        await reconcileInvoiceSettlement(db, { ...scope(), apply: true }),
+        await reconcileInvoiceSettlement(db, {
+          ...scope(),
+          apply: true,
+          actorId: f.own.userId,
+        }),
       ).toMatchObject({
         state: "drift",
         changed: true,

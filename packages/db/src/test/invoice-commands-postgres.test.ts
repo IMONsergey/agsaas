@@ -12,15 +12,15 @@ import type { Database } from "../client";
 import { ensureFinancialJobDispatch } from "../queries/financial-job-dispatches";
 import {
   cancelInvoiceSchedule,
-  getInvoiceCommandPreview,
   deleteInvoiceWithRevision,
+  getInvoiceCommandPreview,
   issueInvoice,
   scheduleInvoice,
   updateInvoiceWithIntent,
 } from "../queries/invoice-commands";
 import { isCurrentInvoiceSchedule } from "../queries/invoice-delivery";
 import { updateInvoice } from "../queries/invoices";
-import { financialJobDispatches, invoices, customers } from "../schema";
+import { customers, financialJobDispatches, invoices } from "../schema";
 import {
   createTenantIsolationFixture,
   removeTenantIsolationFixture,
@@ -54,9 +54,16 @@ describe.skipIf(!isTestDatabaseAvailable())(
     const later = (hours: number) =>
       new Date(Date.now() + hours * 3600000).toISOString();
     function operationId(value: unknown): string {
-      if (!value || typeof value !== "object" || !("operation" in value)) throw new Error("Missing operation receipt");
+      if (!value || typeof value !== "object" || !("operation" in value))
+        throw new Error("Missing operation receipt");
       const operation = value.operation;
-      if (!operation || typeof operation !== "object" || !("id" in operation) || typeof operation.id !== "string") throw new Error("Invalid operation receipt");
+      if (
+        !operation ||
+        typeof operation !== "object" ||
+        !("id" in operation) ||
+        typeof operation.id !== "string"
+      )
+        throw new Error("Invalid operation receipt");
       return operation.id;
     }
     async function current() {
@@ -235,9 +242,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
         updateInvoiceWithIntent(db, request),
         updateInvoiceWithIntent(db, request),
       ]);
-      expect(operationId(a)).toBe(
-        operationId(b),
-      );
+      expect(operationId(a)).toBe(operationId(b));
       expect(await current()).toMatchObject({
         status: "unpaid",
         internalNote: "reviewed",
@@ -334,17 +339,17 @@ describe.skipIf(!isTestDatabaseAvailable())(
       const paidAt = new Date().toISOString();
       const first = await updateInvoiceWithIntent(db, {
         ...scope(),
+        userId: fixture.own.userId,
         status: "paid",
         paidAt,
       });
       const retry = await updateInvoiceWithIntent(db, {
         ...scope(),
+        userId: fixture.own.userId,
         status: "paid",
         paidAt,
       });
-      expect(operationId(first)).toBe(
-        operationId(retry),
-      );
+      expect(operationId(first)).toBe(operationId(retry));
       expect((await current()).status).toBe("paid");
       expect(new Date((await current()).paidAt!).toISOString()).toBe(paidAt);
       expect((await current()).documentSnapshot).not.toBeNull();
@@ -361,37 +366,110 @@ describe.skipIf(!isTestDatabaseAvailable())(
 
     test("an approved command rejects a customer or invoice revision change before any side effect", async () => {
       const preview = (await getInvoiceCommandPreview(db, scope()))!;
-      await db.update(customers).set({ email: "changed@example.test" }).where(eq(customers.id, fixture.own.customerId));
-      await expect(issueInvoice(db, { ...scope(), deliveryType: "create_and_send", sentTo: preview.recipient, expectedRevision: preview.revision })).rejects.toThrow("changed after preview");
-      await expect(deleteInvoiceWithRevision(db, { ...scope(), expectedRevision: preview.revision })).rejects.toThrow("changed after preview");
-      expect((await current()).status).toBe("draft"); expect(await intents()).toHaveLength(0);
+      await db
+        .update(customers)
+        .set({ email: "changed@example.test" })
+        .where(eq(customers.id, fixture.own.customerId));
+      await expect(
+        issueInvoice(db, {
+          ...scope(),
+          deliveryType: "create_and_send",
+          sentTo: preview.recipient,
+          expectedRevision: preview.revision,
+        }),
+      ).rejects.toThrow("changed after preview");
+      await expect(
+        deleteInvoiceWithRevision(db, {
+          ...scope(),
+          expectedRevision: preview.revision,
+        }),
+      ).rejects.toThrow("changed after preview");
+      expect((await current()).status).toBe("draft");
+      expect(await intents()).toHaveLength(0);
       const latest = (await getInvoiceCommandPreview(db, scope()))!;
-      await db.update(invoices).set({ amount: 101 }).where(eq(invoices.id, scope().id));
-      await expect(deleteInvoiceWithRevision(db, { ...scope(), expectedRevision: latest.revision })).rejects.toThrow("changed after preview");
+      await db
+        .update(invoices)
+        .set({ amount: 101 })
+        .where(eq(invoices.id, scope().id));
+      await expect(
+        deleteInvoiceWithRevision(db, {
+          ...scope(),
+          expectedRevision: latest.revision,
+        }),
+      ).rejects.toThrow("changed after preview");
       expect((await current()).amount).toBe(101);
     });
 
     test("approved recipient is exact and frozen with all BCC destinations in the SQL intent", async () => {
-      await db.update(customers).set({ billingEmail: "accounts@example.test, finance@example.test" }).where(eq(customers.id, fixture.own.customerId));
+      await db
+        .update(customers)
+        .set({ billingEmail: "accounts@example.test, finance@example.test" })
+        .where(eq(customers.id, fixture.own.customerId));
       const preview = (await getInvoiceCommandPreview(db, scope()))!;
-      await expect(issueInvoice(db, { ...scope(), deliveryType: "create_and_send", sentTo: "substituted@example.test", expectedRevision: preview.revision })).rejects.toThrow("reviewed address");
+      await expect(
+        issueInvoice(db, {
+          ...scope(),
+          deliveryType: "create_and_send",
+          sentTo: "substituted@example.test",
+          expectedRevision: preview.revision,
+        }),
+      ).rejects.toThrow("reviewed address");
       expect(await intents()).toHaveLength(0);
-      await issueInvoice(db, { ...scope(), deliveryType: "create_and_send", sentTo: preview.recipient, expectedRevision: preview.revision });
-      await db.update(customers).set({ email: "later@example.test", billingEmail: "later-bcc@example.test" }).where(eq(customers.id, fixture.own.customerId));
-      expect((await intents())[0]!.payload).toMatchObject({ approvedRecipients: { recipient: preview.recipient, bcc: preview.bcc, customerName: preview.customerName } });
-      expect(JSON.stringify((await intents())[0]!.payload)).not.toContain("later@example.test");
-      expect(JSON.stringify((await intents())[0]!.payload)).not.toContain("later-bcc@example.test");
+      await issueInvoice(db, {
+        ...scope(),
+        deliveryType: "create_and_send",
+        sentTo: preview.recipient,
+        expectedRevision: preview.revision,
+      });
+      await db
+        .update(customers)
+        .set({
+          email: "later@example.test",
+          billingEmail: "later-bcc@example.test",
+        })
+        .where(eq(customers.id, fixture.own.customerId));
+      expect((await intents())[0]!.payload).toMatchObject({
+        approvedRecipients: {
+          recipient: preview.recipient,
+          bcc: preview.bcc,
+          customerName: preview.customerName,
+        },
+      });
+      expect(JSON.stringify((await intents())[0]!.payload)).not.toContain(
+        "later@example.test",
+      );
+      expect(JSON.stringify((await intents())[0]!.payload)).not.toContain(
+        "later-bcc@example.test",
+      );
     });
 
     test("outer approval failure rolls back the nested invoice command, and a current deletion preview works", async () => {
       const preview = (await getInvoiceCommandPreview(db, scope()))!;
-      await expect(db.transaction(async tx => {
-        await issueInvoice(tx, { ...scope(), deliveryType: "create_and_send", sentTo: preview.recipient, expectedRevision: preview.revision });
-        throw new Error("approval consume rollback fixture");
-      })).rejects.toThrow("approval consume rollback");
-      expect((await current()).status).toBe("draft"); expect(await intents()).toHaveLength(0);
-      expect(await getInvoiceCommandPreview(db, { id: scope().id, teamId: fixture.other.teamId })).toBeUndefined();
-      expect(await deleteInvoiceWithRevision(db, { ...scope(), expectedRevision: preview.revision })).toEqual({ id: scope().id });
+      await expect(
+        db.transaction(async (tx) => {
+          await issueInvoice(tx, {
+            ...scope(),
+            deliveryType: "create_and_send",
+            sentTo: preview.recipient,
+            expectedRevision: preview.revision,
+          });
+          throw new Error("approval consume rollback fixture");
+        }),
+      ).rejects.toThrow("approval consume rollback");
+      expect((await current()).status).toBe("draft");
+      expect(await intents()).toHaveLength(0);
+      expect(
+        await getInvoiceCommandPreview(db, {
+          id: scope().id,
+          teamId: fixture.other.teamId,
+        }),
+      ).toBeUndefined();
+      expect(
+        await deleteInvoiceWithRevision(db, {
+          ...scope(),
+          expectedRevision: preview.revision,
+        }),
+      ).toEqual({ id: scope().id });
       expect(await current()).toBeUndefined();
     });
 

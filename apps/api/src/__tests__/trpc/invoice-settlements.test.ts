@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { InvoicePaymentError } from "@midday/db/errors";
 import { createCallerFactory } from "../../trpc/init";
 import { invoicePaymentsRouter } from "../../trpc/routers/invoice-payments";
 import { createTestContext } from "../helpers/test-context";
 import { mocks } from "../setup";
+
 const caller = () =>
   createCallerFactory(invoicePaymentsRouter)(createTestContext());
 const input = {
@@ -21,6 +23,32 @@ beforeEach(() => {
   mocks.reconcileInvoiceSettlement.mockClear();
 });
 describe("manual settlement API authority", () => {
+  test("a demotion rejected inside the financial transaction remains FORBIDDEN", async () => {
+    mocks.recordInvoiceSettlement.mockImplementationOnce(() =>
+      Promise.reject(
+        new InvoicePaymentError(
+          403,
+          "A current workspace owner must confirm settlement",
+        ),
+      ),
+    );
+    await expect(caller().recordSettlement(input)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
+  test("repair receives the authenticated actor rather than caller identity", async () => {
+    await caller().reconcileSettlement({
+      invoiceId: input.invoiceId,
+      apply: true,
+    });
+    expect(mocks.reconcileInvoiceSettlement.mock.calls[0]?.[1]).toMatchObject({
+      invoiceId: input.invoiceId,
+      teamId: "test-team-id",
+      actorId: "test-user-id",
+      apply: true,
+    });
+  });
+
   test("records the authenticated actor/team and stable operation key", async () => {
     await caller().recordSettlement(input);
     await caller().recordSettlement(input);

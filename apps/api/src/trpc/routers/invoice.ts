@@ -20,11 +20,9 @@ import {
 } from "@api/trpc/init";
 import { parseInputValue } from "@api/utils/parse";
 import { UTCDate } from "@date-fns/utc";
+import { InvoicePaymentError } from "@midday/db/errors";
 import {
   allocateTrackerEntriesToInvoice,
-  issueInvoice as persistInvoiceIssue,
-  scheduleInvoice as persistInvoiceSchedule,
-  cancelInvoiceSchedule as persistInvoiceScheduleCancel,
   getAverageDaysToPayment,
   getAverageInvoiceSize,
   getCustomerById,
@@ -46,6 +44,9 @@ import {
   deleteInvoice as persistInvoiceDelete,
   draftInvoice as persistInvoiceDraft,
   duplicateInvoice as persistInvoiceDuplicate,
+  issueInvoice as persistInvoiceIssue,
+  scheduleInvoice as persistInvoiceSchedule,
+  cancelInvoiceSchedule as persistInvoiceScheduleCancel,
   updateInvoiceWithIntent as persistInvoiceUpdate,
   searchInvoiceNumber,
 } from "@midday/db/queries";
@@ -66,6 +67,9 @@ import { z } from "zod";
 const defaultTemplate = DEFAULT_TEMPLATE;
 
 function invoiceWriteError(error: unknown): never {
+  if (error instanceof InvoicePaymentError && error.status === 403) {
+    throw new TRPCError({ code: "FORBIDDEN", message: error.message });
+  }
   if (
     error instanceof InvoiceAmountError ||
     error instanceof InvoiceFinancialStateError
