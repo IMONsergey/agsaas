@@ -31,6 +31,7 @@ export * from "./invoice-email-deliveries";
 export * from "./invoice-payments";
 export * from "./invoice-products";
 export * from "./invoice-recurring";
+export * from "./invoice-refund-requests";
 export * from "./invoice-settlements";
 export * from "./invoice-templates";
 export * from "./invoices";

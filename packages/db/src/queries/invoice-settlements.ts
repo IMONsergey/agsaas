@@ -20,6 +20,7 @@ import {
   requireTeamOwner,
 } from "../utils/team-membership";
 import { ensureFinancialJobDispatch } from "./financial-job-dispatches";
+import { getUnresolvedInvoiceRefundRequest } from "./invoice-provider-requests";
 import { prepareInvoiceDocument } from "./invoices";
 import { appendSecurityAuditEvent } from "./security-audit";
 
@@ -302,6 +303,11 @@ export async function recordInvoiceSettlement(
         "Settlement currency does not match invoice",
       );
     if (input.provider !== "stripe") {
+      if (await getUnresolvedInvoiceRefundRequest(tx, input))
+        throw new InvoicePaymentError(
+          409,
+          "Resolve the existing refund request before recording outside money",
+        );
       const state = await tx.execute<{ required: boolean }>(sql`
         select reconciliation_required as required from invoice_settlement_state
         where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid`);
@@ -468,7 +474,9 @@ export async function getInvoiceSettlement(
         sql`select projection,reconciliation_required,reason from invoice_settlement_state where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid`,
       )
     ).rows[0];
+    const refundRequest = await getUnresolvedInvoiceRefundRequest(tx, input);
     return {
+      refundRequest,
       entries: rows,
       projection: legacy
         ? null
@@ -478,18 +486,24 @@ export async function getInvoiceSettlement(
             rows,
           ),
       reconciliationRequired:
-        legacy || stored?.reconciliation_required === true,
+        legacy ||
+        stored?.reconciliation_required === true ||
+        refundRequest !== null,
       providerReconciliationRequired: stored?.reconciliation_required === true,
       providerVerificationAvailable:
         stored?.reconciliation_required === true &&
-        stored.reason === STRIPE_LEDGER_RECONCILIATION_REASON,
+        stored.reason === STRIPE_LEDGER_RECONCILIATION_REASON &&
+        refundRequest === null,
       reason: legacy
         ? "Legacy paid/refunded state has no confirmed ledger evidence"
         : stored?.reason === STRIPE_LEDGER_RECONCILIATION_REASON
           ? "A previously confirmed Stripe refund changed or could not be verified. Verify its current provider state before recording more money."
           : stored?.reason === "manual_unknown"
             ? "A provider request has an unknown outcome. Reconcile that request before recording more money."
-            : (stored?.reason ?? null),
+            : (stored?.reason ??
+              (refundRequest
+                ? "An existing refund request must be resolved before recording more money."
+                : null)),
     };
   });
 }
@@ -529,7 +543,10 @@ export async function reconcileInvoiceSettlement(
         sql`select projection,reconciliation_required from invoice_settlement_state where team_id=${input.teamId}::uuid and invoice_id=${input.invoiceId}::uuid`,
       )
     ).rows[0];
-    if (stored?.reconciliation_required)
+    if (
+      stored?.reconciliation_required ||
+      (await getUnresolvedInvoiceRefundRequest(tx, input))
+    )
       return { state: "requires_evidence" as const, changed: false, expected };
     const drift =
       financialRequestHash(stored?.projection) !==

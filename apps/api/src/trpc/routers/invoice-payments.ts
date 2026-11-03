@@ -1,5 +1,8 @@
-import { requestInvoiceRefund } from "@api/services/invoice-refund-request";
 import { getInvoiceProviderReconciliationProofs } from "@api/services/invoice-provider-reconciliation";
+import {
+  requestDurableInvoiceRefund,
+  resumeDurableInvoiceRefund,
+} from "@api/services/invoice-refund-intents";
 import {
   createTRPCRouter,
   ownerProcedure,
@@ -10,7 +13,6 @@ import { financialRequestHash } from "@midday/db/financial-job";
 import {
   applyInvoiceProviderReconciliation,
   getInvoiceProviderReconciliationPlan,
-  getInvoiceRefundContext,
   getInvoiceSettlement,
   getTeamById,
   getTeamMemberRole,
@@ -18,7 +20,7 @@ import {
   recordInvoiceSettlement,
   requestStripeDisconnect,
 } from "@midday/db/queries";
-import { logger } from "@midday/logger";
+import { getApiUrl } from "@midday/utils/envs";
 import { TRPCError } from "@trpc/server";
 import Stripe from "stripe";
 import { z } from "zod";
@@ -184,7 +186,7 @@ export const invoicePaymentsRouter = createTRPCRouter({
     }
 
     // Return the REST endpoint URL that handles the OAuth flow
-    const apiUrl = process.env.MIDDAY_API_URL || "https://api.midday.ai";
+    const apiUrl = getApiUrl();
     return `${apiUrl}/invoice-payments/connect-stripe`;
   }),
 
@@ -204,46 +206,44 @@ export const invoicePaymentsRouter = createTRPCRouter({
   ),
 
   refundPayment: ownerProcedure
-    .input(z.object({ invoiceId: z.string().uuid() }))
-    .mutation(async ({ input, ctx: { db, teamId } }) => {
-      if (!teamId) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Team not found",
-        });
-      }
-
-      try {
-        const context = await getInvoiceRefundContext(db, {
-          invoiceId: input.invoiceId,
-          teamId,
-        });
+    .input(
+      z
+        .object({
+          invoiceId: z.string().uuid(),
+          operationId: z.string().uuid(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) =>
+      settlementResult(() => {
         const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-          timeout: 10_000,
+          timeout: 5_000,
           maxNetworkRetries: 0,
         });
-        return await requestInvoiceRefund(context, stripe);
-      } catch (err) {
-        if (err instanceof InvoicePaymentError) {
-          throw new TRPCError({
-            code:
-              err.status === 404
-                ? "NOT_FOUND"
-                : err.status === 400
-                  ? "BAD_REQUEST"
-                  : err.status === 409
-                    ? "CONFLICT"
-                    : "INTERNAL_SERVER_ERROR",
-            message: err.message,
-          });
-        }
-        logger.error("Failed to request invoice refund", {
-          invoiceId: input.invoiceId,
+        return requestDurableInvoiceRefund(ctx.db, stripe, {
+          ...input,
+          teamId: ctx.teamId!,
+          actorId: ctx.session.user.id,
         });
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to process refund",
+      }),
+    ),
+  resumeRefundRequest: ownerProcedure
+    .input(
+      z
+        .object({ invoiceId: z.string().uuid(), requestId: z.string().uuid() })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) =>
+      settlementResult(() => {
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+          timeout: 5_000,
+          maxNetworkRetries: 0,
         });
-      }
-    }),
+        return resumeDurableInvoiceRefund(ctx.db, stripe, {
+          ...input,
+          teamId: ctx.teamId!,
+          actorId: ctx.session.user.id,
+        });
+      }),
+    ),
 });

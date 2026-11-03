@@ -52,6 +52,7 @@ const TEAM_TABLES: Record<string, string[]> = {
   invoice_payment_reservations: [],
   invoice_settlement_entries: [],
   invoice_settlement_state: [],
+  invoice_refund_requests: ["idempotency_key", "claim_token"],
   invoice_email_deliveries: ["envelope", "lease_token"],
   tracker_projects: [],
   tracker_entries: [],

@@ -1,5 +1,4 @@
 import { InvoicePaymentError } from "@midday/db/errors";
-import type { InvoiceRefundContext } from "@midday/db/queries";
 import type Stripe from "stripe";
 
 type RefundProvider = {
@@ -26,96 +25,6 @@ type RefundProvider = {
     >;
   };
 };
-
-/**
- * Requests the remaining full refund. Acceptance is not a completed invoice
- * refund: only a webhook with current complete succeeded-refund confirmation
- * changes that state. Provider success is not irreversible settlement.
- */
-export async function requestInvoiceRefund(
-  context: InvoiceRefundContext,
-  stripe: RefundProvider,
-) {
-  const options = { stripeAccount: context.stripeAccountId };
-  try {
-    const intent = await stripe.paymentIntents.retrieve(
-      context.paymentIntentId,
-      options,
-    );
-    if (
-      intent.id !== context.paymentIntentId ||
-      intent.status !== "succeeded" ||
-      intent.amount !== context.amountMinor ||
-      intent.amount_received !== context.amountMinor ||
-      intent.currency !== context.currency ||
-      intent.metadata?.invoice_id !== context.invoiceId ||
-      intent.metadata?.team_id !== context.teamId
-    )
-      throw new InvoicePaymentError(
-        409,
-        "Original payment does not match this invoice",
-      );
-
-    const refund = await stripe.refunds.create(
-      { payment_intent: context.paymentIntentId },
-      {
-        ...options,
-        idempotencyKey: `invoice-refund/${context.invoiceId}/${context.paymentIntentId}/full/v1`,
-      },
-    );
-    const intentId =
-      typeof refund.payment_intent === "string"
-        ? refund.payment_intent
-        : refund.payment_intent?.id;
-    if (
-      !/^(re|pyr)_[A-Za-z0-9]+$/.test(refund.id) ||
-      intentId !== context.paymentIntentId ||
-      refund.currency !== context.currency ||
-      !Number.isSafeInteger(refund.amount) ||
-      refund.amount <= 0 ||
-      refund.amount > context.amountMinor
-    ) {
-      throw new InvoicePaymentError(
-        409,
-        "Refund response requires reconciliation",
-      );
-    }
-    switch (refund.status) {
-      case "succeeded":
-      case "pending":
-      case "requires_action":
-        return {
-          accepted: true as const,
-          status: "requested" as const,
-          refundStatus: refund.status,
-          refundId: refund.id,
-        };
-      default:
-        throw new InvoicePaymentError(
-          409,
-          "Refund was not completed; reconciliation is required",
-        );
-    }
-  } catch (error) {
-    if (error instanceof InvoicePaymentError) throw error;
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error.code === "charge_already_refunded" ||
-        error.code === "resource_missing")
-    ) {
-      throw new InvoicePaymentError(
-        409,
-        "Original payment or refund requires reconciliation",
-      );
-    }
-    throw new InvoicePaymentError(
-      503,
-      "Refund confirmation is pending; verify the existing payment before retrying",
-    );
-  }
-}
 
 export type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
   refunds: {

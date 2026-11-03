@@ -16,6 +16,7 @@ async function main() {
       "public.export_snapshots",
       "public.invoice_settlement_entries",
       "public.invoice_settlement_state",
+      "public.invoice_refund_requests",
       "public.team_quota_usage",
       "public.team_connector_reservations",
       "public.security_audit_events",
@@ -33,7 +34,7 @@ async function main() {
       );
     const guards = (
       await client.query<{ ready: boolean }>(
-        "select to_regprocedure('public.validate_invoice_settlement_entry()') is not null and to_regprocedure('public.guard_export_snapshot_identity()') is not null and to_regprocedure('public.guard_shared_report_snapshot()') is not null and to_regprocedure('public.get_team_entitlements(uuid)') is not null and exists(select 1 from information_schema.columns where table_schema='public' and table_name='reports' and column_name='chart_snapshot') as ready",
+        "select to_regprocedure('public.validate_invoice_settlement_entry()') is not null and to_regprocedure('public.guard_invoice_refund_request()') is not null and to_regprocedure('public.guard_export_snapshot_identity()') is not null and to_regprocedure('public.guard_shared_report_snapshot()') is not null and to_regprocedure('public.get_team_entitlements(uuid)') is not null and exists(select 1 from information_schema.columns where table_schema='public' and table_name='reports' and column_name='chart_snapshot') as ready",
       )
     ).rows[0]!.ready;
     if (!guards)
@@ -50,6 +51,7 @@ async function main() {
         "20261103061000",
         "20261103062000",
         "20261103065000",
+        "20261103110000",
         "20261103094000",
         "20261103101000",
       ];

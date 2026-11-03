@@ -3,9 +3,13 @@ import { and, eq, or, sql } from "drizzle-orm";
 import type { DatabaseOrTransaction, TransactionClient } from "../client";
 import { InvoicePaymentError } from "../errors";
 import { getInvoicePaymentAmount } from "../invoice-money";
+
 export { getInvoicePaymentAmount } from "../invoice-money";
-import { invoicePaymentReservations, invoices, teams } from "../schema";
+
 import { financialRequestHash } from "../financial-job";
+import { invoicePaymentReservations, invoices, teams } from "../schema";
+import { getUnresolvedInvoiceRefundRequest } from "./invoice-provider-requests";
+import { settleKnownInvoiceRefundRequests } from "./invoice-refund-requests";
 import {
   getInvoiceSettlement,
   getInvoiceSettlementEntries,
@@ -266,7 +270,7 @@ export async function getInvoiceRefundContext(
       .from(teams)
       .where(eq(teams.id, params.teamId));
     const ledger = await getInvoiceSettlement(tx, params);
-    if (ledger.providerReconciliationRequired)
+    if (ledger.providerReconciliationRequired || ledger.refundRequest)
       throw new InvoicePaymentError(
         409,
         "Verify the provider settlement before requesting another refund",
@@ -658,6 +662,13 @@ export async function applyStripeInvoicePaymentEvent(
               !knownRefunds.some((row) => row.providerResourceId === refund.id),
           ),
         });
+        await settleKnownInvoiceRefundRequests(tx, {
+          invoiceId: invoice.id,
+          teamId: invoice.teamId,
+          stripeAccountId: event.stripeAccountId,
+          paymentIntentId: event.paymentIntentId,
+          refunds: event.refunds,
+        });
         // Commit the uncertainty before returning an error to the adapter.
         return { blocked: true as const };
       }
@@ -699,6 +710,14 @@ export async function applyStripeInvoicePaymentEvent(
         }
       }
     }
+    if (event.refunds)
+      await settleKnownInvoiceRefundRequests(tx, {
+        invoiceId: invoice.id,
+        teamId: invoice.teamId,
+        stripeAccountId: event.stripeAccountId,
+        paymentIntentId: event.paymentIntentId,
+        refunds: event.refunds,
+      });
     if (reservation)
       await tx
         .update(invoicePaymentReservations)
@@ -789,6 +808,11 @@ async function loadProviderReconciliationPlan(
     }>(sql`select reconciliation_required as required,reason,updated_at::text as "updatedAt"
     from invoice_settlement_state where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid`)
   ).rows[0];
+  if (await getUnresolvedInvoiceRefundRequest(tx, input))
+    throw new InvoicePaymentError(
+      409,
+      "Resolve the existing refund request before verifying the journal",
+    );
   if (!state?.required) return null;
   // An unknown create/refund request is not proved absent by checking only known IDs.
   // Never turn an unrecognized/manual_unknown marker into the automatic path.

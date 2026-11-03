@@ -1,10 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { InvoiceRefundContext } from "@midday/db/queries";
 import type Stripe from "stripe";
-import {
-  getConfirmedFullInvoiceRefund,
-  requestInvoiceRefund,
-} from "../services/invoice-refund-request";
+import { getConfirmedFullInvoiceRefund } from "../services/invoice-refund-request";
 
 // Provider seams only. No Stripe client, credentials or network calls.
 const context: InvoiceRefundContext = {
@@ -70,114 +67,6 @@ function provider() {
     },
   };
 }
-
-describe("invoice refund requests are acknowledgments, not completed refunds", () => {
-  for (const status of ["succeeded", "pending", "requires_action"] as const) {
-    test(`${status} acknowledges the request without claiming the invoice is refunded`, async () => {
-      const stripe = provider();
-      stripe.refunds.create.mockImplementation(async () => refund({ status }));
-      expect(await requestInvoiceRefund(context, stripe)).toEqual({
-        accepted: true,
-        status: "requested",
-        refundStatus: status,
-        refundId: "re_fixture",
-      });
-      expect(stripe.paymentIntents.retrieve).toHaveBeenCalledWith(
-        "pi_fixture",
-        { stripeAccount: "acct_original" },
-      );
-      expect(stripe.refunds.create).toHaveBeenCalledWith(
-        { payment_intent: "pi_fixture" },
-        {
-          stripeAccount: "acct_original",
-          idempotencyKey: `invoice-refund/${context.invoiceId}/pi_fixture/full/v1`,
-        },
-      );
-    });
-  }
-  test("retry uses the identical original account and full-remaining-refund key", async () => {
-    const stripe = provider();
-    await requestInvoiceRefund(context, stripe);
-    await requestInvoiceRefund(context, stripe);
-    expect(stripe.refunds.create.mock.calls[0]).toEqual(
-      stripe.refunds.create.mock.calls[1],
-    );
-  });
-  test("supports non-card pyr_ refund IDs and a remaining partial amount", async () => {
-    const stripe = provider();
-    stripe.refunds.create.mockImplementation(async () =>
-      refund({ id: "pyr_fixture", amount: 1000 }),
-    );
-    expect(await requestInvoiceRefund(context, stripe)).toMatchObject({
-      refundId: "pyr_fixture",
-      status: "requested",
-    });
-  });
-  for (const override of [
-    { id: "pi_foreign" },
-    { status: "processing" as const },
-    { amount: 12004 },
-    { amount_received: 12004 },
-    { currency: "eur" },
-    { metadata: { invoice_id: context.invoiceId, team_id: "foreign" } },
-    { metadata: { invoice_id: "foreign", team_id: context.teamId } },
-  ]) {
-    test(`rejects original payment mismatch before any refund request: ${JSON.stringify(override)}`, async () => {
-      const stripe = provider();
-      stripe.paymentIntents.retrieve.mockImplementation(async () =>
-        intent(override),
-      );
-      await expect(requestInvoiceRefund(context, stripe)).rejects.toMatchObject(
-        { status: 409 },
-      );
-      expect(stripe.refunds.create).not.toHaveBeenCalled();
-    });
-  }
-  for (const override of [
-    { id: "invalid" },
-    { payment_intent: "pi_foreign" },
-    { currency: "eur" },
-    { amount: 12006 },
-    { amount: 0 },
-    { amount: 1.5 },
-    { status: "failed" as const },
-    { status: "canceled" as const },
-    { status: null },
-  ]) {
-    test(`does not claim completion from an invalid refund acknowledgment: ${JSON.stringify(override)}`, async () => {
-      const stripe = provider();
-      stripe.refunds.create.mockImplementation(async () => refund(override));
-      await expect(requestInvoiceRefund(context, stripe)).rejects.toMatchObject(
-        { status: 409 },
-      );
-    });
-  }
-  test("unknown provider outcome is retryable without exposing provider payloads", async () => {
-    const stripe = provider();
-    stripe.refunds.create.mockImplementation(async () => {
-      throw new Error("pi_fixture_secret_private");
-    });
-    await expect(requestInvoiceRefund(context, stripe)).rejects.toMatchObject({
-      status: 503,
-    });
-    try {
-      await requestInvoiceRefund(context, stripe);
-    } catch (error) {
-      expect(String(error)).not.toContain("secret_private");
-    }
-  });
-  for (const code of ["charge_already_refunded", "resource_missing"]) {
-    test(`${code} requires reconciliation instead of a new payment/refund identity`, async () => {
-      const stripe = provider();
-      stripe.refunds.create.mockImplementation(async () => {
-        throw { code };
-      });
-      await expect(requestInvoiceRefund(context, stripe)).rejects.toMatchObject(
-        { status: 409 },
-      );
-    });
-  }
-});
 
 describe("full invoice refund confirmation reads complete current succeeded refunds", () => {
   test("confirms only an exact succeeded total on the original account and intent", async () => {

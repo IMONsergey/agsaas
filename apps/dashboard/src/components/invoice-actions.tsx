@@ -28,7 +28,7 @@ import { Icons } from "@midday/ui/icons";
 import { useToast } from "@midday/ui/use-toast";
 import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { useUserQuery } from "@/hooks/use-user";
@@ -66,6 +66,14 @@ export function InvoiceActions({
     settlement.reconciliationRequired === false;
   const [cancelSeriesOpen, setCancelSeriesOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const refundOperations = useRef(new Map<string, string>());
+  const refundOperationId = () => {
+    const existing = refundOperations.current.get(id);
+    if (existing) return existing;
+    const operationId = crypto.randomUUID();
+    refundOperations.current.set(id, operationId);
+    return operationId;
+  };
   const duplicateInvoice = useMutation(
     trpc.invoice.duplicate.mutationOptions({
       onSuccess: (invoice) => {
@@ -196,11 +204,28 @@ export function InvoiceActions({
 
   const refundMutation = useMutation(
     trpc.invoicePayments.refundPayment.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (result, variables) => {
+        refundOperations.current.delete(variables.invoiceId);
         toast({
-          title: "Refund requested",
+          title:
+            result.status === "confirmed"
+              ? "Refund confirmed"
+              : result.status === "failed"
+                ? "Refund was not completed"
+                : result.status === "reconciliation_required"
+                  ? "Refund needs verification"
+                  : "Refund requested",
           description:
-            "The payment history and remaining balance update after the provider confirms the refund.",
+            result.status === "confirmed"
+              ? "The confirmed refund is recorded in payment history."
+              : result.status === "failed"
+                ? "The provider confirmed that this request did not complete. Check payment history before starting another refund."
+                : "Open Payments and refunds to resume and verify this retained request.",
+        });
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoicePayments.settlement.queryKey({
+            invoiceId: variables.invoiceId,
+          }),
         });
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.getById.queryKey({ id }),
@@ -218,11 +243,15 @@ export function InvoiceActions({
           queryKey: trpc.invoice.paymentStatus.queryKey(),
         });
       },
-      onError: () => {
+      onError: (error, variables) => {
+        queryClient.invalidateQueries({
+          queryKey: trpc.invoicePayments.settlement.queryKey({
+            invoiceId: variables.invoiceId,
+          }),
+        });
         toast({
           title: "Refund not confirmed",
-          description:
-            "Check the original payment and refund status before retrying.",
+          description: error.message,
           variant: "destructive",
         });
       },
@@ -321,7 +350,12 @@ export function InvoiceActions({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             disabled={refundMutation.isPending || !canRefund}
-            onClick={() => refundMutation.mutate({ invoiceId: id })}
+            onClick={() =>
+              refundMutation.mutate({
+                invoiceId: id,
+                operationId: refundOperationId(),
+              })
+            }
           >
             Refund
           </AlertDialogAction>

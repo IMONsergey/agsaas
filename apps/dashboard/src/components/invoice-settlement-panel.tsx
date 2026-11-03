@@ -87,6 +87,27 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
       },
     }),
   );
+  const resumeRefund = useMutation(
+    trpc.invoicePayments.resumeRefundRequest.mutationOptions({
+      onSuccess: async () => {
+        setError(null);
+        await Promise.all([
+          cache.invalidateQueries({
+            queryKey: trpc.invoicePayments.settlement.queryKey({ invoiceId }),
+          }),
+          cache.invalidateQueries({
+            queryKey: trpc.invoice.getById.queryKey({ id: invoiceId }),
+          }),
+          cache.invalidateQueries({ queryKey: trpc.invoice.get.queryKey() }),
+          cache.invalidateQueries({ queryKey: trpc.customers.get.queryKey() }),
+        ]);
+      },
+      onError: (failure) => {
+        setError(failure.message);
+        void query.refetch();
+      },
+    }),
+  );
   if (query.isPending)
     return (
       <div className="mt-6 text-sm text-muted-foreground" role="status">
@@ -128,6 +149,36 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
             {data.reason ??
               "Verify original evidence before changing settlement history."}
           </p>
+          {data.refundRequest && (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Refund request for {display(data.refundRequest.amountMinor)}:{" "}
+                {data.refundRequest.refundStatus ?? "outcome not confirmed"}.
+                Resuming verifies the retained request and may retry that same
+                request within its safe retry window.
+              </p>
+              {data.canManage && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={resumeRefund.isPending}
+                  onClick={() => {
+                    const request = data.refundRequest;
+                    if (!request) return;
+                    setError(null);
+                    resumeRefund.mutate({
+                      invoiceId,
+                      requestId: request.requestId,
+                    });
+                  }}
+                >
+                  {resumeRefund.isPending
+                    ? "Checking refund request..."
+                    : "Resume refund request"}
+                </Button>
+              )}
+            </div>
+          )}
           {data.canManage && data.providerVerificationAvailable && (
             <>
               <p className="text-xs text-muted-foreground">

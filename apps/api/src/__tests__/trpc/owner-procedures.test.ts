@@ -33,6 +33,7 @@ describe("owner-only administration", () => {
         () =>
           payments.refundPayment({
             invoiceId: "00000000-0000-4000-8000-000000000001",
+            operationId: "00000000-0000-4000-8000-000000000002",
           }),
       ];
       for (const operation of attempts)
