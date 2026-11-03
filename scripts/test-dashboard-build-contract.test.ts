@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -266,6 +273,115 @@ const temporaryRoots: string[] = [];
 afterEach(() => {
   for (const root of temporaryRoots.splice(0))
     rmSync(root, { recursive: true, force: true });
+});
+
+describe("dashboard Docker installer release wiring", () => {
+  const exact = "a".repeat(40);
+  const root = fileURLToPath(new URL("../", import.meta.url));
+
+  function run(git: string, published: string | undefined) {
+    const directory = mkdtempSync(join(tmpdir(), "agsaas-docker-release-"));
+    temporaryRoots.push(directory);
+    const bin = join(directory, "bin");
+    mkdirSync(bin);
+    const stamp = join(directory, "git-sha.txt");
+    const capture = join(directory, "build-env.json");
+    writeFileSync(stamp, git);
+    // Execute the Docker RUN's release setup and real verifier, stopping at a
+    // local build boundary. No Docker daemon, dependency install or Next build.
+    writeFileSync(
+      join(bin, "bunx"),
+      [
+        "#!/usr/bin/env node",
+        'const { writeFileSync } = require("node:fs");',
+        'const expected = ["turbo", "run", "build", "--filter=@midday/dashboard", "--only"];',
+        'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) throw new Error("Unexpected build invocation");',
+        "writeFileSync(process.env.AGSAAS_DOCKER_BUILD_CAPTURE, JSON.stringify({",
+        "  git: process.env.GIT_COMMIT_SHA,",
+        "  published: process.env.NEXT_PUBLIC_RELEASE_SHA,",
+        "  sentry: process.env.SENTRY_RELEASE",
+        '}), { flag: "wx" });',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const installer = readFileSync(
+      join(root, "apps/dashboard/Dockerfile"),
+      "utf8",
+    ).match(/^FROM base AS installer\r?\n([\s\S]*?)^FROM base AS runner$/m)?.[1];
+    if (!installer) throw new Error("Missing dashboard installer stage");
+    const commands = installer
+      .replace(/\\\r?\n/g, "")
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          line.startsWith("RUN ") &&
+          line.includes("node apps/dashboard/scripts/verify-release-source.mjs"),
+      );
+    const [instruction] = commands;
+    if (
+      commands.length !== 1 ||
+      !instruction ||
+      instruction.split("/tmp/git-sha.txt").length !== 2
+    ) {
+      throw new Error("Expected one stamped dashboard release build command");
+    }
+    const result = Bun.spawnSync({
+      cmd: [
+        "/bin/sh",
+        "-ec",
+        instruction
+          .slice(4)
+          .replace("/tmp/git-sha.txt", '"$AGSAAS_DOCKER_SHA_FILE"'),
+      ],
+      cwd: root,
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        NEXT_PUBLIC_RELEASE_SHA: published,
+        AGSAAS_DOCKER_SHA_FILE: stamp,
+        AGSAAS_DOCKER_BUILD_CAPTURE: capture,
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 3_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 16 * 1024,
+    });
+    return {
+      result,
+      captured: existsSync(capture) ? readFileSync(capture, "utf8") : undefined,
+    };
+  }
+
+  test.each([
+    { name: "unset public argument", published: undefined },
+    { name: "empty Docker ARG/ENV default", published: "" },
+    { name: "explicit matching public argument", published: exact },
+  ])("builds with one exact identity for $name", ({ published }) => {
+    const { result, captured } = run(exact, published);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe("");
+    expect(captured).toBe(
+      JSON.stringify({ git: exact, published: exact, sentry: exact }),
+    );
+  });
+
+  test.each([
+    { name: "explicit public mismatch", git: exact, published: "b".repeat(40) },
+    { name: "missing stamped revision", git: "", published: undefined },
+    { name: "short stamped revision", git: "a".repeat(39), published: "" },
+    { name: "missing stamp with a public revision", git: "", published: exact },
+  ])("rejects $name before the build boundary", ({ git, published }) => {
+    const { result, captured } = run(git, published);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe(
+      "Exact matching release SHA required\n",
+    );
+    expect(captured).toBeUndefined();
+  });
 });
 
 function assetFixture() {

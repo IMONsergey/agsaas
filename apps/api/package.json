@@ -24,7 +24,7 @@
     "eval": "bunx evalite watch",
     "eval:run": "bunx evalite",
     "test:team-invitation-queue": "bun --no-env-file test --exit --timeout 30000 src/services/team-invitation-queue.test.ts",
-    "test:files": "bun --no-env-file test --exit --timeout 30000 src/__tests__/file-download-boundary.test.ts",
+    "test:files": "bun --no-env-file test --exit --timeout 30000 src/__tests__/file-download-boundary.test.ts && bun --no-env-file test --exit --timeout 30000 src/__tests__/export-file-access.test.ts",
     "test:billing-webhook": "bun --no-env-file test --exit --timeout 30000 src/__tests__/polar-webhook.test.ts",
     "test:inbox-webhook": "bun --no-env-file test --exit --timeout 30000 src/services/inbox-webhook-ingestion.test.ts && bun --no-env-file test --exit --timeout 30000 src/__tests__/inbox-webhook.test.ts"
   },

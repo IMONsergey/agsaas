@@ -76,10 +76,12 @@ COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 ENV CI=true
 ENV NODE_ENV=production
 
-# Build with GIT_COMMIT_SHA + SENTRY_RELEASE exported so next.config.ts and
-# the Sentry webpack plugin can read them via process.env.
+# Derive an omitted public revision from the same stamped source revision.
+# An explicitly supplied nonempty public revision must still pass the verifier.
+# Export all three identities for Next.js and the Sentry webpack plugin.
 RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     export GIT_COMMIT_SHA; \
+    export NEXT_PUBLIC_RELEASE_SHA="${NEXT_PUBLIC_RELEASE_SHA:-$GIT_COMMIT_SHA}"; \
     export SENTRY_RELEASE="$GIT_COMMIT_SHA"; \
     node apps/dashboard/scripts/verify-release-source.mjs && \
     bunx turbo run build --filter=@midday/dashboard --only

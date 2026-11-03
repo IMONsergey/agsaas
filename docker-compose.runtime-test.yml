@@ -4,6 +4,9 @@
 x-runtime-env: &runtime-env
   NODE_ENV: production
   PORT: "8080"
+  # Explicit synthetic origins satisfy the production installation contract.
+  DASHBOARD_URL: http://localhost:3001
+  API_URL: http://localhost:3003
   DATABASE_PRIMARY_URL: postgres://postgres:runtime-test@postgres:5432/agsaas_runtime_test?sslmode=disable
   DATABASE_PRIMARY_POOLER_URL: postgres://postgres:runtime-test@postgres:5432/agsaas_runtime_test?sslmode=disable
   SUPABASE_URL: http://auth-health-fixture:8080
