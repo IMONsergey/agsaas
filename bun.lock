@@ -869,6 +869,9 @@
     "@depot/cli",
     "@sentry/cli",
   ],
+  "patchedDependencies": {
+    "fontkit@2.0.4": "patches/fontkit@2.0.4.patch",
+  },
   "overrides": {
     "@fastify/busboy": "3.2.4",
     "@fastify/static": "10.1.8",
@@ -876,6 +879,7 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "decode-uri-component": "0.5.1",
     "deepmerge-ts": "8.0.2",
+    "fontkit": "2.0.4",
     "handlebars": "4.7.10",
     "hono": "4.13.16",
     "langsmith": "0.11.6",
