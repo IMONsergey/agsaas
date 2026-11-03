@@ -1,6 +1,7 @@
-import { getApiUrl, getAppUrl } from "@midday/utils/envs";
 // Import Sentry instrumentation first, before any other modules
 import "./instrument";
+
+import { getApiUrl, getAppUrl } from "@midday/utils/envs";
 
 import { trpcServer } from "@hono/trpc-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -77,6 +78,7 @@ const generalApiCors = cors({
     "Cache-Control",
     "Cross-Origin-Resource-Policy",
     "Server-Timing",
+    "Retry-After",
   ],
   maxAge: 86400,
 });
@@ -343,7 +345,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "oauth2", {
 
 app.get(
   "/",
-  Scalar({ url: "/openapi", pageTitle: "Midday API", theme: "saturn" }),
+  Scalar({ url: "/openapi", pageTitle: "AGSaaS API", theme: "saturn" }),
 );
 
 app.route("/", routers);
