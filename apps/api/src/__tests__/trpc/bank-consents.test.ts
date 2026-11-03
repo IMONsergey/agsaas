@@ -106,6 +106,34 @@ describe("owner and session bound bank consent routes", () => {
       { requestId, country: "US" },
     );
   });
+  test("the opaque UI namespace is stable only for the verified actor, team and sign-in session", async () => {
+    const value = context();
+    const caller = createCallerFactory(bankConsentsRouter)(value);
+    const first = await caller.capability();
+    expect(first.commandScope).toMatch(/^[a-f0-9]{64}$/);
+    expect((await caller.capability()).commandScope).toBe(first.commandScope);
+    expect(first.commandScope).not.toContain(sessionId);
+    const nextSession = context();
+    nextSession.session = {
+      ...nextSession.session,
+      sessionId: "ad363139-3a41-4f3b-83b2-a680613bfb3d",
+    };
+    const nextTeam = context();
+    nextTeam.teamId = "different-team-id";
+    const nextUser = context();
+    nextUser.session = {
+      ...nextUser.session,
+      user: { ...nextUser.session.user, id: "different-user-id" },
+    };
+    for (const next of [nextSession, nextTeam, nextUser]) {
+      expect(
+        (await createCallerFactory(bankConsentsRouter)(next).capability())
+          .commandScope,
+      ).not.toBe(first.commandScope);
+    }
+    for (const fn of [start, complete, get, list, cancel])
+      expect(fn).not.toHaveBeenCalled();
+  });
   test("client credentials, actor overrides and amounts are rejected before provider orchestration", async () => {
     const caller = createCallerFactory(bankConsentsRouter)(context());
     for (const unexpected of [
@@ -113,6 +141,7 @@ describe("owner and session bound bank consent routes", () => {
       { accessToken: "access-sandbox-untrusted" },
       { teamId: "foreign-team" },
       { sessionId: "foreign-session" },
+      { commandScope: "client-selected-scope" },
       { amount: 999999 },
     ]) {
       const input = { requestId, country: "US" as const, ...unexpected };

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   completeHostedBankConsent,
   startHostedBankConsent,
@@ -113,7 +114,21 @@ async function consentResult<T>(work: () => Promise<T>): Promise<T> {
 /** Native consent is deliberately separate from the closed legacy token and
  * browser-selected account endpoints. Inputs contain no provider credentials. */
 export const bankConsentsRouter = createTRPCRouter({
-  capability: consentProcedure.query(() => hostedPlaidCapability()),
+  capability: consentProcedure.query(({ ctx }) => ({
+    ...hostedPlaidCapability(),
+    // Opaque UI namespace only: never accepted as consent or authorization proof.
+    // A new sign-in must not reuse an ambiguous command from the prior session.
+    commandScope: createHash("sha256")
+      .update(
+        JSON.stringify([
+          "agsaas-hosted-consent-ui:v1",
+          ctx.bankConsentActor.teamId,
+          ctx.bankConsentActor.userId,
+          ctx.bankConsentActor.sessionId,
+        ]),
+      )
+      .digest("hex"),
+  })),
   list: consentProcedure.query(({ ctx }) =>
     consentResult(() => listHostedBankConsents(ctx.db, ctx.bankConsentActor)),
   ),

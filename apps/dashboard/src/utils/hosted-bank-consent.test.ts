@@ -3,6 +3,7 @@ import {
   bankConsentId,
   hostedBankConsentPresentation,
   hostedBankNavigationUrl,
+  hostedBankConsentStorageKey,
   hostedBankConsentError,
   pendingHostedConsentCommand,
 } from "./hosted-bank-consent";
@@ -13,6 +14,32 @@ const url = "https://secure.plaid.com/hl/fixture-consent";
 const row = { id, status: "awaiting_consent", connectionId: null, url };
 
 describe("native bank consent UI evidence", () => {
+  test("a new sign-in namespace cannot recover the prior session's uncertain command", () => {
+    const oldKey = hostedBankConsentStorageKey("a".repeat(64));
+    const currentKey = hostedBankConsentStorageKey("b".repeat(64));
+    expect(oldKey).not.toBe(currentKey);
+    const storage = new Map([
+      [oldKey, JSON.stringify({ requestId: id, country: "US" })],
+    ]);
+    expect(
+      pendingHostedConsentCommand(storage.get(currentKey) ?? null),
+    ).toBeNull();
+    expect(
+      pendingHostedConsentCommand(storage.get(oldKey) ?? null)?.requestId,
+    ).toBe(id);
+    for (const value of [
+      undefined,
+      null,
+      "",
+      "old-session-id",
+      id,
+      "a".repeat(63),
+      "a".repeat(65),
+      "A".repeat(64),
+    ]) {
+      expect(hostedBankConsentStorageKey(value)).toBeNull();
+    }
+  });
   test("only a completed server record with a connection identity is accepted", () => {
     for (const status of [
       "creating",

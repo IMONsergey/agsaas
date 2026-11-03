@@ -12,10 +12,12 @@ import {
   hostedBankConsentError,
   hostedBankConsentPresentation,
   hostedBankNavigationUrl,
+  hostedBankConsentStorageKey,
   pendingHostedConsentCommand,
 } from "@/utils/hosted-bank-consent";
 
 type Consent = RouterOutputs["bankConsents"]["get"];
+type Capability = RouterOutputs["bankConsents"]["capability"];
 type Props = {
   enabled?: boolean;
   allowStart?: boolean;
@@ -38,12 +40,71 @@ export function HostedBankConsents({ enabled = true, ...props }: Props) {
     ) : null;
   }
   return (
-    <HostedBankConsentPanel
+    <HostedBankConsentOwner
       key={`${user.id}:${user.teamId}`}
       {...props}
       userId={user.id}
       teamId={user.teamId}
       publiclyConfigured={capabilities?.hostedBanking.enabled === true}
+    />
+  );
+}
+
+type OwnerProps = Omit<Props, "enabled"> & {
+  userId: string;
+  teamId: string;
+  publiclyConfigured: boolean;
+};
+
+function HostedBankConsentOwner(props: OwnerProps) {
+  const client = useTRPCClient();
+  const instanceId = useId();
+  const owner = useQuery({
+    queryKey: [
+      "hostedBankConsentOwner",
+      props.userId,
+      props.teamId,
+      instanceId,
+    ],
+    queryFn: ({ signal }) =>
+      client.bankConsents.capability.query(undefined, { signal }),
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+  });
+  if (owner.isError) {
+    if (!props.publiclyConfigured && !props.showUnavailable) return null;
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        {hostedBankConsentError(owner.error)}
+      </p>
+    );
+  }
+  if (owner.isPending) {
+    if (!props.publiclyConfigured && !props.showUnavailable) return null;
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        Checking bank connection availability...
+      </p>
+    );
+  }
+  const storageKey = hostedBankConsentStorageKey(owner.data.commandScope);
+  if (!storageKey)
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        Sign in again to manage bank consent.
+      </p>
+    );
+  return (
+    <HostedBankConsentPanel
+      key={owner.data.commandScope}
+      {...props}
+      capability={owner.data}
+      storageKey={storageKey}
+      capabilityRefreshing={owner.isFetching}
+      refreshCapability={() => owner.refetch()}
     />
   );
 }
@@ -56,18 +117,28 @@ function HostedBankConsentPanel({
   showUnavailable = false,
   defaultCountryCode,
   onVerified,
-}: Omit<Props, "enabled"> & {
-  userId: string;
-  teamId: string;
-  publiclyConfigured: boolean;
+  capability,
+  storageKey,
+  capabilityRefreshing,
+  refreshCapability,
+}: OwnerProps & {
+  capability: Capability;
+  storageKey: string;
+  capabilityRefreshing: boolean;
+  refreshCapability: () => Promise<unknown>;
 }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
   const instanceId = useId();
-  const scopeKey = ["hostedBankConsents", userId, teamId, instanceId] as const;
+  const scopeKey = [
+    "hostedBankConsents",
+    userId,
+    teamId,
+    capability.commandScope,
+    instanceId,
+  ] as const;
   const listKey = [...scopeKey, "list"] as const;
-  const storageKey = `agsaas.bank-consent-command.v1:${userId}:${teamId}`;
   const mounted = useRef(false);
   const operation = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -96,21 +167,10 @@ function HostedBankConsentPanel({
     };
   }, [storageKey]);
 
-  const owner = useQuery({
-    queryKey: [...scopeKey, "capability"],
-    queryFn: ({ signal }) =>
-      client.bankConsents.capability.query(undefined, { signal }),
-    retry: false,
-    staleTime: 0,
-    gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: "always",
-  });
   const list = useQuery({
     queryKey: listKey,
     queryFn: ({ signal }) =>
       client.bankConsents.list.query(undefined, { signal }),
-    enabled: owner.isSuccess,
     retry: false,
     staleTime: 0,
     gcTime: 0,
@@ -124,9 +184,8 @@ function HostedBankConsentPanel({
         ? 15_000
         : false,
   });
-  const canConnect = owner.isSuccess && owner.data.enabled;
-  const canAct =
-    owner.isSuccess && list.isSuccess && !owner.isFetching && !list.isFetching;
+  const canConnect = capability.enabled;
+  const canAct = list.isSuccess && !capabilityRefreshing && !list.isFetching;
   const rows = list.data ?? [];
   const unresolved = rows.filter(
     (row) => !hostedBankConsentPresentation(row).terminal,
@@ -136,7 +195,7 @@ function HostedBankConsentPanel({
   function refresh() {
     // UI refresh failures cannot turn a committed operation into a failed one.
     void Promise.allSettled([
-      owner.refetch(),
+      refreshCapability(),
       queryClient.invalidateQueries({
         queryKey: ["hostedBankConsents", userId, teamId],
       }),
@@ -181,9 +240,28 @@ function HostedBankConsentPanel({
     }
   }
 
+  async function currentScope(requireConfigured = true) {
+    const availability = await client.bankConsents.capability.query();
+    if (!mounted.current) return false;
+    if (availability.commandScope !== capability.commandScope) {
+      setMessage(
+        "Your sign-in session changed. Refresh the current bank connection status before continuing.",
+      );
+      return false;
+    }
+    if (requireConfigured && !availability.enabled) {
+      setMessage(
+        "Bank consent is currently unavailable. Your request remains saved.",
+      );
+      return false;
+    }
+    return true;
+  }
+
   async function start() {
     if (!canConnect || !canAct || !storageReady) return;
     await run(async () => {
+      if (!(await currentScope())) return;
       // Persist before sending. A lost response/remount recovers the same command;
       // the server's existing-intent path never repeats provider creation.
       const command = pendingHostedConsentCommand(
@@ -214,14 +292,7 @@ function HostedBankConsentPanel({
     if (!canConnect || !canAct) return;
     await run(async () => {
       // Never open a cached capability URL or a URL from browser callback inputs.
-      const availability = await client.bankConsents.capability.query();
-      if (!mounted.current) return;
-      if (!availability.enabled) {
-        setMessage(
-          "Bank consent is currently unavailable. Your request remains saved.",
-        );
-        return;
-      }
+      if (!(await currentScope())) return;
       const current = await client.bankConsents.get.query({ id: row.id });
       if (!mounted.current) return;
       saveReceipt(current);
@@ -242,6 +313,7 @@ function HostedBankConsentPanel({
   async function verify(row: Consent) {
     if (!canConnect || !canAct) return;
     await run(async () => {
+      if (!(await currentScope())) return;
       const current = await client.bankConsents.complete.mutate({ id: row.id });
       if (!mounted.current) return;
       saveReceipt(current);
@@ -252,20 +324,13 @@ function HostedBankConsentPanel({
   async function cancel(row: Consent) {
     if (!canAct) return;
     await run(async () => {
+      if (!(await currentScope(false))) return;
       const current = await client.bankConsents.cancel.mutate({ id: row.id });
       saveReceipt(current);
     });
   }
 
-  if (owner.isError) {
-    if (!publiclyConfigured && !showUnavailable) return null;
-    return (
-      <p className="text-sm text-muted-foreground" role="status">
-        {hostedBankConsentError(owner.error)}
-      </p>
-    );
-  }
-  if (owner.isPending || (owner.isSuccess && list.isPending)) {
+  if (list.isPending) {
     if (!publiclyConfigured && !showUnavailable) return null;
     return (
       <p className="text-sm text-muted-foreground" role="status">
@@ -288,7 +353,7 @@ function HostedBankConsentPanel({
         </h3>
         <p className="text-sm text-muted-foreground">
           {canConnect
-            ? owner.data.environment === "sandbox"
+            ? capability.environment === "sandbox"
               ? "Sandbox is enabled. These connections use test bank data."
               : "Connect a bank in the United States or Canada. Your team owner verifies the connection after consent."
             : "New bank consent is unavailable for this installation. You can still review or cancel saved requests."}
@@ -428,7 +493,7 @@ function HostedBankConsentPanel({
         type="button"
         variant="ghost"
         size="sm"
-        disabled={busy || owner.isFetching || list.isFetching}
+        disabled={busy || capabilityRefreshing || list.isFetching}
         onClick={refresh}
       >
         Refresh status

@@ -77,8 +77,16 @@ calls provider completion; periodic refresh reads retained SQL state only.
 Creation persists a bounded internal command UUID before sending it, so a lost
 response or component remount recovers the same command without repeating
 provider creation. URLs and credentials are never persisted in browser storage.
-Queries are isolated by actor/team/component and evicted on unmount; late async
-responses cannot navigate after closing the modal or changing team.
+An owner-only capability response supplies an opaque UI namespace derived from
+the current verified actor, team and Auth session. It is never accepted as
+authorization or provider evidence. Pending commands and cached state use that
+namespace; a new sign-in remounts the stateful panel instead of repeatedly trying
+to recover an inaccessible command from the previous session. The old unknown
+provider outcome is not discarded. Queries are isolated by actor/team/session/
+component and evicted on unmount; late async responses cannot navigate after
+closing the modal or changing team. Every explicit action rechecks the current
+namespace before sending its command; the SQL actor/session guards remain the
+authority throughout provider IO.
 
 Cancellation remains pending until retained provider cleanup is confirmed.
 Unknown create/exchange results require administrator review and never show a

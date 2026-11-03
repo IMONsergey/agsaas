@@ -10,6 +10,15 @@ export type HostedConsentCommand = {
   country: "US" | "CA";
 };
 
+/** The server derives this opaque namespace from the current actor/team/session. */
+export function hostedBankConsentStorageKey(
+  commandScope: unknown,
+): string | null {
+  return typeof commandScope === "string" && /^[a-f0-9]{64}$/.test(commandScope)
+    ? `agsaas.bank-consent-command.v2:${commandScope}`
+    : null;
+}
+
 /** A browser command key is only an idempotency reference, never consent proof. */
 export function pendingHostedConsentCommand(
   value: string | null,
