@@ -46,9 +46,37 @@ mock.module("@midday/db/queries/hosted-bank-consents", () => ({
 }));
 const { createCallerFactory } = await import("../../trpc/init");
 const { bankConsentsRouter } = await import("../../trpc/routers/bank-consents");
-const context = () => {
-  const value = createTestContext();
-  value.session = { ...value.session, sessionId, aal: "aal2" };
+const context = ({
+  teamId = "test-team-id",
+  userId = "test-user-id",
+  sessionId: currentSessionId = sessionId,
+}: Partial<
+  Pick<HostedConsentActor, "teamId" | "userId" | "sessionId">
+> = {}) => {
+  const value = createTestContext({ teamId, userId });
+  // The real permission middleware resolves the selected team from primary SQL,
+  // so each fixture must model that user's current profile and membership.
+  const database = {
+    ...value.db,
+    query: {
+      ...value.db.query,
+      users: {
+        ...value.db.query.users,
+        findFirst: mock(async () => ({
+          id: userId,
+          teamId,
+          email: "test@example.com",
+          usersOnTeams: [{ id: `membership-${teamId}`, teamId }],
+        })),
+      },
+    },
+  };
+  value.db = Object.assign(database, { usePrimaryOnly: () => database });
+  value.session = {
+    ...value.session,
+    sessionId: currentSessionId,
+    aal: "aal2",
+  };
   return value;
 };
 beforeEach(() => {
@@ -113,18 +141,20 @@ describe("owner and session bound bank consent routes", () => {
     expect(first.commandScope).toMatch(/^[a-f0-9]{64}$/);
     expect((await caller.capability()).commandScope).toBe(first.commandScope);
     expect(first.commandScope).not.toContain(sessionId);
-    const nextSession = context();
-    nextSession.session = {
-      ...nextSession.session,
+    const unverifiedTeam = context();
+    unverifiedTeam.teamId = "unverified-team-id";
+    expect(
+      (
+        await createCallerFactory(bankConsentsRouter)(
+          unverifiedTeam,
+        ).capability()
+      ).commandScope,
+    ).toBe(first.commandScope);
+    const nextSession = context({
       sessionId: "ad363139-3a41-4f3b-83b2-a680613bfb3d",
-    };
-    const nextTeam = context();
-    nextTeam.teamId = "different-team-id";
-    const nextUser = context();
-    nextUser.session = {
-      ...nextUser.session,
-      user: { ...nextUser.session.user, id: "different-user-id" },
-    };
+    });
+    const nextTeam = context({ teamId: "different-team-id" });
+    const nextUser = context({ userId: "different-user-id" });
     for (const next of [nextSession, nextTeam, nextUser]) {
       expect(
         (await createCallerFactory(bankConsentsRouter)(next).capability())

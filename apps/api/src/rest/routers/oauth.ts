@@ -47,7 +47,7 @@ app.use("*", ...publicMiddleware);
 
 app.use(
   "*",
-  rateLimiter({
+  rateLimiter<Context>({
     windowMs: 15 * 60 * 1000, // 15 minutes
     limit: 20, // per IP
     keyGenerator: (c) => c.get("clientIp") || "unknown",
@@ -59,7 +59,7 @@ app.use(
 // Dynamic Client Registration (RFC 7591)
 app.use(
   "/register",
-  rateLimiter({
+  rateLimiter<Context>({
     windowMs: 60 * 60 * 1000, // 1 hour
     limit: 10, // per IP
     keyGenerator: (c) => c.get("clientIp") || "unknown",

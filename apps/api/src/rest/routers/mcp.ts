@@ -69,7 +69,7 @@ app.use(
     onError: (c) =>
       c.json({ error: "Request body exceeds the MCP limit" }, 413),
   }),
-  rateLimiter({
+  rateLimiter<Context>({
     windowMs: 10 * 60 * 1000,
     limit: mcpRateLimit,
     keyGenerator: (c) => c.get("clientIp") || "unknown",

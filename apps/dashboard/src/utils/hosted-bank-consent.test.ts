@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type HostedConsentCommand,
   bankConsentId,
   hostedBankConsentPresentation,
   hostedBankNavigationUrl,
@@ -164,7 +165,10 @@ describe("native bank consent UI evidence", () => {
       expect(hostedBankNavigationUrl(value)).toBeNull();
   });
   test("only a bounded internal command can be recovered from browser storage", () => {
-    const command = { requestId: id, country: "CA" };
+    const command = {
+      requestId: id,
+      country: "CA",
+    } satisfies HostedConsentCommand;
     expect(pendingHostedConsentCommand(JSON.stringify(command))).toEqual(
       command,
     );
