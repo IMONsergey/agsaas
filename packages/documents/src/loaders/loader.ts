@@ -37,7 +37,7 @@ export async function loadDocument({
         throw new Error("PDF exceeds 200 processing pages");
       text = (await extractText(pdf, { mergePages: true })).text ?? null;
     } finally {
-      await pdf.destroy();
+      await pdf.loadingTask.destroy();
     }
   } else if (["text/plain", "text/markdown", "text/csv"].includes(type)) {
     text = data.toString("utf8");

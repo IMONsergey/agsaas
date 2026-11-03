@@ -115,7 +115,9 @@ export function buildPrepareStep<T extends Record<string, Tool>>(options: {
     }
     if (step?.activeTools && options.allowedTools) {
       const allowed = new Set(options.allowedTools);
-      step.activeTools = step.activeTools.filter((name: string) => allowed.has(name));
+      step.activeTools = step.activeTools.filter(
+        (name) => typeof name === "string" && allowed.has(name),
+      );
     }
     return step;
   }) as PrepareStepFunction<T>;

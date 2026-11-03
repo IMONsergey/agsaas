@@ -5,7 +5,7 @@ import {
   createAssistantActionApproval,
   getInvoiceCommandPreview,
 } from "@midday/db/queries";
-import { tool } from "ai";
+import { type ToolSet, tool } from "ai";
 import { z } from "zod";
 
 export type AssistantToolDefinition = {
@@ -20,7 +20,7 @@ export function isAssistantReadTool(definition: AssistantToolDefinition) {
   );
 }
 
-export function createAssistantActionTools(ctx: McpContext) {
+export function createAssistantActionTools(ctx: McpContext): ToolSet {
   if (!ctx.sessionId || !ctx.scopes.includes("invoices.write")) return {};
   const actor: AssistantActionActor = {
     userId: ctx.userId,

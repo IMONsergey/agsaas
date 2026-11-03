@@ -20,6 +20,16 @@ if (
 const out = createWriteStream("", { fd: 3 });
 const done = once(out, "finish");
 out.end(
-  JSON.stringify({ id: request.id, ok: true, result: { title: "fixture" } }),
+  JSON.stringify({
+    id: request.id,
+    ok: true,
+    result: {
+      title: "fixture",
+      summary: null,
+      tags: null,
+      date: null,
+      language: null,
+    },
+  }),
 );
 await done;

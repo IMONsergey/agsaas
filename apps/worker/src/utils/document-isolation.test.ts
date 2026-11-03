@@ -26,7 +26,13 @@ describe("isolated document lifetime", () => {
           { kind: "classify-document", content: "ok" },
           { entrypoint, timeoutMs: 3000 },
         ),
-      ).toEqual({ title: "fixture" });
+      ).toEqual({
+        title: "fixture",
+        summary: null,
+        tags: null,
+        date: null,
+        language: null,
+      });
       expect(existsSync(marker + ".ready")).toBe(true);
       await Bun.sleep(1100);
       expect(existsSync(marker)).toBe(false);
@@ -86,7 +92,13 @@ describe("isolated document lifetime", () => {
           { kind: "classify-document", content: "ok" },
           { entrypoint, timeoutMs: 3000 },
         ),
-      ).toEqual({ title: "fixture" });
+      ).toEqual({
+        title: "fixture",
+        summary: null,
+        tags: null,
+        date: null,
+        language: null,
+      });
     } finally {
       controller.abort();
       rmSync(dir, { recursive: true, force: true });
