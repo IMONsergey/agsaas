@@ -1,5 +1,29 @@
 import { afterEach, expect, test } from "bun:test";
-import { apps } from "./index";
+import { fileURLToPath } from "node:url";
+import { plugin } from "bun";
+
+// Next supplies static-image metadata in the real dashboard build. This
+// isolated Bun test loads the actual full catalog while substituting only that
+// bundler boundary; no app configuration, getter or URL helper is mocked.
+const sourceDirectory = fileURLToPath(new URL("./", import.meta.url));
+plugin({
+  name: "catalog-static-image-fixture",
+  setup(build) {
+    build.onLoad({ filter: /\.(?:png|jpe?g|webp)$/ }, ({ path }) => {
+      if (!path.startsWith(sourceDirectory)) {
+        throw new Error("Unexpected image import outside the catalog fixture");
+      }
+      return {
+        contents:
+          "export default " +
+          JSON.stringify({ src: path, width: 1, height: 1 }) +
+          ";",
+        loader: "js",
+      };
+    });
+  },
+});
+const { apps } = await import("./index");
 
 const keys = [
   "NODE_ENV",

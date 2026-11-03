@@ -14,7 +14,7 @@ beforeEach(() => {
   requests = [];
   process.env.NEXT_PUBLIC_SUPABASE_URL = origin;
   globalThis.fetch = Object.assign(
-    async (input: RequestInfo | URL) => {
+    async (input: Parameters<typeof globalThis.fetch>[0]) => {
       const url = input instanceof Request ? input.url : String(input);
       requests.push(url);
       if (url !== own) throw new Error("Foreign logo request forbidden");

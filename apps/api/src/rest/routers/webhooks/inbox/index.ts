@@ -330,7 +330,7 @@ app.openapi(
         messageId: MessageID,
         attachments: filteredAttachments.map((attachment) => ({
           attachment,
-          index: Attachments!.indexOf(attachment),
+          index: Attachments!.findIndex((original) => original === attachment),
         })),
         senderEmail: FromFull.Email || null,
         subject: Subject,

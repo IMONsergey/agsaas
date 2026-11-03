@@ -11,6 +11,13 @@ const captureException = mock(
   (_error: unknown, _context?: unknown) => "fixture",
 );
 mock.module("@sentry/bun", () => ({ captureException }));
+// These non-tenant error-classification fixtures must never initialize or call
+// a database. Heavy-job admission has separate SQL/Redis integration coverage.
+mock.module("../utils/db", () => ({
+  getDb: () => {
+    throw new Error("Database access is forbidden in this processor fixture");
+  },
+}));
 const { BaseProcessor } = await import("./base");
 
 class FixtureProcessor extends BaseProcessor<{ value: number }> {

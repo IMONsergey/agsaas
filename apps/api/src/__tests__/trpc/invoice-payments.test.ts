@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { InvoicePaymentError } from "@midday/db/errors";
+import type { invoiceRefundRequestView } from "@midday/db/invoice-refund-request";
 import { createCallerFactory } from "../../trpc/init";
 import { createTestContext } from "../helpers/test-context";
 import { mocks } from "../setup";
@@ -28,7 +29,7 @@ mock.module("stripe", () => ({
 }));
 const operationId = "8c249b32-8fb7-4dbf-b8b7-5861ef310b77";
 const requestId = "e869de01-3d70-40ee-9ac5-ddb5cb5fb41f";
-const receipt = {
+const receipt: ReturnType<typeof invoiceRefundRequestView> = {
   requestId,
   state: "bound",
   refundStatus: "pending",
