@@ -12,11 +12,14 @@
       "env": [
         "GIT_COMMIT_SHA",
         "SENTRY_RELEASE",
-        "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"
+        "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY",
+        "DASHBOARD_URL",
+        "NEXT_PUBLIC_URL"
       ],
       "outputs": [
         ".next/**",
         "!.next/cache/**",
+        "public/vendor/pdfjs/**",
         "next-env.d.ts",
         ".expo/**",
         "dist/**",
@@ -61,7 +64,6 @@
         "OUTLOOK_CLIENT_SECRET",
         "OUTLOOK_REDIRECT_URI",
         "MIDDAY_ENCRYPTION_KEY",
-        "NEXT_PUBLIC_URL",
         "SENTRY_AUTH_TOKEN",
         "SENTRY_ORG",
         "SENTRY_PROJECT",

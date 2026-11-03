@@ -1,9 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   assertBuildInputChangesHash,
+  browserAssetManifest,
   buildContractEnvironment,
   hashedBuildInputs,
+  inspectDashboardAssetPreparation,
   inspectDashboardBuildReport,
+  verifyPreparedDashboardBrowserAssets,
 } from "./test-dashboard-build-contract";
 
 function fixture() {
@@ -19,9 +26,11 @@ function fixture() {
           "package.json": "hash",
           "next.config.ts": "hash",
           "src/app/[locale]/layout.tsx": "hash",
+          "scripts/prepare-browser-assets.mjs": "hash",
+          [browserAssetManifest]: "hash",
         },
         resolvedTaskDefinition: {
-          outputs: [".next/**", "!.next/cache/**"],
+          outputs: [".next/**", "!.next/cache/**", "public/vendor/pdfjs/**"],
           inputs: [".env"],
           dependsOn: ["^build"],
         },
@@ -50,6 +59,27 @@ describe("dashboard build contract report", () => {
     variables.passthrough.push(`${name}=do-not-print`);
     expect(() => inspectDashboardBuildReport(JSON.stringify(report))).toThrow(
       `${name} must be a hashed build input`,
+    );
+  });
+  test("rejects caching only Next output while generated PDF assets are omitted", () => {
+    const report = fixture();
+    report.tasks[0]!.resolvedTaskDefinition.outputs = [
+      ".next/**",
+      "!.next/cache/**",
+    ];
+    expect(() => inspectDashboardBuildReport(JSON.stringify(report))).toThrow(
+      "public/vendor/pdfjs/**",
+    );
+  });
+  test.each([
+    "scripts/prepare-browser-assets.mjs",
+    browserAssetManifest,
+  ])("requires the browser asset source input %s to be hashed", (name) => {
+    const report = fixture();
+    const inputs: Record<string, string> = report.tasks[0]!.inputs;
+    delete inputs[name];
+    expect(() => inspectDashboardBuildReport(JSON.stringify(report))).toThrow(
+      "default source inputs",
     );
   });
   test.each([
@@ -137,6 +167,8 @@ describe("dashboard build contract report", () => {
       TURBO_BINARY_PATH: "/untrusted",
       HTTPS_PROXY: "secret-must-not-appear",
       GIT_COMMIT_SHA: "secret-must-not-appear",
+      DASHBOARD_URL: "secret-must-not-appear",
+      NEXT_PUBLIC_URL: "secret-must-not-appear",
       NEXT_PUBLIC_API_URL: "secret-must-not-appear",
     });
     expect(env.PATH).toBe("/usr/bin");
@@ -152,5 +184,147 @@ describe("dashboard build contract report", () => {
     ]) {
       expect(env[name]).toBeUndefined();
     }
+  });
+});
+
+const temporaryRoots: string[] = [];
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+});
+
+function assetFixture() {
+  const root = mkdtempSync(join(tmpdir(), "agsaas-pdf-contract-"));
+  temporaryRoots.push(root);
+  const write = (path: string, value: string) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, value);
+  };
+  const dashboard = join(root, "apps/dashboard");
+  write(
+    join(dashboard, "package.json"),
+    JSON.stringify({ name: "asset-fixture" }),
+  );
+  const reactPdf = join(root, "node_modules/react-pdf");
+  write(
+    join(reactPdf, "package.json"),
+    JSON.stringify({ name: "react-pdf", main: "dist/index.js" }),
+  );
+  write(
+    join(reactPdf, "dist/index.js"),
+    "// Resolution fixture; never imported.\n",
+  );
+  const source = join(reactPdf, "node_modules/pdfjs-dist");
+  const version = "5.4.296";
+  write(
+    join(source, "package.json"),
+    JSON.stringify({ name: "pdfjs-dist", version }),
+  );
+  // A different hoisted package must never provide the React-PDF worker.
+  write(
+    join(root, "node_modules/pdfjs-dist/package.json"),
+    JSON.stringify({ name: "pdfjs-dist", version: "9.9.9" }),
+  );
+  const files = {
+    "pdf.worker.min.mjs": "// exact nested worker\n",
+    LICENSE: "synthetic source license\n",
+    "cmaps/test.bcmap": "synthetic CMap\n",
+    "standard_fonts/test.pfb": "synthetic standard font\n",
+    "wasm/test.wasm": "synthetic decoder\n",
+  };
+  const output = join(dashboard, "public/vendor/pdfjs", version);
+  for (const [name, bytes] of Object.entries(files)) {
+    write(
+      join(source, name === "pdf.worker.min.mjs" ? `build/${name}` : name),
+      bytes,
+    );
+    write(join(output, name), bytes);
+  }
+  const manifest = { version, files: Object.keys(files).sort() };
+  const manifestPath = join(dashboard, browserAssetManifest);
+  write(manifestPath, JSON.stringify(manifest));
+  const workerSha256 = createHash("sha256")
+    .update(files["pdf.worker.min.mjs"])
+    .digest("hex");
+  write(
+    join(output, "receipt.json"),
+    JSON.stringify({
+      kind: "agsaas-own-pdf-assets-v1",
+      version,
+      workerSha256,
+      publicBase: `/vendor/pdfjs/${version}/`,
+      license: "LICENSE",
+    }),
+  );
+  return { root, output, manifest, manifestPath, workerSha256, write };
+}
+
+describe("owned browser PDF asset preparation", () => {
+  test("requires preparation in both build and dev before Next starts", () => {
+    const scripts = {
+      build:
+        "node scripts/prepare-browser-assets.mjs && NODE_ENV=production next build --turbopack",
+      dev: "node scripts/prepare-browser-assets.mjs && TZ=UTC next dev --turbopack",
+    };
+    expect(() => inspectDashboardAssetPreparation(scripts)).not.toThrow();
+    for (const name of ["build", "dev"] as const) {
+      expect(() =>
+        inspectDashboardAssetPreparation({
+          ...scripts,
+          [name]: `next ${name}`,
+        }),
+      ).toThrow("must prepare");
+    }
+  });
+  test("verifies the nested React-PDF dependency, its reviewed list and every prepared file", () => {
+    const f = assetFixture();
+    expect(verifyPreparedDashboardBrowserAssets(f.root)).toEqual({
+      version: f.manifest.version,
+      assetFiles: 5,
+      workerSha256: f.workerSha256,
+    });
+  });
+  test.each([
+    "pdf.worker.min.mjs",
+    "LICENSE",
+    "cmaps/test.bcmap",
+    "standard_fonts/test.pfb",
+    "wasm/test.wasm",
+  ])("rejects stale or corrupt prepared %s even if the worker receipt is intact", (name) => {
+    const f = assetFixture();
+    f.write(join(f.output, name), "corrupted fixture\n");
+    expect(() => verifyPreparedDashboardBrowserAssets(f.root)).toThrow(
+      "differ from the installed source",
+    );
+  });
+  test("rejects a manifest from another dependency version", () => {
+    const f = assetFixture();
+    f.write(
+      f.manifestPath,
+      JSON.stringify({ ...f.manifest, version: "9.9.9" }),
+    );
+    expect(() => verifyPreparedDashboardBrowserAssets(f.root)).toThrow(
+      "reviewed public PDF.js manifest",
+    );
+  });
+  test("rejects additional or missing public allowlist paths", () => {
+    const f = assetFixture();
+    f.write(
+      f.manifestPath,
+      JSON.stringify({
+        ...f.manifest,
+        files: [...f.manifest.files.slice(1), "../private"],
+      }),
+    );
+    expect(() => verifyPreparedDashboardBrowserAssets(f.root)).toThrow(
+      "reviewed public PDF.js manifest",
+    );
+  });
+  test("rejects unexpected prepared files not present in the reviewed source", () => {
+    const f = assetFixture();
+    f.write(join(f.output, "unexpected.js"), "stale file\n");
+    expect(() => verifyPreparedDashboardBrowserAssets(f.root)).toThrow(
+      "unexpected",
+    );
   });
 });
