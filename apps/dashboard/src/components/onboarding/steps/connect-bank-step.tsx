@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Suspense, use } from "react";
 import { BankSearchContent } from "@/components/bank-search-content";
+import { HostedBankConsents } from "@/components/hosted-bank-consents";
 import { SelectBankAccountsContent } from "@/components/select-bank-accounts-content";
 import { useConnectParams } from "@/hooks/use-connect-params";
 import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
@@ -32,6 +33,24 @@ export function ConnectBankStep({
   const handleClose = () => {
     setParams(null);
   };
+
+  if (capabilities?.hostedBanking.enabled) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-lg lg:text-xl font-serif">Connect your bank</h1>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Continue at Plaid to give consent, then verify the connection in Bank
+          accounts. You can also continue setup and import a CSV statement from
+          Transactions.
+        </p>
+        <HostedBankConsents
+          showUnavailable
+          defaultCountryCode={countryCode}
+          onVerified={handleComplete}
+        />
+      </div>
+    );
+  }
 
   if (!capabilities?.banking.enabled) {
     return (

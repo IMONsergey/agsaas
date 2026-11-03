@@ -26,27 +26,22 @@ export default async function Page(props: Props) {
   const filter = loadInboxFilterParams(searchParams);
   const params = loadInboxParams(searchParams);
 
-  // Fetch inbox data and accounts in parallel.
-  // Wrapped in catch so a transient failure doesn't blank the page.
+  // Let either query failure reach the sidebar segment error and retry UI.
   const [data, accounts] = await Promise.all([
-    queryClient
-      .fetchInfiniteQuery(
-        trpc.inbox.get.infiniteQueryOptions(
-          {
-            order: params.inboxOrder,
-            sort: params.inboxSort,
-            ...filter,
-            tab: filter.tab ?? "all",
-          },
-          {
-            getNextPageParam: ({ meta }) => meta?.cursor,
-          },
-        ),
-      )
-      .catch(() => null),
-    queryClient
-      .fetchQuery(trpc.inboxAccounts.get.queryOptions())
-      .catch(() => null),
+    queryClient.fetchInfiniteQuery(
+      trpc.inbox.get.infiniteQueryOptions(
+        {
+          order: params.inboxOrder,
+          sort: params.inboxSort,
+          ...filter,
+          tab: filter.tab ?? "all",
+        },
+        {
+          getNextPageParam: ({ meta }) => meta?.cursor,
+        },
+      ),
+    ),
+    queryClient.fetchQuery(trpc.inboxAccounts.get.queryOptions()),
   ]);
 
   const hasInboxItems = (data?.pages?.[0]?.data?.length ?? 0) > 0;

@@ -1,4 +1,5 @@
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { schemaTask } from "@trigger.dev/sdk";
 import convert from "heic-convert";
 import sharp from "sharp";
@@ -12,10 +13,12 @@ export const convertHeic = schemaTask({
     preset: "large-1x",
   },
   schema: z.object({
+    teamId: z.string().uuid(),
     filePath: z.array(z.string()),
   }),
-  run: async ({ filePath }) => {
-    const supabase = createClient();
+  run: async ({ filePath, teamId }) => {
+    requireVaultPathForTeam(filePath, teamId);
+    const supabase = createTeamClient(teamId);
 
     console.log("Converting HEIC to JPG");
 

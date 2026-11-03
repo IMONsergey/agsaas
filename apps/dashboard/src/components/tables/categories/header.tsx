@@ -25,12 +25,13 @@ export function Header({ table }: Props) {
   const setSearchValue = meta?.setSearchValue;
 
   return (
-    <div className="flex items-center py-4 justify-between">
+    <div className="flex min-w-0 items-center gap-3 py-4 justify-between">
       <Input
-        placeholder="Search..."
+        placeholder="Search categories..."
+        aria-label="Search categories"
         value={searchValue}
         onChange={(event) => setSearchValue?.(event.target.value)}
-        className="max-w-sm"
+        className="min-w-0 max-w-sm"
       />
 
       <Button onClick={handleCreateCategory}>Create</Button>

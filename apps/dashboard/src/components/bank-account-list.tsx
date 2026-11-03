@@ -4,6 +4,8 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { useTRPC } from "@/trpc/client";
 import { AddAccountButton } from "./add-account-button";
 import { BankConnections } from "./bank-connections";
+import { BankCleanupStatus } from "./bank-cleanup-status";
+import { HostedBankConsents } from "./hosted-bank-consents";
 import { ManualAccounts } from "./manual-accounts";
 
 function EmptyState() {
@@ -41,11 +43,19 @@ export function BankAccountList() {
   const hasManualAccounts = manualAccounts && manualAccounts.length > 0;
 
   if (!hasConnections && !hasManualAccounts) {
-    return <EmptyState />;
+    return (
+      <>
+        <BankCleanupStatus />
+        <HostedBankConsents allowStart={false} />
+        <EmptyState />
+      </>
+    );
   }
 
   return (
     <>
+      <BankCleanupStatus />
+      <HostedBankConsents allowStart={false} />
       <BankConnections />
       <ManualAccounts />
       <div className="flex justify-end border-t pt-4 mt-6">

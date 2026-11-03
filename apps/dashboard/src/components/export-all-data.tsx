@@ -12,6 +12,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useExportStore } from "@/store/export";
 import { useTRPC } from "@/trpc/client";
+import { ExportHistory } from "./export-history";
 
 export function ExportAllData() {
   const trpc = useTRPC();
@@ -49,6 +50,7 @@ export function ExportAllData() {
           )}
         </Button>
       </CardFooter>
+      <ExportHistory />
     </Card>
   );
 }

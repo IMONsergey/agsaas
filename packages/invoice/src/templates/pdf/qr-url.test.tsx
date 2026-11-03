@@ -107,6 +107,7 @@ describe("PDF invoice QR destination", () => {
       expectedOrigin,
     }) => {
       if (dashboardUrl) process.env.DASHBOARD_URL = dashboardUrl;
+      else process.env.NODE_ENV = "development";
       const document = await PdfTemplate(invoice, { isReceipt });
       const expected = await QRCodeUtil.toDataURL(
         `${expectedOrigin}/i/${invoice.token}`,
@@ -115,6 +116,12 @@ describe("PDF invoice QR destination", () => {
       expect(digest(qrData(document))).toBe(digest(expected));
     });
   }
+
+  test("refuses to invent a production QR origin", async () => {
+    await expect(PdfTemplate(invoice)).rejects.toThrow(
+      "DASHBOARD_URL must be configured",
+    );
+  });
 
   test("omits the QR image when the template disables it", async () => {
     process.env.DASHBOARD_URL = "https://94.249.186.240:8543";

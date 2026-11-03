@@ -1,6 +1,6 @@
 # Bun remains the package manager and health/test tool; Next runs on native Node.
-FROM oven/bun:1.3.11 AS bun-tools
-FROM node:24.21.0-trixie-slim AS base
+FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS bun-tools
+FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS base
 COPY --from=bun-tools /usr/local/bin/bun /usr/local/bin/bun
 ENV BUN_INSTALL_BIN=/usr/local/bin
 RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx \
@@ -39,11 +39,14 @@ RUN bun install --frozen-lockfile
 # Copy full source from pruned workspace
 COPY --from=builder /app/out/full/ .
 
-# Build-time NEXT_PUBLIC_ env vars (Railway passes these as build args)
+# Build-time NEXT_PUBLIC_ env vars (must match this installation's release)
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_AUTH_COOKIE_NAME
 ARG NEXT_PUBLIC_SUPABASE_ID
 ARG NEXT_PUBLIC_URL
+ARG NEXT_PUBLIC_RELEASE_SHA
+ENV NEXT_PUBLIC_RELEASE_SHA=$NEXT_PUBLIC_RELEASE_SHA
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_OPENPANEL_CLIENT_ID
 ARG NEXT_PUBLIC_SENTRY_DSN
@@ -73,15 +76,22 @@ COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
 ENV CI=true
 ENV NODE_ENV=production
 
-# Build with GIT_COMMIT_SHA + SENTRY_RELEASE exported so next.config.ts and
-# the Sentry webpack plugin can read them via process.env.
+# Derive an omitted public revision from the same stamped source revision.
+# An explicitly supplied nonempty public revision must still pass the verifier.
+# Export all three identities for Next.js and the Sentry webpack plugin.
 RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     export GIT_COMMIT_SHA; \
+    export NEXT_PUBLIC_RELEASE_SHA="${NEXT_PUBLIC_RELEASE_SHA:-$GIT_COMMIT_SHA}"; \
     export SENTRY_RELEASE="$GIT_COMMIT_SHA"; \
+    node apps/dashboard/scripts/verify-release-source.mjs && \
     bunx turbo run build --filter=@midday/dashboard --only
 
 # Runner stage - native Node plus Bun health/test tools, no turbo
 FROM base AS runner
+ARG GIT_COMMIT_SHA=""
+LABEL org.opencontainers.image.source="https://github.com/IMONsergey/agsaas" \
+      org.opencontainers.image.revision=$GIT_COMMIT_SHA \
+      org.opencontainers.image.title="AGSaaS dashboard"
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -95,6 +105,8 @@ RUN groupadd --system --gid 1001 nodejs && \
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/.next/standalone ./
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
 COPY --from=installer --chown=nextjs:nodejs /app/apps/dashboard/public ./apps/dashboard/public
+COPY --from=installer /app/packages/invoice/src/fonts/LICENSE-Liberation.txt ./licenses/Liberation-OFL.txt
+COPY --from=installer /app/apps/dashboard/src/fonts/LICENSE-Hedvig.txt ./licenses/Hedvig-OFL.txt
 
 # Carry the git SHA into the runtime container and use the shared entrypoint to
 # set GIT_COMMIT_SHA / SENTRY_RELEASE when Railway doesn't provide them.

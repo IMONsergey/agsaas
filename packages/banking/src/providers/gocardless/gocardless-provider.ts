@@ -22,8 +22,8 @@ import {
 export class GoCardLessProvider implements Provider {
   #api: GoCardLessApi;
 
-  constructor() {
-    this.#api = new GoCardLessApi();
+  constructor(signal?: AbortSignal) {
+    this.#api = new GoCardLessApi(signal);
   }
 
   async getHealthCheck() {

@@ -5,6 +5,13 @@ import { createTestContext } from "../helpers/test-context";
 import { mocks } from "../setup";
 
 const ACCOUNT_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+const CLEANUP_ID = "e49673b0-5a46-40ad-ab64-faf040dd62cd";
+const deletedAccount = {
+  id: ACCOUNT_ID,
+  scheduleId: null,
+  cleanupPending: true,
+  cleanupId: CLEANUP_ID,
+};
 
 const createCaller = createCallerFactory(inboxAccountsRouter);
 
@@ -62,36 +69,44 @@ describe("tRPC: inboxAccounts.delete", () => {
       Promise.resolve(true),
     );
     mocks.deleteInboxAccount.mockImplementation(() =>
-      Promise.resolve({ id: ACCOUNT_ID, scheduleId: null }),
+      Promise.resolve(deletedAccount),
     );
   });
 
-  test("returns the deleted row id", async () => {
+  test("returns the local deletion and retained provider cleanup separately", async () => {
     const caller = createCaller(createTestContext());
     const result = await caller.delete({ id: ACCOUNT_ID });
 
     expect(result).toEqual({
       id: ACCOUNT_ID,
       scheduleId: null,
+      cleanupPending: true,
+      cleanupId: CLEANUP_ID,
       schedulerCleanupPending: false,
     });
     expect(mocks.deleteInboxAccount).toHaveBeenCalledWith(expect.anything(), {
       id: ACCOUNT_ID,
       teamId: "test-team-id",
+      actorUserId: "test-user-id",
     });
     expect(mocks.removeInboxSyncScheduler).toHaveBeenCalledWith(ACCOUNT_ID);
   });
 
-  test("returns null when nothing was deleted", async () => {
-    mocks.deleteInboxAccount.mockImplementation(() => Promise.resolve(null));
+  test("returns no receipt when nothing was deleted", async () => {
+    mocks.deleteInboxAccount.mockImplementation(() =>
+      Promise.resolve(undefined),
+    );
 
     const caller = createCaller(createTestContext());
-    expect(await caller.delete({ id: ACCOUNT_ID })).toBeNull();
+    expect(await caller.delete({ id: ACCOUNT_ID })).toBeUndefined();
     expect(mocks.removeInboxSyncScheduler).not.toHaveBeenCalled();
   });
   test("legacy cloud schedule IDs never choose which own scheduler to delete", async () => {
     mocks.deleteInboxAccount.mockImplementation(() =>
-      Promise.resolve({ id: ACCOUNT_ID, scheduleId: "legacy-cloud-schedule" }),
+      Promise.resolve({
+        ...deletedAccount,
+        scheduleId: "legacy-cloud-schedule",
+      }),
     );
     await createCaller(createTestContext()).delete({ id: ACCOUNT_ID });
     expect(mocks.removeInboxSyncScheduler).toHaveBeenCalledWith(ACCOUNT_ID);
@@ -102,8 +117,22 @@ describe("tRPC: inboxAccounts.delete", () => {
     );
     expect(
       await createCaller(createTestContext()).delete({ id: ACCOUNT_ID }),
-    ).toMatchObject({ id: ACCOUNT_ID, schedulerCleanupPending: true });
+    ).toMatchObject({
+      id: ACCOUNT_ID,
+      schedulerCleanupPending: true,
+      cleanupPending: true,
+      cleanupId: CLEANUP_ID,
+    });
     expect(mocks.deleteInboxAccount).toHaveBeenCalledTimes(1);
+  });
+  test("cleanup retention failure never reaches the scheduler", async () => {
+    mocks.deleteInboxAccount.mockImplementationOnce(() =>
+      Promise.reject(new Error("Cleanup retention failed")),
+    );
+    await expect(
+      createCaller(createTestContext()).delete({ id: ACCOUNT_ID }),
+    ).rejects.toThrow("Cleanup retention failed");
+    expect(mocks.removeInboxSyncScheduler).not.toHaveBeenCalled();
   });
 });
 

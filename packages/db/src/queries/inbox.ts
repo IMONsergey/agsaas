@@ -1,4 +1,5 @@
 import { createLoggerWithContext } from "@midday/logger";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Database, DatabaseOrTransaction } from "../client";
 import {
   inbox,
@@ -8,6 +9,15 @@ import {
   transactionMatchSuggestions,
   transactions,
 } from "../schema";
+import { assertTeamOwnership } from "../utils/tenant-ownership";
+import {
+  InboxItemNotFoundError,
+  InboxReceiptDeletedError,
+  isInboxReceiptDeleted,
+  lockInboxDeletionScope,
+  lockInboxDeletionScopes,
+} from "./inbox-deletion-receipts";
+import { retainFileCleanup } from "./resource-cleanups";
 
 const logger = createLoggerWithContext("inbox");
 
@@ -484,207 +494,119 @@ export type DeleteInboxParams = {
   teamId: string;
 };
 
-export async function deleteInbox(db: Database, params: DeleteInboxParams) {
+export async function deleteInbox(
+  db: DatabaseOrTransaction,
+  params: DeleteInboxParams,
+) {
   const { id, teamId } = params;
-
-  // First get the inbox item to check if it has attachments
-  const [result] = await db
-    .select({
-      id: inbox.id,
-      transactionId: inbox.transactionId,
-      attachmentId: inbox.attachmentId,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .limit(1);
-
-  if (!result) {
-    throw new Error("Inbox item not found");
-  }
-
-  // Clean up transaction attachment if it exists (same logic as unmatchTransaction)
-  if (result.attachmentId && result.transactionId) {
-    // Delete the specific transaction attachment for this inbox item
-    await db
-      .delete(transactionAttachments)
-      .where(
-        and(
-          eq(transactionAttachments.id, result.attachmentId),
-          eq(transactionAttachments.teamId, teamId),
-        ),
-      );
-
-    // Check if this transaction still has other attachments before resetting tax info
-    const remainingAttachments = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(transactionAttachments)
-      .where(
-        and(
-          eq(transactionAttachments.transactionId, result.transactionId),
-          eq(transactionAttachments.teamId, teamId),
-        ),
-      );
-
-    // Only reset tax rate and type if no more attachments exist for this transaction
-    if (remainingAttachments[0]?.count === 0) {
-      await db
-        .update(transactions)
-        .set({
-          taxRate: null,
-          taxType: null,
-        })
-        .where(eq(transactions.id, result.transactionId));
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  const primary = "usePrimaryOnly" in db ? db.usePrimaryOnly() : db;
+  return primary.transaction(async (tx) => {
+    const [scope] = await tx
+      .select({ filePath: inbox.filePath, referenceId: inbox.referenceId })
+      .from(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)));
+    if (!scope) throw new InboxItemNotFoundError();
+    await lockInboxDeletionScope(tx, { teamId, ...scope });
+    const [item] = await tx
+      .select({
+        id: inbox.id,
+        filePath: inbox.filePath,
+        referenceId: inbox.referenceId,
+        transactionId: inbox.transactionId,
+        attachmentId: inbox.attachmentId,
+      })
+      .from(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
+      .for("update");
+    if (!item) throw new InboxItemNotFoundError();
+    if (
+      item.referenceId !== scope.referenceId ||
+      JSON.stringify(item.filePath) !== JSON.stringify(scope.filePath)
+    ) {
+      throw new Error("Inbox scope changed; retry deletion");
     }
-  }
-
-  // Delete any match suggestions for this inbox item
-  await db
-    .delete(transactionMatchSuggestions)
-    .where(
-      and(
-        eq(transactionMatchSuggestions.inboxId, id),
-        eq(transactionMatchSuggestions.teamId, teamId),
-      ),
-    );
-
-  // Get filePath before deletion for storage cleanup
-  const [inboxItem] = await db
-    .select({
-      id: inbox.id,
-      filePath: inbox.filePath,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .limit(1);
-
-  // Mark inbox item as deleted and clear attachment/transaction references
-  const [deleted] = await db
-    .update(inbox)
-    .set({
-      status: "deleted",
-      transactionId: null,
-      attachmentId: null,
-    })
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .returning({
-      id: inbox.id,
-      filePath: inbox.filePath,
-    });
-
-  return {
-    ...deleted,
-    filePath: inboxItem?.filePath,
-  };
+    const cleanup = item.filePath?.length
+      ? await retainFileCleanup(tx, { teamId, path: item.filePath })
+      : null;
+    if (item.attachmentId && item.transactionId) {
+      await tx
+        .delete(transactionAttachments)
+        .where(
+          and(
+            eq(transactionAttachments.id, item.attachmentId),
+            eq(transactionAttachments.teamId, teamId),
+          ),
+        );
+      const [remaining] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(transactionAttachments)
+        .where(
+          and(
+            eq(transactionAttachments.transactionId, item.transactionId),
+            eq(transactionAttachments.teamId, teamId),
+          ),
+        );
+      if (remaining?.count === 0)
+        await tx
+          .update(transactions)
+          .set({ taxRate: null, taxType: null })
+          .where(
+            and(
+              eq(transactions.id, item.transactionId),
+              eq(transactions.teamId, teamId),
+            ),
+          );
+    }
+    await tx
+      .delete(transactionMatchSuggestions)
+      .where(
+        and(
+          eq(transactionMatchSuggestions.inboxId, id),
+          eq(transactionMatchSuggestions.teamId, teamId),
+        ),
+      );
+    // The bytes are queued for deletion; erase derived document content now as well.
+    if (item.filePath?.length)
+      await tx.execute(
+        sql`DELETE FROM public.documents WHERE team_id = ${teamId}::uuid AND path_tokens = ARRAY[${sql.join(
+          item.filePath.map((part) => sql`${part}`),
+          sql`, `,
+        )}]::text[]`,
+      );
+    await tx
+      .delete(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)));
+    return {
+      id,
+      filePath: item.filePath,
+      cleanupPending: !!cleanup && cleanup.status !== "completed",
+      cleanupId: cleanup?.id ?? null,
+    };
+  });
 }
 
-export type DeleteInboxManyParams = {
-  ids: string[];
-  teamId: string;
-};
-
+export type DeleteInboxManyParams = { ids: string[]; teamId: string };
 export async function deleteInboxMany(
   db: Database,
   params: DeleteInboxManyParams,
 ) {
-  const { ids, teamId } = params;
-
-  if (ids.length === 0) {
-    return [];
-  }
-
-  // Get all inbox items to check attachments and get filePaths
-  const inboxItems = await db
-    .select({
-      id: inbox.id,
-      transactionId: inbox.transactionId,
-      attachmentId: inbox.attachmentId,
-      filePath: inbox.filePath,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.teamId, teamId), inArray(inbox.id, ids)));
-
-  const results: Array<{ id: string; filePath: string[] | null }> = [];
-
-  // Process each inbox item
-  for (const item of inboxItems) {
-    try {
-      // Clean up transaction attachment if it exists
-      if (item.attachmentId && item.transactionId) {
-        // Delete the specific transaction attachment for this inbox item
-        await db
-          .delete(transactionAttachments)
-          .where(
-            and(
-              eq(transactionAttachments.id, item.attachmentId),
-              eq(transactionAttachments.teamId, teamId),
-            ),
-          );
-
-        // Check if this transaction still has other attachments before resetting tax info
-        const remainingAttachments = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(transactionAttachments)
-          .where(
-            and(
-              eq(transactionAttachments.transactionId, item.transactionId),
-              eq(transactionAttachments.teamId, teamId),
-            ),
-          );
-
-        // Only reset tax rate and type if no more attachments exist for this transaction
-        if (remainingAttachments[0]?.count === 0) {
-          await db
-            .update(transactions)
-            .set({
-              taxRate: null,
-              taxType: null,
-            })
-            .where(eq(transactions.id, item.transactionId));
-        }
-      }
-
-      // Delete any match suggestions for this inbox item
-      await db
-        .delete(transactionMatchSuggestions)
-        .where(
-          and(
-            eq(transactionMatchSuggestions.inboxId, item.id),
-            eq(transactionMatchSuggestions.teamId, teamId),
-          ),
-        );
-
-      // Mark inbox item as deleted and clear attachment/transaction references
-      const [deleted] = await db
-        .update(inbox)
-        .set({
-          status: "deleted",
-          transactionId: null,
-          attachmentId: null,
-        })
-        .where(and(eq(inbox.id, item.id), eq(inbox.teamId, teamId)))
-        .returning({
-          id: inbox.id,
-          filePath: inbox.filePath,
-        });
-
-      if (deleted) {
-        results.push({
-          id: deleted.id,
-          filePath: deleted.filePath,
-        });
-      }
-    } catch (error) {
-      // Log error but continue with other items
-      logger.error(`Failed to delete inbox item ${item.id}:`, {
-        error:
-          error instanceof Error
-            ? { message: error.message, stack: error.stack }
-            : { message: String(error) },
-      });
-    }
-  }
-
-  return results;
+  if (params.ids.length > 100)
+    throw new Error("Delete at most 100 inbox items at a time");
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  return db.usePrimaryOnly().transaction(async (tx) => {
+    const ids = [...new Set(params.ids)].sort();
+    if (ids.length === 0) return [];
+    const scopes = await tx
+      .select({ filePath: inbox.filePath, referenceId: inbox.referenceId })
+      .from(inbox)
+      .where(and(inArray(inbox.id, ids), eq(inbox.teamId, params.teamId)));
+    await lockInboxDeletionScopes(tx, params.teamId, scopes);
+    const results: Awaited<ReturnType<typeof deleteInbox>>[] = [];
+    for (const id of ids)
+      results.push(await deleteInbox(tx, { id, teamId: params.teamId }));
+    return results;
+  });
 }
 
 export type GetInboxSearchParams = {
@@ -1082,62 +1004,16 @@ export async function updateInbox(
 ) {
   const { id, teamId, ...data } = params;
 
-  // Special handling for status: "deleted" - need to clean up transaction attachments
   if (data.status === "deleted") {
-    // First get the inbox item to check if it has attachments
-    const [result] = await db
-      .select({
-        id: inbox.id,
-        transactionId: inbox.transactionId,
-        attachmentId: inbox.attachmentId,
-      })
-      .from(inbox)
-      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-      .limit(1);
-
-    if (result?.attachmentId && result?.transactionId) {
-      // Delete the specific transaction attachment for this inbox item
-      await db
-        .delete(transactionAttachments)
-        .where(
-          and(
-            eq(transactionAttachments.id, result.attachmentId),
-            eq(transactionAttachments.teamId, teamId),
-          ),
-        );
-
-      // Check if this transaction still has other attachments before resetting tax info
-      const remainingAttachments = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(transactionAttachments)
-        .where(
-          and(
-            eq(transactionAttachments.transactionId, result.transactionId),
-            eq(transactionAttachments.teamId, teamId),
-          ),
-        );
-
-      // Only reset tax rate and type if no more attachments exist for this transaction
-      if (remainingAttachments[0]?.count === 0) {
-        await db
-          .update(transactions)
-          .set({
-            taxRate: null,
-            taxType: null,
-          })
-          .where(eq(transactions.id, result.transactionId));
-      }
-    }
-
-    // Delete any match suggestions for this inbox item
-    await db
-      .delete(transactionMatchSuggestions)
-      .where(
-        and(
-          eq(transactionMatchSuggestions.inboxId, id),
-          eq(transactionMatchSuggestions.teamId, teamId),
-        ),
-      );
+    const erased = await deleteInbox(db, { id, teamId });
+    // This is a command result, never a soft row or a copy of the erased PII.
+    return {
+      id: erased.id,
+      deleted: true as const,
+      status: "deleted" as const,
+      cleanupPending: erased.cleanupPending,
+      cleanupId: erased.cleanupId,
+    };
   }
 
   // Update the inbox record
@@ -1781,16 +1657,122 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
     status = "new",
   } = params;
 
-  // If we have a referenceId, use ON CONFLICT to handle race conditions
-  // where multiple jobs try to create the same inbox item simultaneously
-  if (referenceId) {
-    logger.info("Creating inbox item with referenceId (using ON CONFLICT)", {
-      referenceId,
-      teamId,
-      filePath,
-    });
+  // The erasure decision and insert share the source/object locks. If a late
+  // upload arrived after deletion, retain cleanup and commit it before refusing.
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  const result = await db.usePrimaryOnly().transaction(async (tx) => {
+    await assertInboxUploadScope(tx, teamId, [{ filePath, inboxAccountId }]);
+    await lockInboxDeletionScope(tx, { teamId, referenceId, filePath });
+    if (await isInboxReceiptDeleted(tx, { teamId, referenceId, filePath })) {
+      await retainFileCleanup(tx, { teamId, path: filePath });
+      return { erased: true } as const;
+    }
 
-    const [result] = await db
+    // If we have a referenceId, use ON CONFLICT to handle race conditions
+    // where multiple jobs try to create the same inbox item simultaneously
+    if (referenceId) {
+      logger.info("Creating inbox item with referenceId (using ON CONFLICT)", {
+        referenceId,
+        teamId,
+        filePath,
+      });
+
+      const [result] = await tx
+        .insert(inbox)
+        .values({
+          displayName,
+          teamId,
+          filePath,
+          fileName,
+          contentType,
+          size,
+          referenceId,
+          website,
+          senderEmail,
+          inboxAccountId,
+          meta,
+          status,
+        })
+        .onConflictDoNothing({
+          target: inbox.referenceId,
+        })
+        .returning({
+          id: inbox.id,
+          fileName: inbox.fileName,
+          filePath: inbox.filePath,
+          displayName: inbox.displayName,
+          transactionId: inbox.transactionId,
+          amount: inbox.amount,
+          currency: inbox.currency,
+          contentType: inbox.contentType,
+          date: inbox.date,
+          status: inbox.status,
+          createdAt: inbox.createdAt,
+          website: inbox.website,
+          senderEmail: inbox.senderEmail,
+          description: inbox.description,
+          referenceId: inbox.referenceId,
+          size: inbox.size,
+          inboxAccountId: inbox.inboxAccountId,
+        });
+
+      // If insert was skipped due to conflict, fetch the existing row
+      if (!result) {
+        logger.info(
+          "Insert skipped due to referenceId conflict, fetching existing row",
+          {
+            referenceId,
+            teamId,
+          },
+        );
+
+        const [existingRow] = await tx
+          .select({
+            id: inbox.id,
+            fileName: inbox.fileName,
+            filePath: inbox.filePath,
+            displayName: inbox.displayName,
+            transactionId: inbox.transactionId,
+            amount: inbox.amount,
+            currency: inbox.currency,
+            contentType: inbox.contentType,
+            date: inbox.date,
+            status: inbox.status,
+            createdAt: inbox.createdAt,
+            website: inbox.website,
+            senderEmail: inbox.senderEmail,
+            description: inbox.description,
+            referenceId: inbox.referenceId,
+            size: inbox.size,
+            inboxAccountId: inbox.inboxAccountId,
+          })
+          .from(inbox)
+          .where(
+            and(eq(inbox.referenceId, referenceId), eq(inbox.teamId, teamId)),
+          )
+          .limit(1);
+
+        logger.info("Fetched existing inbox item", {
+          referenceId,
+          teamId,
+          existingId: existingRow?.id,
+          existingStatus: existingRow?.status,
+        });
+
+        return { erased: false, value: existingRow } as const;
+      }
+
+      logger.info("Successfully created new inbox item", {
+        referenceId,
+        teamId,
+        newId: result.id,
+      });
+
+      return { erased: false, value: result } as const;
+    }
+
+    // No referenceId - regular insert (for manual uploads)
+    const [result] = await tx
       .insert(inbox)
       .values({
         displayName,
@@ -1805,9 +1787,6 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
         inboxAccountId,
         meta,
         status,
-      })
-      .onConflictDoNothing({
-        target: inbox.referenceId,
       })
       .returning({
         id: inbox.id,
@@ -1829,99 +1808,10 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
         inboxAccountId: inbox.inboxAccountId,
       });
 
-    // If insert was skipped due to conflict, fetch the existing row
-    if (!result) {
-      logger.info(
-        "Insert skipped due to referenceId conflict, fetching existing row",
-        {
-          referenceId,
-          teamId,
-        },
-      );
-
-      const [existingRow] = await db
-        .select({
-          id: inbox.id,
-          fileName: inbox.fileName,
-          filePath: inbox.filePath,
-          displayName: inbox.displayName,
-          transactionId: inbox.transactionId,
-          amount: inbox.amount,
-          currency: inbox.currency,
-          contentType: inbox.contentType,
-          date: inbox.date,
-          status: inbox.status,
-          createdAt: inbox.createdAt,
-          website: inbox.website,
-          senderEmail: inbox.senderEmail,
-          description: inbox.description,
-          referenceId: inbox.referenceId,
-          size: inbox.size,
-          inboxAccountId: inbox.inboxAccountId,
-        })
-        .from(inbox)
-        .where(
-          and(eq(inbox.referenceId, referenceId), eq(inbox.teamId, teamId)),
-        )
-        .limit(1);
-
-      logger.info("Fetched existing inbox item", {
-        referenceId,
-        teamId,
-        existingId: existingRow?.id,
-        existingStatus: existingRow?.status,
-      });
-
-      return existingRow;
-    }
-
-    logger.info("Successfully created new inbox item", {
-      referenceId,
-      teamId,
-      newId: result.id,
-    });
-
-    return result;
-  }
-
-  // No referenceId - regular insert (for manual uploads)
-  const [result] = await db
-    .insert(inbox)
-    .values({
-      displayName,
-      teamId,
-      filePath,
-      fileName,
-      contentType,
-      size,
-      referenceId,
-      website,
-      senderEmail,
-      inboxAccountId,
-      meta,
-      status,
-    })
-    .returning({
-      id: inbox.id,
-      fileName: inbox.fileName,
-      filePath: inbox.filePath,
-      displayName: inbox.displayName,
-      transactionId: inbox.transactionId,
-      amount: inbox.amount,
-      currency: inbox.currency,
-      contentType: inbox.contentType,
-      date: inbox.date,
-      status: inbox.status,
-      createdAt: inbox.createdAt,
-      website: inbox.website,
-      senderEmail: inbox.senderEmail,
-      description: inbox.description,
-      referenceId: inbox.referenceId,
-      size: inbox.size,
-      inboxAccountId: inbox.inboxAccountId,
-    });
-
-  return result;
+    return { erased: false, value: result } as const;
+  });
+  if (result.erased) throw new InboxReceiptDeletedError();
+  return result.value;
 }
 
 export type UpdateInboxWithProcessedDataParams = {
@@ -1956,7 +1846,7 @@ export async function updateInboxWithProcessedData(
   const [result] = await db
     .update(inbox)
     .set(updateData)
-    .where(eq(inbox.id, id))
+    .where(and(eq(inbox.id, id), ne(inbox.status, "deleted")))
     .returning({
       id: inbox.id,
       fileName: inbox.fileName,
@@ -2330,4 +2220,20 @@ export async function updateInboxStatusToNoMatch(
       createdAt: item.createdAt,
     })),
   };
+}
+
+/** Caller-owned paths and linked mailbox IDs are checked before side effects. */
+export async function assertInboxUploadScope(
+  db: DatabaseOrTransaction,
+  teamId: string,
+  uploads: readonly { filePath: readonly string[]; inboxAccountId?: string }[],
+) {
+  for (const upload of uploads)
+    requireVaultPathForTeam(upload.filePath, teamId);
+  await assertTeamOwnership(
+    db,
+    teamId,
+    "inboxAccounts",
+    uploads.map((item) => item.inboxAccountId),
+  );
 }

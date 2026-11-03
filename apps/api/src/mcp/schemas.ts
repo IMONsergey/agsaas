@@ -132,6 +132,12 @@ export const mcpInvoiceListItemSchema = z.object({
 });
 
 export const mcpInvoiceDetailSchema = mcpInvoiceListItemSchema.extend({
+  operation: z
+    .object({
+      id: z.string().uuid(),
+      status: z.enum(["pending", "accepted", "completed", "failed"]),
+    })
+    .optional(),
   paymentDetails: z.any().nullable().optional(),
   customerDetails: z.any().nullable().optional(),
   fromDetails: z.any().nullable().optional(),

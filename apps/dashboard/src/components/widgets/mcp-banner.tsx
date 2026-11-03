@@ -41,18 +41,19 @@ export function McpBanner() {
             stiffness: 300,
             delay: 0.5,
           }}
-          className="fixed bottom-2.5 right-4 z-50"
+          className="relative mt-8 w-full"
         >
-          <div className="group relative border border-border bg-background shadow-lg w-[300px] overflow-hidden">
+          <div className="group relative border border-border bg-background shadow-sm w-full overflow-hidden">
             <button
               type="button"
               data-track="MCP Banner Dismissed"
+              aria-label="Dismiss AI connection suggestions"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setDismissed(true);
               }}
-              className="absolute top-2 right-2 z-10 text-muted-foreground hover:text-primary p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute top-2 right-2 z-10 text-muted-foreground hover:text-primary p-2 focus-visible:outline focus-visible:outline-2"
             >
               <Icons.Close size={14} />
             </button>
@@ -84,6 +85,7 @@ export function McpBanner() {
                     type="button"
                     data-track="MCP App Selected"
                     data-app="chatgpt"
+                    aria-label="Connect ChatGPT"
                     onClick={() => setParams({ "mcp-app": "chatgpt-mcp" })}
                     className="block size-9 overflow-hidden rounded-lg border border-border hover:border-primary transition-colors cursor-pointer"
                   >
@@ -99,6 +101,7 @@ export function McpBanner() {
                     type="button"
                     data-track="MCP App Selected"
                     data-app="claude"
+                    aria-label="Connect Claude"
                     onClick={() => setParams({ "mcp-app": "claude-mcp" })}
                     className="block size-9 overflow-hidden rounded-lg border border-border hover:border-primary transition-colors cursor-pointer"
                   >
@@ -114,6 +117,7 @@ export function McpBanner() {
                     type="button"
                     data-track="MCP App Selected"
                     data-app="manus"
+                    aria-label="Connect Manus"
                     onClick={() => setParams({ "mcp-app": "manus-mcp" })}
                     className="block size-9 overflow-hidden rounded-lg border border-border hover:border-primary transition-colors cursor-pointer"
                   >
@@ -129,6 +133,7 @@ export function McpBanner() {
                     type="button"
                     data-track="MCP App Selected"
                     data-app="perplexity"
+                    aria-label="Connect Perplexity"
                     onClick={() => setParams({ "mcp-app": "perplexity-mcp" })}
                     className="block size-9 overflow-hidden rounded-lg border border-border hover:border-primary transition-colors cursor-pointer"
                   >
@@ -140,7 +145,7 @@ export function McpBanner() {
 
             <Link href="/apps?q=mcp" className="block p-4">
               <h3 className="text-sm font-medium mb-1">
-                Use Midday where you already work
+                Connect AGSaaS to your AI tools
               </h3>
               <p className="text-xs text-muted-foreground">
                 Ask questions and take action without leaving your favorite AI

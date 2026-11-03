@@ -1,0 +1,50 @@
+# Add LAST to the owned preview stack. It adds only the own website service.
+# Keep the dashboard/API/Supabase preview overlay and all existing VPN bindings.
+services:
+  website:
+    image: "agsaas-website:${AGSAAS_RELEASE:?Set the exact integrated source SHA}"
+    build:
+      context: "${AGSAAS_SOURCE_DIR:?Set the owned clean source checkout}"
+      dockerfile: apps/website/Dockerfile
+      args:
+        GIT_COMMIT_SHA: "${AGSAAS_RELEASE:?Set the exact integrated source SHA}"
+        NEXT_PUBLIC_RELEASE_SHA: "${AGSAAS_RELEASE:?Set the exact integrated source SHA}"
+        NEXT_PUBLIC_WEBSITE_URL: "${AGSAAS_WEBSITE_URL:?Set the own HTTPS website origin}"
+        NEXT_PUBLIC_DASHBOARD_URL: "${AGSAAS_DASHBOARD_URL:?Set the own HTTPS dashboard origin}"
+        NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the own HTTPS API origin}"
+        NEXT_PUBLIC_SITE_INDEXABLE: "${AGSAAS_SITE_INDEXABLE:-false}"
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:3501:3000/tcp"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      GIT_COMMIT_SHA: "${AGSAAS_RELEASE:?Set the exact integrated source SHA}"
+      NEXT_PUBLIC_RELEASE_SHA: "${AGSAAS_RELEASE:?Set the exact integrated source SHA}"
+      NEXT_PUBLIC_WEBSITE_URL: "${AGSAAS_WEBSITE_URL:?Set the own HTTPS website origin}"
+      NEXT_PUBLIC_DASHBOARD_URL: "${AGSAAS_DASHBOARD_URL:?Set the own HTTPS dashboard origin}"
+      NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the own HTTPS API origin}"
+      NEXT_PUBLIC_SITE_INDEXABLE: "${AGSAAS_SITE_INDEXABLE:-false}"
+      API_INTERNAL_URL: http://api:8080
+      AGSAAS_SUPPORT_INGEST_KEY: "${AGSAAS_SUPPORT_INGEST_KEY:-}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - --eval
+        - "const r = await fetch('http://127.0.0.1:3000/api/health/',{signal:AbortSignal.timeout(5000)}); const b=await r.json(); if(r.status!==200||b.status!=='ok'||b.version!==process.env.GIT_COMMIT_SHA)process.exit(1);"
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

@@ -15,20 +15,32 @@ export function TopRevenueClient() {
     trpc.invoice.topRevenueClient.queryOptions(),
   );
 
+  if (data?.incomplete)
+    return (
+      <Card className="hidden sm:block">
+        <CardHeader>
+          <CardTitle>Top Paying Client</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          A complete currency conversion is unavailable. Refresh exchange rates
+          to compare clients.
+        </CardContent>
+      </Card>
+    );
   if (!data) {
     return (
       <Card className="hidden sm:block">
         <CardHeader className="pb-2">
           <CardTitle className="font-medium text-2xl font-serif">
-            No Revenue Client
+            No Recorded Receipts
           </CardTitle>
         </CardHeader>
 
         <CardContent className="pb-5">
           <div className="flex flex-col gap-2">
-            <div>Top Revenue Client</div>
+            <div>Top Paying Client</div>
             <div className="text-sm text-muted-foreground">
-              No revenue generated past 30 days
+              No net recorded receipts in the past 30 days
             </div>
           </div>
         </CardContent>
@@ -46,15 +58,15 @@ export function TopRevenueClient() {
 
       <CardContent className="pb-5">
         <div className="flex flex-col gap-2">
-          <div>Top Revenue Client</div>
+          <div>Top Paying Client</div>
           <div className="text-sm text-muted-foreground">
             <FormatAmount
-              amount={data.totalRevenue}
+              amount={data.totalRevenue ?? 0}
               currency={data.currency || team?.baseCurrency || "USD"}
               locale={user?.locale ?? undefined}
             />{" "}
             from {data.invoiceCount} invoice{data.invoiceCount !== 1 ? "s" : ""}{" "}
-            past 30 days
+            in net recorded receipts, past 30 days
           </div>
         </div>
       </CardContent>

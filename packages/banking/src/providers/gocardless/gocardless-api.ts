@@ -6,7 +6,7 @@ import { env } from "../../env";
 import type { GetInstitutionsRequest } from "../../types";
 import { ProviderError } from "../../utils/error";
 import { logger } from "../../utils/logger";
-import { withRateLimitRetry } from "../../utils/retry";
+import { withRateLimitRetry as retryWithRateLimit } from "../../utils/retry";
 import type {
   AccountBalance,
   DeleteRequistionResponse,
@@ -36,6 +36,11 @@ import {
 } from "./utils";
 
 export class GoCardLessApi {
+  #signal?: AbortSignal;
+  #withRateLimitRetry<TResult>(fn: () => TResult | Promise<TResult>) {
+    return retryWithRateLimit(fn, { signal: this.#signal });
+  }
+
   #baseUrl = "https://bankaccountdata.gocardless.com";
 
   #accessTokenCacheKey = "gocardless_access_token";
@@ -50,7 +55,8 @@ export class GoCardLessApi {
   #secretKey;
   #secretId;
 
-  constructor() {
+  constructor(signal?: AbortSignal) {
+    this.#signal = signal;
     this.#secretId = env.GOCARDLESS_SECRET_ID;
     this.#secretKey = env.GOCARDLESS_SECRET_KEY;
   }
@@ -169,7 +175,7 @@ export class GoCardLessApi {
         throw new ProviderError(parsedError);
       }
 
-      return { primaryBalance: undefined, balances: undefined };
+      throw error;
     }
   }
 
@@ -359,6 +365,7 @@ export class GoCardLessApi {
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -383,13 +390,16 @@ export class GoCardLessApi {
           : undefined,
       );
 
-      return response?.transactions?.booked;
+      if (!Array.isArray(response?.transactions?.booked))
+        throw new Error("Invalid bank transaction response");
+      return response.transactions.booked;
     } catch (error) {
       const parsedError = parseProviderError(error);
 
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -413,6 +423,7 @@ export class GoCardLessApi {
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -458,6 +469,7 @@ export class GoCardLessApi {
     this.#cachedApi = xior.create({
       baseURL: this.#baseUrl,
       timeout: 30_000,
+      signal: this.#signal,
       headers: {
         Accept: "application/json",
         ...(accessToken && { Authorization: `Bearer ${accessToken}` }),
@@ -473,7 +485,7 @@ export class GoCardLessApi {
     params?: Record<string, string>,
     config?: XiorRequestConfig,
   ): Promise<TResponse> {
-    return withRateLimitRetry(async () => {
+    return this.#withRateLimitRetry(async () => {
       const api = await this.#getApi(token);
       return api
         .get<TResponse>(path, { params, ...config })
@@ -487,7 +499,7 @@ export class GoCardLessApi {
     body?: unknown,
     config?: XiorRequestConfig,
   ): Promise<TResponse> {
-    return withRateLimitRetry(async () => {
+    return this.#withRateLimitRetry(async () => {
       const api = await this.#getApi(token);
       return api.post<TResponse>(path, body, config).then(({ data }) => data);
     });

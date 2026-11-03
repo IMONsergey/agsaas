@@ -1,24 +1,11 @@
-import { Invoicing } from "@/components/invoicing";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Online Invoicing Software for Small Business",
+  title: "Invoices",
   description:
-    "Create professional invoices in seconds. Track payments, send reminders, and get paid faster with invoicing software built for small business owners.",
+    "Create invoices from customer records, products and tracked time. Keep draft, issued and paid states visible in your workspace.",
   path: "/invoicing",
-  og: {
-    title: "Invoicing",
-    description: "Get paid faster with professional invoices",
-  },
-  keywords: [
-    "invoice software",
-    "small business invoicing",
-    "online invoicing",
-    "invoice generator",
-    "billing software",
-  ],
 });
-
 export default function Page() {
-  return <Invoicing />;
+  return <ProductPage page="invoicing" />;
 }

@@ -1,0 +1,32 @@
+{
+  "observedAt": "2026-11-03T09:01:52.090385+00:00",
+  "method": "Official Docker registry HTTPS manifests; response digest matched independently hashed bytes",
+  "images": [
+    {
+      "repository": "oven/bun",
+      "tag": "1.3.11",
+      "indexDigest": "sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7",
+      "linuxAmd64ManifestDigest": "sha256:38919894db4e117a37f74e3dca503e84f24d97f19cabc5f499a289c2a5d0db7c",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "registry": "registry-1.docker.io"
+    },
+    {
+      "repository": "library/node",
+      "tag": "24.21.0-trixie-slim",
+      "indexDigest": "sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66",
+      "linuxAmd64ManifestDigest": "sha256:c83040f7e24bacea68e58a0b96a484ba430bf24abb2973eab7ba4701144b7b63",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "registry": "registry-1.docker.io"
+    },
+    {
+      "repository": "moby/buildkit",
+      "tag": "v0.34.1",
+      "indexDigest": "sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c",
+      "linuxAmd64ManifestDigest": "sha256:b651bf250c2805569f1db385ad1ea8fb73737dfc851de305f274ca02690fa93f",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "registry": "registry-1.docker.io"
+    }
+  ],
+  "imagesPulled": false,
+  "buildsExecuted": false
+}

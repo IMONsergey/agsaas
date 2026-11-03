@@ -573,6 +573,10 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
       },
       async (params) => {
         try {
+          if (!hasReadScope)
+            throw new Error(
+              "transactions.read is required to export transaction data",
+            );
           if (params.sendEmail && !params.accountantEmail) {
             return {
               content: [
@@ -703,7 +707,7 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
               | undefined;
 
             const downloadUrl = jobResult?.fullPath
-              ? await getVaultSignedUrl(jobResult.fullPath)
+              ? await getVaultSignedUrl(ctx, jobResult.fullPath)
               : null;
 
             const response = {
@@ -773,6 +777,10 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
       },
       async (params) => {
         try {
+          if (!hasReadScope)
+            throw new Error(
+              "transactions.read is required to export transaction data",
+            );
           const app = await getAppByAppId(db, {
             appId: params.providerId,
             teamId,
@@ -850,7 +858,14 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
       },
       async ({ jobId }) => {
         try {
-          const status = await getJobStatus(jobId, { teamId });
+          if (!hasReadScope)
+            throw new Error(
+              "transactions.read is required to read export results",
+            );
+          const status = await getJobStatus(jobId, {
+            teamId,
+            allowedJobNames: ["export-transactions", "export-to-accounting"],
+          });
           const response: Record<string, unknown> = { ...status };
 
           if (
@@ -862,6 +877,7 @@ export const registerTransactionTools: RegisterTools = (server, ctx) => {
               "string"
           ) {
             const downloadUrl = await getVaultSignedUrl(
+              ctx,
               (status.result as Record<string, unknown>).fullPath as string,
             );
             if (downloadUrl) {

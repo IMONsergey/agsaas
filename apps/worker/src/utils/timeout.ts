@@ -1,9 +1,9 @@
-/**
- * Timeout wrapper utility for external API calls
- * Prevents jobs from hanging indefinitely on slow or unresponsive services
- */
-
+import {
+  getOperationSignal,
+  withOperationSignal,
+} from "@midday/utils/operation-context";
 export class TimeoutError extends Error {
+  readonly outcome = "unconfirmed" as const;
   constructor(
     message: string,
     public readonly timeoutMs: number,
@@ -12,41 +12,48 @@ export class TimeoutError extends Error {
     this.name = "TimeoutError";
   }
 }
-
 /**
- * Wrap a promise with a timeout
- * @param promise The promise to wrap
- * @param timeoutMs Timeout in milliseconds
- * @param errorMessage Optional custom error message
- * @returns The promise result or throws TimeoutError
+ * Start IO inside an AbortSignal context. A deadline never proves that a remote
+ * write did not commit: writes still require an immutable key or durable receipt.
+ * CPU work belongs in runDocumentTask, which waits for the killed child to exit.
  */
 export async function withTimeout<T>(
-  promise: Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   errorMessage?: string,
 ): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(
-        new TimeoutError(
-          errorMessage || `Operation timed out after ${timeoutMs}ms`,
-          timeoutMs,
-        ),
-      );
-    }, timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new Error("Invalid operation deadline");
+  const controller = new AbortController();
+  const parent = getOperationSignal();
+  const signal = parent
+    ? AbortSignal.any([parent, controller.signal])
+    : controller.signal;
+  const error = new TimeoutError(
+    errorMessage ??
+      `Operation exceeded ${timeoutMs}ms; outcome needs reconciliation`,
+    timeoutMs,
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason ?? error);
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => controller.abort(error), timeoutMs);
   });
-
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    signal.throwIfAborted();
+    const result = await Promise.race([
+      withOperationSignal(signal, () => operation(signal)),
+      expired,
+    ]);
+    signal.throwIfAborted();
+    return result;
   } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
-
 /**
  * Default timeout configurations for different operation types
  */

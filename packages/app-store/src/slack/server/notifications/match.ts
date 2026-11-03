@@ -1,3 +1,4 @@
+import { getAppUrl } from "@midday/utils/envs";
 import { getAppByAppId } from "@midday/db/queries";
 import { getWorkerDb } from "@midday/db/worker-client";
 import { createLoggerWithContext } from "@midday/logger";
@@ -128,7 +129,7 @@ export async function sendSlackMatchNotification({
                   text: "View transaction",
                   emoji: false,
                 },
-                url: `https://app.midday.ai/transactions?id=${encodeURIComponent(transactionId)}`,
+                url: `${getAppUrl()}/transactions?id=${encodeURIComponent(transactionId)}`,
                 action_id: "view_transaction",
               },
             ],
@@ -196,10 +197,10 @@ export async function sendSlackMatchNotification({
                 type: "button",
                 text: {
                   type: "plain_text",
-                  text: "View in Midday",
+                  text: "View in AGSaaS",
                   emoji: false,
                 },
-                url: `https://app.midday.ai/inbox?inboxId=${encodeURIComponent(inboxId)}`,
+                url: `${getAppUrl()}/inbox?inboxId=${encodeURIComponent(inboxId)}`,
                 action_id: "view_inbox",
               },
             ],

@@ -61,6 +61,7 @@ export function useJobStatus({
   const {
     data: jobStatus,
     isLoading,
+    isFetching,
     error,
     refetch,
   } = useQuery({
@@ -81,6 +82,7 @@ export function useJobStatus({
     result: jobStatus?.result,
     error: jobStatus?.error,
     isLoading,
+    isFetching,
     queryError: error,
     refetch,
   };

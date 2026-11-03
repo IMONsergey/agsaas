@@ -1,5 +1,6 @@
 import { protectedMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
+import { startIntegrationOAuth } from "@api/utils/integration-oauth";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { getInstallUrl } from "@midday/app-store/slack/server";
 import { HTTPException } from "hono/http-exception";
@@ -14,7 +15,7 @@ app.use("*", ...protectedMiddleware);
 
 app.openapi(
   createRoute({
-    method: "get",
+    method: "post",
     path: "/",
     summary: "Get Slack install URL",
     operationId: "getSlackInstallUrl",
@@ -50,10 +51,8 @@ app.openapi(
       });
     }
 
-    const url = await getInstallUrl({
-      teamId: session.teamId,
-      userId: session.user.id,
-    });
+    const { state } = await startIntegrationOAuth(c, "slack");
+    const url = await getInstallUrl({ state });
 
     return c.json({ url });
   },

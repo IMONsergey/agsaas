@@ -7,7 +7,7 @@ import { env } from "../../env";
 import type { GetTransactionsRequest } from "../../types";
 import { getProviderErrorDetails, ProviderError } from "../../utils/error";
 import { logger } from "../../utils/logger";
-import { withRateLimitRetry } from "../../utils/retry";
+import { withRateLimitRetry as retryWithRateLimit } from "../../utils/retry";
 import { transformSessionData } from "./transform";
 import type {
   AuthenticateRequest,
@@ -23,6 +23,11 @@ import type {
 import { selectPrimaryBalance } from "./utils";
 
 export class EnableBankingApi {
+  #signal?: AbortSignal;
+  #withRateLimitRetry<TResult>(fn: () => TResult | Promise<TResult>) {
+    return retryWithRateLimit(fn, { signal: this.#signal });
+  }
+
   #baseUrl = "https://api.enablebanking.com";
   #redirectUrl: string;
   #applicationId: string;
@@ -36,7 +41,8 @@ export class EnableBankingApi {
   #cachedJwtExpiresAt = 0;
   #cachedApi: XiorInstance | null = null;
 
-  constructor() {
+  constructor(signal?: AbortSignal) {
+    this.#signal = signal;
     this.#applicationId = env.ENABLEBANKING_APPLICATION_ID;
     this.#keyContent = env.ENABLE_BANKING_KEY_CONTENT;
     this.#redirectUrl = env.ENABLEBANKING_REDIRECT_URL;
@@ -123,6 +129,7 @@ export class EnableBankingApi {
     this.#cachedApi = xior.create({
       baseURL: this.#baseUrl,
       timeout: 30_000,
+      signal: this.#signal,
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${jwt}`,
@@ -137,7 +144,7 @@ export class EnableBankingApi {
     params?: Record<string, string>,
     config?: XiorRequestConfig,
   ): Promise<TResponse> {
-    return withRateLimitRetry(async () => {
+    return this.#withRateLimitRetry(async () => {
       const api = await this.#getApi();
 
       return api
@@ -163,7 +170,7 @@ export class EnableBankingApi {
     body?: unknown,
     config?: XiorRequestConfig,
   ): Promise<TResponse> {
-    return withRateLimitRetry(async () => {
+    return this.#withRateLimitRetry(async () => {
       const api = await this.#getApi();
 
       return api.post<TResponse>(path, body, config).then(({ data }) => data);
@@ -471,6 +478,7 @@ export class EnableBankingApi {
         } while (recentContinuationKey);
       }
     } catch (error) {
+      this.#signal?.throwIfAborted();
       // Fallback: If longest strategy fails, use default with 1-year range
       logger.warn(
         "EnableBanking longest strategy failed, using default fallback",

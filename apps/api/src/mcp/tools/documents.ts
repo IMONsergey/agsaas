@@ -1,4 +1,5 @@
 import { getDocumentsSchema } from "@api/schemas/documents";
+import { filterReadableVaultDocuments } from "@api/utils/vault-file-access";
 import {
   createDocumentTag,
   createDocumentTagAssignment,
@@ -77,7 +78,14 @@ export const registerDocumentTools: RegisterTools = (server, ctx) => {
             hasNextPage: result.meta.hasNextPage,
             hasPreviousPage: result.meta.hasPreviousPage,
           },
-          data: sanitizeArray(mcpDocumentSchema, result.data ?? []),
+          data: sanitizeArray(
+            mcpDocumentSchema,
+            await filterReadableVaultDocuments(
+              db,
+              { teamId, interactive: !!ctx.sessionId, scopes: ctx.scopes },
+              result.data ?? [],
+            ),
+          ),
         };
 
         const { text, structuredContent } = truncateListResponse(response);
@@ -115,13 +123,12 @@ export const registerDocumentTools: RegisterTools = (server, ctx) => {
           };
         }
 
-        const hasFile = result.pathTokens && result.name;
-        const storagePath = hasFile
-          ? [teamId, ...result.pathTokens!, result.name!].join("/")
+        const storagePath = result.pathTokens?.length
+          ? result.pathTokens.join("/")
           : null;
 
         const fileUrl = storagePath
-          ? await getVaultSignedUrl(storagePath)
+          ? await getVaultSignedUrl(ctx, storagePath)
           : null;
 
         const clean = sanitize(mcpDocumentSchema, { ...result, fileUrl });
@@ -136,9 +143,10 @@ export const registerDocumentTools: RegisterTools = (server, ctx) => {
         if (includeFile && storagePath && fileUrl) {
           try {
             const resource = await downloadVaultFile(
+              ctx,
               storagePath,
               fileUrl,
-              getMimeType(result.name!),
+              getMimeType(result.pathTokens!.at(-1) ?? "file"),
             );
             if (resource) content.push(resource);
           } catch {

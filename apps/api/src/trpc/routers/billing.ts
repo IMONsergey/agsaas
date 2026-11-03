@@ -6,13 +6,20 @@ import {
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
 import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
 import { api } from "@api/utils/polar";
+import { reconcileBillingSubscription } from "@api/services/billing-reconciliation";
 import {
   getTeamById,
+  getBillingSubscriptionBinding,
+  applyBillingSubscriptionEvent,
   getTeamMemberRole,
   updateTeamById,
 } from "@midday/db/queries";
 import { createLoggerWithContext } from "@midday/logger";
-import { getPlanIntervalByProductId, getPlanProductId } from "@midday/plans";
+import {
+  getPlanIntervalByProductId,
+  getPlanProductId,
+  getPlans,
+} from "@midday/plans";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
@@ -52,6 +59,20 @@ async function resolvePolarCustomer(
 }
 
 export const billingRouter = createTRPCRouter({
+  reconcile: billingOwnerProcedure.mutation(async ({ ctx: { db, teamId } }) => {
+    const products = Object.values(getPlans()).map((product) => ({
+      id: product.id,
+      plan: product.key,
+    }));
+    return reconcileBillingSubscription({
+      teamId: teamId!,
+      products,
+      readBinding: () => getBillingSubscriptionBinding(db, teamId!),
+      readProvider: (id) => api.subscriptions.get({ id }),
+      apply: (event, expectedBinding) =>
+        applyBillingSubscriptionEvent(db, { event, products, expectedBinding }),
+    });
+  }),
   createCheckout: billingOwnerProcedure
     .input(createCheckoutSchema)
     .mutation(async ({ input, ctx: { db, teamId, session } }) => {

@@ -14,10 +14,10 @@ import { differenceInDays, formatDistanceToNow } from "date-fns";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useReconnect } from "@/hooks/use-reconnect";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 import { useTRPC } from "@/trpc/client";
 import { connectionStatus } from "@/utils/connection-status";
 import { BankAccount } from "./bank-account";
-import { BankCleanupStatus } from "./bank-cleanup-status";
 import { BankLogo } from "./bank-logo";
 import { DeleteConnection } from "./delete-connection";
 import { AddBankAccountsModal } from "./modals/add-bank-accounts-modal";
@@ -129,6 +129,8 @@ function ConnectionState({
 }
 
 export function BankConnection({ connection }: { connection: BankConnection }) {
+  const { data: capabilities } = useInstanceCapabilities();
+  const canUseLegacyConsent = capabilities?.banking.enabled === true;
   const { show } = connectionStatus(connection);
   const [isAddAccountsOpen, setAddAccountsOpen] = useState(false);
 
@@ -176,31 +178,35 @@ export function BankConnection({ connection }: { connection: BankConnection }) {
         <div className="ml-auto flex space-x-2 items-center">
           {connection.status === "disconnected" || show ? (
             <>
-              <ReconnectProvider
-                variant="button"
-                id={connection.id}
-                provider={connection.provider}
-                enrollmentId={connection.enrollmentId}
-                institutionId={connection.institutionId}
-                accessToken={connection.accessToken}
-                onComplete={handleComplete}
-                referenceId={connection.referenceId}
-              />
+              {canUseLegacyConsent && (
+                <ReconnectProvider
+                  variant="button"
+                  id={connection.id}
+                  provider={connection.provider}
+                  enrollmentId={connection.enrollmentId}
+                  institutionId={connection.institutionId}
+                  accessToken={connection.accessToken}
+                  onComplete={handleComplete}
+                  referenceId={connection.referenceId}
+                />
+              )}
               <DeleteConnection connection={connection} />
             </>
           ) : (
             <>
-              <ReconnectProvider
-                id={connection.id}
-                provider={connection.provider}
-                enrollmentId={connection.enrollmentId}
-                institutionId={connection.institutionId}
-                accessToken={connection.accessToken}
-                onComplete={handleComplete}
-                referenceId={connection.referenceId}
-              />
+              {canUseLegacyConsent && (
+                <ReconnectProvider
+                  id={connection.id}
+                  provider={connection.provider}
+                  enrollmentId={connection.enrollmentId}
+                  institutionId={connection.institutionId}
+                  accessToken={connection.accessToken}
+                  onComplete={handleComplete}
+                  referenceId={connection.referenceId}
+                />
+              )}
 
-              {isConnected && (
+              {isConnected && canUseLegacyConsent && (
                 <TooltipProvider delayDuration={70}>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -233,6 +239,16 @@ export function BankConnection({ connection }: { connection: BankConnection }) {
         </div>
       </div>
 
+      {!canUseLegacyConsent &&
+        (connection.status === "disconnected" || show) && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {connection.provider === "plaid" &&
+            capabilities?.hostedBanking.enabled
+              ? "Reconnecting this bank requires a new consent. Remove the connection and wait for provider cleanup to finish before starting again."
+              : "Reconnection is unavailable for this provider on this installation. You can continue with manual transactions."}
+          </p>
+        )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         {connection.bankAccounts.map((account) => {
           return (
@@ -245,24 +261,26 @@ export function BankConnection({ connection }: { connection: BankConnection }) {
         })}
       </div>
 
-      <AddBankAccountsModal
-        connectionId={connection.id}
-        provider={
-          connection.provider as
-            | "gocardless"
-            | "plaid"
-            | "teller"
-            | "enablebanking"
-        }
-        accessToken={connection.accessToken}
-        referenceId={connection.referenceId}
-        enrollmentId={connection.enrollmentId}
-        institutionId={connection.institutionId}
-        existingAccounts={connection.bankAccounts}
-        isOpen={isAddAccountsOpen}
-        onOpenChange={setAddAccountsOpen}
-        onAccountsAdded={triggerManualSync}
-      />
+      {canUseLegacyConsent && (
+        <AddBankAccountsModal
+          connectionId={connection.id}
+          provider={
+            connection.provider as
+              | "gocardless"
+              | "plaid"
+              | "teller"
+              | "enablebanking"
+          }
+          accessToken={connection.accessToken}
+          referenceId={connection.referenceId}
+          enrollmentId={connection.enrollmentId}
+          institutionId={connection.institutionId}
+          existingAccounts={connection.bankAccounts}
+          isOpen={isAddAccountsOpen}
+          onOpenChange={setAddAccountsOpen}
+          onAccountsAdded={triggerManualSync}
+        />
+      )}
     </div>
   );
 }
@@ -273,7 +291,6 @@ export function BankConnections() {
 
   return (
     <div className="divide-y">
-      <BankCleanupStatus />
       {data?.map((connection) => {
         return <BankConnection key={connection.id} connection={connection} />;
       })}

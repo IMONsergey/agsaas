@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { hostedPlaidClientBinding } from "@midday/db/bank-consent";
 import { Socket } from "node:net";
 import type {
   BankCleanupOutcome,
@@ -35,6 +36,28 @@ let row: {
   startedAt: string | null;
 };
 let canOpen = true;
+let consentBinding: {
+  environment: "sandbox" | "production";
+  clientFingerprint: string;
+} | null = null;
+let bindingFailure = false;
+const previousPlaidEnvironment = process.env.PLAID_ENVIRONMENT;
+const previousPlaidClient = process.env.PLAID_CLIENT_ID;
+afterAll(() => {
+  if (previousPlaidEnvironment === undefined)
+    delete process.env.PLAID_ENVIRONMENT;
+  else process.env.PLAID_ENVIRONMENT = previousPlaidEnvironment;
+  if (previousPlaidClient === undefined) delete process.env.PLAID_CLIENT_ID;
+  else process.env.PLAID_CLIENT_ID = previousPlaidClient;
+});
+mock.module("@midday/db/queries/hosted-bank-consents", () => ({
+  getHostedBankCleanupBinding: async () => {
+    if (bindingFailure)
+      throw new Error("fixture SQL or encrypted binding unavailable");
+    return consentBinding;
+  },
+  reconcileHostedBankConsents: async () => 0,
+}));
 let receiptFailure = false;
 const begin = mock(async (_db: unknown, _id: string, ready: boolean) => {
   if (!ready) return { state: "pending", row };
@@ -120,6 +143,10 @@ beforeEach(() => {
     startedAt: null,
   };
   canOpen = true;
+  consentBinding = null;
+  bindingFailure = false;
+  process.env.PLAID_ENVIRONMENT = "sandbox";
+  process.env.PLAID_CLIENT_ID = "original-client";
   receiptFailure = false;
   logs.length = 0;
   telemetry.length = 0;
@@ -136,6 +163,37 @@ beforeEach(() => {
 });
 
 describe("bank cleanup worker boundary", () => {
+  test("native grants defer before HTTP when provider environment or client changes", async () => {
+    consentBinding = hostedPlaidClientBinding(process.env)!;
+    process.env.PLAID_ENVIRONMENT = "production";
+    expect(
+      await cleanupBankConnection(db, row.id, { configured, revoke }),
+    ).toEqual({ status: "pending" });
+    expect(revoke).not.toHaveBeenCalled();
+    process.env.PLAID_ENVIRONMENT = "sandbox";
+    process.env.PLAID_CLIENT_ID = "different-client";
+    expect(
+      await cleanupBankConnection(db, row.id, { configured, revoke }),
+    ).toEqual({ status: "pending" });
+    expect(revoke).not.toHaveBeenCalled();
+    expect(row.encryptedPayload).toBe("frozen-ciphertext");
+    expect(row.attempts).toBe(0);
+    process.env.PLAID_CLIENT_ID = "original-client";
+    expect(
+      await cleanupBankConnection(db, row.id, { configured, revoke }),
+    ).toEqual({ status: "completed" });
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+  test("an unreadable native binding cannot become an assumed legacy grant", async () => {
+    bindingFailure = true;
+    expect(
+      await cleanupBankConnection(db, row.id, { configured, revoke }),
+    ).toEqual({ status: "pending" });
+    expect(begin).toHaveBeenCalledWith(db, row.id, false);
+    expect(revoke).not.toHaveBeenCalled();
+    expect(row.encryptedPayload).toBe("frozen-ciphertext");
+  });
+
   test("missing configuration defers frozen credentials before claim or HTTP", async () => {
     configured.mockImplementation(() => false);
     expect(

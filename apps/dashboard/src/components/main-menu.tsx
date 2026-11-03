@@ -129,6 +129,9 @@ const ChildItem = ({
   return (
     <Link
       href={child.path}
+      tabIndex={showChild ? 0 : -1}
+      aria-hidden={!showChild}
+      aria-current={isActive ? "page" : undefined}
       prefetch
       onClick={() => onSelect?.()}
       className="block group/child"
@@ -176,96 +179,61 @@ const Item = ({
 }: ItemProps) => {
   const Icon = icons[item.path as keyof typeof icons];
   const pathname = usePathname();
-  const hasChildren = item.children && item.children.length > 0;
-
-  // Children should be visible when: expanded sidebar AND this item is expanded
+  const hasChildren = !!item.children?.length;
   const shouldShowChildren = isExpanded && isItemExpanded;
-
-  const handleChevronClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onToggle(item.path);
-  };
-
   return (
     <div className="group">
-      <Link
-        href={item.path}
-        prefetch
-        onClick={() => onSelect?.()}
-        className="group"
+      <div
+        className={cn(
+          "relative mx-[15px] flex min-h-10 items-center border border-transparent",
+          isActive && "bg-accent border-border",
+        )}
       >
-        <div className="relative">
-          {/* Background that expands */}
-          <div
-            className={cn(
-              "border border-transparent h-[40px] transition-all duration-200 ease-&lsqb;cubic-bezier(0.4,0,0.2,1)&rsqb; ml-[15px] mr-[15px]",
-              isActive &&
-                "bg-[#f7f7f7] dark:bg-[#131313] border-[#e6e6e6] dark:border-[#1d1d1d]",
-              isExpanded ? "w-[calc(100%-30px)]" : "w-[40px]",
-            )}
-          />
-
-          {/* Icon - always in same position from sidebar edge */}
-          <div className="absolute top-0 left-[15px] w-[40px] h-[40px] flex items-center justify-center dark:text-[#666666] text-black group-hover:!text-primary pointer-events-none">
-            <div className={cn(isActive && "dark:!text-white")}>
-              <Icon />
-            </div>
-          </div>
-
-          {isExpanded && (
-            <div className="absolute top-0 left-[55px] right-[4px] h-[40px] flex items-center pointer-events-none">
-              <span
-                className={cn(
-                  "text-sm font-medium transition-opacity duration-200 ease-in-out text-[#666] group-hover:text-primary",
-                  "whitespace-nowrap overflow-hidden",
-                  hasChildren ? "pr-2" : "",
-                  isActive && "text-primary",
-                )}
-              >
-                {item.name}
-              </span>
-              {hasChildren && (
-                <button
-                  type="button"
-                  onClick={handleChevronClick}
-                  className={cn(
-                    "w-8 h-8 flex items-center justify-center transition-all duration-200 ml-auto mr-3",
-                    "text-[#888] hover:text-primary pointer-events-auto",
-                    isActive && "text-primary/60",
-                    shouldShowChildren && "rotate-180",
-                  )}
-                >
-                  <Icons.ChevronDown size={16} />
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </Link>
-
-      {/* Children */}
-      {hasChildren && (
-        <div
-          className={cn(
-            "transition-all duration-300 ease-out overflow-hidden",
-            shouldShowChildren ? "max-h-96 mt-1" : "max-h-0",
-          )}
+        <Link
+          href={item.path}
+          prefetch
+          aria-label={item.name}
+          aria-current={isActive ? "page" : undefined}
+          onClick={() => onSelect?.()}
+          className="flex min-w-0 flex-1 items-center min-h-10 focus-visible:outline focus-visible:outline-2"
         >
-          {item.children!.map((child, index) => {
-            const isChildActive = pathname === child.path;
-            return (
-              <ChildItem
-                key={child.path}
-                child={child}
-                isActive={isChildActive}
-                isExpanded={isExpanded}
-                shouldShow={shouldShowChildren}
-                onSelect={onSelect}
-                index={index}
-              />
-            );
-          })}
+          <span className="flex w-10 shrink-0 justify-center">
+            <Icon />
+          </span>
+          <span
+            className={isExpanded ? "truncate text-sm font-medium" : "sr-only"}
+          >
+            {item.name}
+          </span>
+        </Link>
+        {hasChildren && isExpanded && (
+          <button
+            type="button"
+            aria-label={`${shouldShowChildren ? "Collapse" : "Expand"} ${item.name}`}
+            aria-expanded={shouldShowChildren}
+            onClick={() => onToggle(item.path)}
+            className="flex size-9 shrink-0 items-center justify-center hover:bg-secondary focus-visible:outline focus-visible:outline-2"
+          >
+            <Icons.ChevronDown
+              size={16}
+              className={shouldShowChildren ? "rotate-180" : undefined}
+            />
+          </button>
+        )}
+      </div>
+      {shouldShowChildren && (
+        <div className="mt-1">
+          {item.children!.map((child, index) => (
+            <ChildItem
+              key={child.path}
+              child={child}
+              isActive={pathname === child.path.split("?")[0]}
+              isExpanded={isExpanded}
+              shouldShow={shouldShowChildren}
+              onSelect={onSelect}
+              index={index}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -289,7 +257,7 @@ export function MainMenu({ onSelect, isExpanded = false }: Props) {
 
   return (
     <div className="mt-4 w-full">
-      <nav className="w-full">
+      <nav className="w-full" aria-label="Workspace navigation">
         <div className="flex flex-col gap-2">
           {items.map((item) => {
             const isActive =

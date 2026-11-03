@@ -5,8 +5,7 @@ import type {
   GetConnectionStatusResponse,
 } from "../../types";
 import { ProviderError } from "../../utils/error";
-import { logger } from "../../utils/logger";
-import { withRateLimitRetry } from "../../utils/retry";
+import { withRateLimitRetry as retryWithRateLimit } from "../../utils/retry";
 import type {
   AuthenticatedRequest,
   DisconnectAccountRequest,
@@ -22,11 +21,22 @@ import type {
 import { isError } from "./utils";
 
 export class TellerApi {
+  #signal?: AbortSignal;
+  #withRateLimitRetry<TResult>(fn: () => TResult | Promise<TResult>) {
+    return retryWithRateLimit(fn, { signal: this.#signal });
+  }
+
+  constructor(signal?: AbortSignal) {
+    this.#signal = signal;
+  }
+
   #baseUrl = "https://api.teller.io";
 
   async getHealthCheck() {
     try {
-      await fetch(`${this.#baseUrl}/health`);
+      await fetch(`${this.#baseUrl}/health`, {
+        signal: this.#signal ?? AbortSignal.timeout(30_000),
+      });
       return true;
     } catch (_error) {
       return false;
@@ -77,9 +87,8 @@ export class TellerApi {
    * Uses running_balance from posted transactions which is included for free
    * with transaction data. Works for both depository and credit account types.
    *
-   * Note: If no transactions have running_balance, returns 0. This is rare and
-   * only happens with new accounts or some uncommon institutions. If customers
-   * report issues, we can add a fallback to the paid /balances endpoint.
+   * Missing running_balance is returned as unknown currency (XXX). The native
+   * importer preserves the last authoritative balance instead of writing zero.
    */
   async getAccountBalance({
     accountId,
@@ -96,7 +105,7 @@ export class TellerApi {
     )?.running_balance;
 
     return {
-      currency: "USD",
+      currency: amount == null ? "XXX" : "USD",
       amount: +(amount ?? 0),
       available_balance: null,
       credit_limit: null,
@@ -160,11 +169,8 @@ export class TellerApi {
         return { status: "disconnected" };
       }
 
-      logger.error("Teller connection status check failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      return { status: "connected" };
+      // Unknown/aborted responses do not prove a healthy consent.
+      throw error;
     }
   }
 
@@ -201,8 +207,14 @@ export class TellerApi {
       );
     }
 
+    this.#signal?.throwIfAborted();
     return fetch(url, {
       ...init,
+      signal: AbortSignal.any([
+        AbortSignal.timeout(30_000),
+        ...(this.#signal ? [this.#signal] : []),
+        ...(init?.signal ? [init.signal] : []),
+      ]),
       tls: {
         cert: Buffer.from(cert, "base64").toString(),
         key: Buffer.from(key, "base64").toString(),
@@ -215,8 +227,8 @@ export class TellerApi {
     token?: string,
     params?: Record<string, string | number | undefined>,
   ): Promise<TResponse> {
-    return withRateLimitRetry(async () => {
-      const url = new URL(`${this.#baseUrl}/${path}`);
+    return this.#withRateLimitRetry(async () => {
+      const url = new URL(path, this.#baseUrl);
 
       if (params) {
         for (const [key, value] of Object.entries(params)) {

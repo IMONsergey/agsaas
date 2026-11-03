@@ -9,34 +9,28 @@ type Props = {
 };
 
 export function BankLogo({ src, alt, size = 34 }: Props) {
-  const [hasError, setHasError] = useState(false);
-  const showingFallback = !src || hasError;
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const showingFallback = !src || failedSource === src;
 
   return (
     <Avatar
       style={{ width: size, height: size }}
       className={cn(!showingFallback && "border border-border")}
     >
-      {src && !hasError ? (
+      {src && !showingFallback ? (
         <AvatarImage
           src={src}
           alt={alt}
           className="object-contain bg-white"
-          onError={() => setHasError(true)}
+          onError={() => setFailedSource(src)}
         />
-      ) : (
-        <AvatarImage
-          src="https://cdn-engine.midday.ai/default.jpg"
-          alt={alt}
-          className="object-contain"
-        />
-      )}
-      <AvatarFallback>
-        <AvatarImage
-          src="https://cdn-engine.midday.ai/default.jpg"
-          alt={alt}
-          className="object-contain"
-        />
+      ) : null}
+      <AvatarFallback
+        className="bg-muted text-xs font-medium"
+        role="img"
+        aria-label={alt}
+      >
+        {alt.trim().slice(0, 2).toUpperCase() || "B"}
       </AvatarFallback>
     </Avatar>
   );

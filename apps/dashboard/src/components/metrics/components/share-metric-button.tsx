@@ -17,6 +17,7 @@ interface ShareMetricButtonProps {
   from: string;
   to: string;
   currency?: string;
+  revenueType?: "net" | "gross";
 }
 
 export function ShareMetricButton({
@@ -24,6 +25,7 @@ export function ShareMetricButton({
   from,
   to,
   currency,
+  revenueType = "net",
 }: ShareMetricButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -54,6 +56,7 @@ export function ShareMetricButton({
         from={from}
         to={to}
         currency={currency}
+        revenueType={revenueType}
       />
     </>
   );

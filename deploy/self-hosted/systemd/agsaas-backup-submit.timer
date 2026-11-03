@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily owned AGSaaS maintenance snapshot submission
+
+[Timer]
+OnCalendar=*-*-* 02:45:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=agsaas-backup-submit.service
+
+[Install]
+WantedBy=timers.target

@@ -972,12 +972,32 @@ export const createTransactionsResponseSchema = z.array(
 );
 
 export const exportTransactionsSchema = z.object({
-  transactionIds: z.array(z.string().uuid()).min(1),
-  dateFormat: z.string().optional(),
-  locale: z.string().optional().default("en"),
+  transactionIds: z.array(z.string().uuid()).min(1).max(10000),
+  dateFormat: z
+    .string()
+    .refine(
+      (value) =>
+        ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd.MM.yyyy"].includes(
+          value,
+        ),
+      "Unsupported date format",
+    )
+    .optional(),
+  locale: z
+    .string()
+    .min(2)
+    .max(35)
+    .regex(/^[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8}){0,3}$/)
+    .optional()
+    .default("en"),
   exportSettings: z
     .object({
-      csvDelimiter: z.string(),
+      csvDelimiter: z
+        .string()
+        .refine(
+          (value) => [",", ";", "\t", "|"].includes(value),
+          "Unsupported CSV delimiter",
+        ),
       includeCSV: z.boolean(),
       includeXLSX: z.boolean(),
       sendEmail: z.boolean(),
@@ -1032,8 +1052,11 @@ export const importTransactionsSchema = z.object({
 });
 
 export const generateCsvMappingSchema = z.object({
-  fieldColumns: z.array(z.string()).min(1),
-  firstRows: z.array(z.record(z.string(), z.string())).min(1),
+  fieldColumns: z.array(z.string().max(256)).min(1).max(100),
+  firstRows: z
+    .array(z.record(z.string().max(256), z.string().max(8192)))
+    .min(1)
+    .max(20),
 });
 
 export const generateCsvMappingResponseSchema = z.object({

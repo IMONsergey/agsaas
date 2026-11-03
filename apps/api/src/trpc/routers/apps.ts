@@ -4,8 +4,13 @@ import {
   removeWhatsAppConnectionSchema,
   updateAppSettingsSchema,
 } from "@api/schemas/apps";
-import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import {
+  createTRPCRouter,
+  ownerProcedure,
+  protectedProcedure,
+} from "@api/trpc/init";
 import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
+import { toPublicApp } from "@midday/db/public-app";
 import {
   createPlatformLinkToken,
   disconnectApp,
@@ -19,30 +24,41 @@ import { z } from "zod";
 export const appsRouter = createTRPCRouter({
   capabilities: protectedProcedure.query(() => getInstanceCapabilities()),
   get: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
-    return getApps(db, teamId!);
+    return (await getApps(db, teamId!)).map((app) => toPublicApp(app));
   }),
 
-  disconnect: protectedProcedure
+  disconnect: ownerProcedure
     .input(disconnectAppSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
-      const { appId } = input;
-
-      return disconnectApp(db, { appId, teamId: teamId! });
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
+      const result = await disconnectApp(db, {
+        appId: input.appId,
+        teamId: teamId!,
+        actorUserId: session.user.id,
+      });
+      return {
+        appId: input.appId,
+        disconnected: !!result,
+        cleanupPending: result?.cleanupPending ?? false,
+        cleanupId: result?.cleanupId ?? null,
+      };
     }),
 
-  update: protectedProcedure
+  update: ownerProcedure
     .input(updateAppSettingsSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const { appId, option } = input;
 
-      return updateAppSettings(db, {
-        appId,
-        teamId: teamId!,
-        option,
-      });
+      return toPublicApp(
+        await updateAppSettings(db, {
+          actorUserId: session.user.id,
+          appId,
+          teamId: teamId!,
+          option,
+        }),
+      );
     }),
 
-  updateSettings: protectedProcedure
+  updateSettings: ownerProcedure
     .input(
       z.object({
         appId: z.string(),
@@ -58,25 +74,30 @@ export const appsRouter = createTRPCRouter({
         ),
       }),
     )
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const { appId, settings } = input;
 
-      return updateAppSettingsBulk(db, {
-        appId,
-        teamId: teamId!,
-        settings,
-      });
+      return toPublicApp(
+        await updateAppSettingsBulk(db, {
+          actorUserId: session.user.id,
+          appId,
+          teamId: teamId!,
+          settings,
+        }),
+      );
     }),
 
-  removeWhatsAppConnection: protectedProcedure
+  removeWhatsAppConnection: ownerProcedure
     .input(removeWhatsAppConnectionSchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const { phoneNumber } = input;
 
-      return removeWhatsAppConnection(db, {
+      await removeWhatsAppConnection(db, {
+        actorUserId: session.user.id,
         teamId: teamId!,
         phoneNumber,
       });
+      return { success: true };
     }),
 
   createPlatformLinkToken: protectedProcedure

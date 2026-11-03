@@ -7,3 +7,4 @@ export * from "./templates/pdf";
 export * from "./utils/content";
 export * from "./utils/extract-text";
 export * from "./utils/logo";
+export * from "./utils/owned-fonts";

@@ -20,6 +20,10 @@ import {
 } from "../queries/notification-dispatches";
 import { notificationDispatches, teams, users, usersOnTeam } from "../schema";
 import {
+  removeTestProfiles,
+  seedTestProfiles,
+} from "./helpers/profile-fixture";
+import {
   closeDatabase,
   getTestDatabase,
   isTestDatabaseAvailable,
@@ -46,35 +50,39 @@ describe.skipIf(!isTestDatabaseAvailable())(
       otherTeamId = randomUUID();
       ownerId = randomUUID();
       otherOwnerId = randomUUID();
-      await db.insert(teams).values(
-        [teamId, otherTeamId].map((id) => ({
-          id,
-          inboxId: id,
-          name: "Billing fixture",
-        })),
-      );
-      await db.insert(users).values([
-        {
-          id: ownerId,
-          teamId,
-          fullName: "Billing owner",
-          email: `${ownerId}@owner.example.test`,
-        },
-        {
-          id: otherOwnerId,
-          teamId: otherTeamId,
-          fullName: "Other owner",
-          email: `${otherOwnerId}@other.example.test`,
-        },
-      ]);
-      await db.insert(usersOnTeam).values([
-        { userId: ownerId, teamId, role: "owner" },
-        { userId: otherOwnerId, teamId: otherTeamId, role: "owner" },
-      ]);
+      await db.transaction(async (tx) => {
+        await tx.insert(teams).values(
+          [teamId, otherTeamId].map((id) => ({
+            id,
+            inboxId: id,
+            name: "Billing fixture",
+          })),
+        );
+        await seedTestProfiles(tx, [
+          {
+            id: ownerId,
+            teamId,
+            fullName: "Billing owner",
+            email: `${ownerId}@owner.example.test`,
+          },
+          {
+            id: otherOwnerId,
+            teamId: otherTeamId,
+            fullName: "Other owner",
+            email: `${otherOwnerId}@other.example.test`,
+          },
+        ]);
+        await tx.insert(usersOnTeam).values([
+          { userId: ownerId, teamId, role: "owner" },
+          { userId: otherOwnerId, teamId: otherTeamId, role: "owner" },
+        ]);
+      });
     });
     afterEach(async () => {
-      await db.delete(teams).where(inArray(teams.id, [teamId, otherTeamId]));
-      await db.delete(users).where(inArray(users.id, [ownerId, otherOwnerId]));
+      await db.transaction(async (tx) => {
+        await tx.delete(teams).where(inArray(teams.id, [teamId, otherTeamId]));
+        await removeTestProfiles(tx, [ownerId, otherOwnerId]);
+      });
     });
     afterAll(closeDatabase);
 
@@ -676,6 +684,56 @@ describe.skipIf(!isTestDatabaseAvailable())(
       ).rejects.toThrow("fixture rollback");
       expect(await current()).toEqual(original);
       expect(await notices()).toHaveLength(0);
+    });
+    test("updated plan and uncanceled state are ordered; repeated past-due metadata creates no duplicate notice", async () => {
+      await apply(event("current-subscription", 1));
+      await apply(
+        event("current-subscription", 2, "subscription.updated", {
+          productId: "own-starter",
+          cancelAtPeriodEnd: true,
+        }),
+      );
+      expect(await current()).toMatchObject({
+        plan: "starter",
+        subscriptionStatus: "active",
+      });
+      await apply(
+        event("current-subscription", 3, "subscription.uncanceled", {
+          productId: "own-starter",
+        }),
+      );
+      expect((await current()).canceledAt).toBeNull();
+      await apply(
+        event("current-subscription", 4, "subscription.updated", {
+          status: "past_due",
+        }),
+      );
+      await apply(
+        event("current-subscription", 5, "subscription.updated", {
+          status: "past_due",
+        }),
+      );
+      expect(await notices()).toHaveLength(1);
+      expect(
+        (
+          await apply(
+            event("current-subscription", 2, "subscription.updated", {
+              cancelAtPeriodEnd: true,
+            }),
+          )
+        ).state,
+      ).toBe("stale");
+      expect((await current()).canceledAt).toBeNull();
+    });
+    test("reconciliation cannot restore a subscription replaced during the provider GET", async () => {
+      await apply(event("new-subscription", 4));
+      const result = await applyBillingSubscriptionEvent(db, {
+        event: event("old-subscription", 9, "subscription.updated"),
+        products,
+        expectedBinding: { teamId, subscriptionId: "old-subscription" },
+      });
+      expect(result.state).toBe("foreign_subscription");
+      expect((await current()).billingSubscriptionId).toBe("new-subscription");
     });
   },
 );

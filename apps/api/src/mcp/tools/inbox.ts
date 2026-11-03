@@ -4,6 +4,7 @@ import {
   deleteInboxSchema,
   getInboxByIdSchema,
   getInboxSchema,
+  inboxErasureResponseSchema,
   matchTransactionSchema,
   unmatchTransactionSchema,
   updateInboxSchema,
@@ -133,7 +134,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
           : null;
 
         const fileUrl = storagePath
-          ? await getVaultSignedUrl(storagePath)
+          ? await getVaultSignedUrl(ctx, storagePath)
           : null;
 
         const clean = sanitize(mcpInboxDetailSchema, { ...result, fileUrl });
@@ -148,6 +149,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
         if (includeFile && storagePath && fileUrl && filename) {
           try {
             const resource = await downloadVaultFile(
+              ctx,
               storagePath,
               fileUrl,
               getMimeType(filename),
@@ -172,7 +174,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
       {
         title: "Update Inbox Item",
         description:
-          "Update an inbox item's status, display name, currency, or amount. Use this to mark items as done or update extracted data.",
+          "Update an inbox item's status, display name, currency, or amount. Status deleted permanently erases the item and returns a deletion command result; file cleanup may remain pending.",
         inputSchema: {
           id: z.string().uuid().describe("Inbox item ID"),
           status: z
@@ -183,7 +185,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
           currency: updateInboxSchema.shape.currency,
           amount: updateInboxSchema.shape.amount,
         },
-        annotations: WRITE_ANNOTATIONS,
+        annotations: DESTRUCTIVE_ANNOTATIONS,
       },
       async (params) => {
         try {
@@ -205,7 +207,10 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          const clean = sanitize(mcpInboxDetailSchema, result);
+          const clean =
+            "deleted" in result
+              ? sanitize(inboxErasureResponseSchema, result)
+              : sanitize(mcpInboxDetailSchema, result);
 
           return {
             content: [{ type: "text", text: JSON.stringify(clean) }],
@@ -233,7 +238,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
       {
         title: "Delete Inbox Item",
         description:
-          "Permanently delete an inbox item and its associated file. This action cannot be undone.",
+          "Erase an inbox item and request deletion of its associated file. The response reports whether file cleanup is still pending. Erasure cannot be undone.",
         inputSchema: {
           id: deleteInboxSchema.shape.id,
         },
@@ -250,14 +255,17 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
             };
           }
 
+          const erased = sanitize(inboxErasureResponseSchema, {
+            id: result.id,
+            deleted: true,
+            status: "deleted",
+            cleanupPending: result.cleanupPending,
+            cleanupId: result.cleanupId,
+          });
+          const response = { ...erased, success: true, deletedId: erased.id };
           return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ success: true, deletedId: id }),
-              },
-            ],
-            structuredContent: { success: true, deletedId: id },
+            content: [{ type: "text", text: JSON.stringify(response) }],
+            structuredContent: response,
           };
         } catch (error) {
           return {

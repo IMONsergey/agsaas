@@ -4,6 +4,7 @@ import type { NodePgQueryResultHKT } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { PgTransaction } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
+import { getDatabaseConnectionConfig } from "./connection-config";
 import { createDrizzleLogger, instrumentPool } from "./instrument";
 import { withReplicas } from "./replicas";
 import { runtimeSchema as schema } from "./runtime-schema";
@@ -24,7 +25,6 @@ const connectionConfig = {
   allowExitOnIdle: !isProduction,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
-  ssl: isDevelopment ? false : { rejectUnauthorized: false },
 };
 
 const drizzleLogger = DEBUG_PERF ? createDrizzleLogger() : undefined;
@@ -102,8 +102,8 @@ function attachPoolMonitoring(pool: Pool, poolName: "primary" | "replica") {
 
 // Primary pool — DATABASE_PRIMARY_URL
 const primaryPool = new Pool({
-  connectionString: process.env.DATABASE_PRIMARY_URL!,
   ...connectionConfig,
+  ...getDatabaseConnectionConfig(process.env.DATABASE_PRIMARY_URL),
 });
 
 if (DEBUG_PERF) instrumentPool(primaryPool, "primary");
@@ -151,7 +151,10 @@ if (!isDevelopment) {
 }
 
 const replicaPool = replicaUrl
-  ? new Pool({ connectionString: replicaUrl, ...connectionConfig })
+  ? new Pool({
+      ...connectionConfig,
+      ...getDatabaseConnectionConfig(replicaUrl),
+    })
   : null;
 
 if (DEBUG_PERF && replicaPool) instrumentPool(replicaPool, "replica");

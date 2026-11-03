@@ -1,6 +1,7 @@
 "use client";
 
 import { getPlanName } from "@midday/plans";
+import { Button } from "@midday/ui/button";
 import { Card } from "@midday/ui/card";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +10,7 @@ import { useTeamQuery } from "@/hooks/use-team";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
 import { CancellationDialog } from "./cancellation-dialog";
+import { TeamUsage } from "./team-usage";
 
 export function ManageSubscription() {
   const trpc = useTRPC();
@@ -17,6 +19,18 @@ export function ManageSubscription() {
   const [cancelOpen, setCancelOpen] = useState(false);
 
   const queryClient = useQueryClient();
+  const reconcileMutation = useMutation(
+    trpc.billing.reconcile.mutationOptions({
+      onSuccess: () => {
+        void queryClient.invalidateQueries({
+          queryKey: trpc.team.current.queryKey(),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: trpc.user.me.queryKey(),
+        });
+      },
+    }),
+  );
   const isCanceling = !!user?.team?.canceledAt;
   const isTrialing = user?.team?.subscriptionStatus === "trialing";
 
@@ -91,7 +105,33 @@ export function ManageSubscription() {
               : "Your subscription has been canceled and will end at the end of your billing period."}
           </p>
         )}
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            disabled={reconcileMutation.isPending}
+            onClick={() => reconcileMutation.mutate()}
+          >
+            {reconcileMutation.isPending
+              ? "Checking subscription..."
+              : "Sync subscription status"}
+          </Button>
+          {reconcileMutation.error && (
+            <p role="alert" className="text-sm text-destructive">
+              Unable to verify subscription status. Retry or contact support.
+            </p>
+          )}
+          {reconcileMutation.isSuccess && (
+            <p role="status" className="text-xs text-muted-foreground">
+              Subscription check completed. If the plan did not update, verify
+              the subscription binding with support.
+            </p>
+          )}
+        </div>
       </Card>
+
+      <div className="mt-4">
+        <TeamUsage />
+      </div>
 
       <CancellationDialog open={cancelOpen} onOpenChange={setCancelOpen} />
     </div>

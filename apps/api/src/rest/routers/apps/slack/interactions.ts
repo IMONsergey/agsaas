@@ -16,6 +16,7 @@ import {
   getSuggestionByInboxAndTransaction,
 } from "@midday/db/queries";
 import { logger } from "@midday/logger";
+import { getAppUrl } from "@midday/utils/envs";
 import { HTTPException } from "hono/http-exception";
 
 const app = new OpenAPIHono<Context>();
@@ -341,7 +342,7 @@ app.openapi(
                           text: "View transaction",
                           emoji: true,
                         },
-                        url: `https://app.midday.ai/transactions?id=${encodeURIComponent(transactionId)}`,
+                        url: `${getAppUrl()}/transactions?id=${encodeURIComponent(transactionId)}`,
                         action_id: "view_transaction_after_match",
                       },
                     ],
@@ -434,7 +435,7 @@ app.openapi(
                           text: "View in Midday",
                           emoji: true,
                         },
-                        url: `https://app.midday.ai/inbox?inboxId=${encodeURIComponent(inboxId)}`,
+                        url: `${getAppUrl()}/inbox?inboxId=${encodeURIComponent(inboxId)}`,
                         action_id: "view_inbox_after_decline",
                       },
                     ],

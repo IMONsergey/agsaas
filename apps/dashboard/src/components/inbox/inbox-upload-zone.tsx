@@ -3,18 +3,18 @@
 import { createClient } from "@midday/supabase/client";
 import { cn } from "@midday/ui/cn";
 import { useToast } from "@midday/ui/use-toast";
-import { stripSpecialCharacters } from "@midday/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
-import { resumableUpload } from "@/utils/upload";
+import {
+  prepareVaultUploads,
+  type ResumableUploadResult,
+  resumableUpload,
+} from "@/utils/upload";
 
-type UploadResult = {
-  filename: string;
-  file: File;
-};
+type UploadResult = ResumableUploadResult;
 
 type ProcessAttachmentInput = {
   filePath: string[];
@@ -36,6 +36,8 @@ export function UploadZone({ children, onUploadComplete }: Props) {
   const [showProgress, setShowProgress] = useState(false);
   const [toastId, setToastId] = useState<string | undefined>(undefined);
   const uploadProgress = useRef<number[]>([]);
+  const progressToastRef = useRef<string | undefined>(undefined);
+  const uploadingRef = useRef(false);
   const { toast, dismiss, update } = useToast();
   const processAttachmentsMutation = useMutation(
     trpc.inbox.processAttachments.mutationOptions(),
@@ -55,6 +57,7 @@ export function UploadZone({ children, onUploadComplete }: Props) {
       });
 
       if (id) {
+        progressToastRef.current = id;
         setToastId(id);
       }
     } else if (toastId) {
@@ -68,10 +71,11 @@ export function UploadZone({ children, onUploadComplete }: Props) {
 
   const onDrop = async (files: File[]) => {
     // NOTE: If onDropRejected
-    if (!files.length) {
+    if (!files.length || uploadingRef.current) {
       return;
     }
 
+    uploadingRef.current = true;
     // Set default progress
     uploadProgress.current = files.map(() => 0);
 
@@ -80,14 +84,12 @@ export function UploadZone({ children, onUploadComplete }: Props) {
     const path = [user?.teamId, "inbox"] as string[];
 
     try {
+      const uploads = prepareVaultUploads(files, path);
       // First, create inbox items immediately for instant feedback
       const inboxItems = await Promise.all(
-        files.map(async (file: File) => {
-          // Use the same filename processing as resumableUpload
-          const processedFilename = stripSpecialCharacters(file.name);
-          const filePath = [...path, processedFilename];
+        uploads.map(async ({ file, displayName, filePath }) => {
           return createInboxItemMutation.mutateAsync({
-            filename: processedFilename,
+            filename: displayName,
             mimetype: file.type,
             size: file.size,
             filePath,
@@ -105,11 +107,10 @@ export function UploadZone({ children, onUploadComplete }: Props) {
       });
 
       const results = (await Promise.all(
-        files.map(async (file: File, idx: number) =>
+        uploads.map(async (upload, idx: number) =>
           resumableUpload(supabase, {
             bucket: "vault",
-            path,
-            file,
+            ...upload,
             onProgress: (bytesUploaded, bytesTotal) => {
               uploadProgress.current[idx] = (bytesUploaded / bytesTotal) * 100;
 
@@ -127,10 +128,10 @@ export function UploadZone({ children, onUploadComplete }: Props) {
       )) as UploadResult[];
 
       // Trigger the upload jobs
-      processAttachmentsMutation.mutate(
+      await processAttachmentsMutation.mutateAsync(
         results.map(
           (result): ProcessAttachmentInput => ({
-            filePath: [...path, result.filename],
+            filePath: result.filePath,
             mimetype: result.file.type,
             size: result.file.size,
           }),
@@ -149,7 +150,10 @@ export function UploadZone({ children, onUploadComplete }: Props) {
 
       setShowProgress(false);
       setToastId(undefined);
-      dismiss(toastId);
+      if (progressToastRef.current) {
+        dismiss(progressToastRef.current);
+        progressToastRef.current = undefined;
+      }
       onUploadComplete?.(inboxItems[0]?.id);
     } catch (_error) {
       // Refresh inbox to show current state after error
@@ -159,24 +163,32 @@ export function UploadZone({ children, onUploadComplete }: Props) {
 
       setShowProgress(false);
       setToastId(undefined);
-      dismiss(toastId);
+      if (progressToastRef.current) {
+        dismiss(progressToastRef.current);
+        progressToastRef.current = undefined;
+      }
 
       toast({
         duration: 2500,
         variant: "error",
         title: "Something went wrong please try again.",
       });
+    } finally {
+      uploadingRef.current = false;
+      uploadProgress.current = [];
+      setProgress(0);
     }
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
+    disabled: showProgress,
     onDropRejected: ([reject]) => {
       if (reject?.errors.find(({ code }) => code === "file-too-large")) {
         toast({
           duration: 2500,
           variant: "error",
-          title: "File size to large.",
+          title: "File size too large.",
         });
       }
 

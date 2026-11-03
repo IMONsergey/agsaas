@@ -6,7 +6,7 @@ import {
 } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { getAuthCookieOptions } from "./cookie-options";
-import { createSupabaseFetch } from "./server-fetch";
+import { createSupabaseFetch, withFetchAbortSignal } from "./server-fetch";
 
 const canonical = "https://public.example.test/supabase";
 const internal = "http://api-gw:8000/private";
@@ -420,6 +420,69 @@ describe("optional Supabase server transport", () => {
     ).toThrow(
       "SUPABASE_INTERNAL_URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
     );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("bounded Supabase fetch capability", () => {
+  test.each([
+    "Request",
+    "init",
+    "operation",
+  ] as const)("retains %s cancellation through private routing", async (source) => {
+    const caller = new AbortController();
+    const operation = new AbortController();
+    const reason = new Error("bounded fetch fixture canceled");
+    const fetcher = fakeFetch(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe(`${internal}/storage/v1/object/vault/file`);
+      expect(request.headers.get("x-fixture")).toBe("kept");
+      return new Promise<Response>((_resolve, reject) => {
+        if (request.signal.aborted) reject(request.signal.reason);
+        else
+          request.signal.addEventListener(
+            "abort",
+            () => reject(request.signal.reason),
+            { once: true },
+          );
+      });
+    });
+    const transport = withFetchAbortSignal(
+      createSupabaseFetch(canonical, { internalUrl: internal, fetch: fetcher }),
+      () => operation.signal,
+    );
+    const url = `${canonical}/storage/v1/object/vault/file`;
+    const result =
+      source === "Request"
+        ? transport(
+            new Request(url, {
+              signal: caller.signal,
+              headers: { "x-fixture": "kept" },
+            }),
+          )
+        : transport(url, {
+            signal: caller.signal,
+            headers: { "x-fixture": "kept" },
+          });
+    (source === "operation" ? operation : caller).abort(reason);
+    await expect(result).rejects.toBe(reason);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  test("retains routed preconnect without allocating a request deadline", () => {
+    const fetcher = fakeFetch();
+    const deadline = mock(() => new AbortController().signal);
+    const transport = withFetchAbortSignal(
+      createSupabaseFetch(canonical, { internalUrl: internal, fetch: fetcher }),
+      deadline,
+    );
+    transport.preconnect(`${canonical}/storage/v1/object/vault/file`, {
+      dns: true,
+    });
+    expect(String(fetcher.preconnect.mock.calls[0]?.[0])).toBe(
+      `${internal}/storage/v1/object/vault/file`,
+    );
+    expect(deadline).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   });
 });

@@ -1,12 +1,12 @@
 {
   "name": "@midday-ai/cli",
   "version": "0.1.2",
-  "description": "Midday CLI — let agents run your business",
+  "description": "AGSaaS CLI for an explicitly configured installation",
   "type": "module",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/midday-ai/midday.git",
+    "url": "git+https://github.com/IMONsergey/agsaas.git",
     "directory": "packages/cli"
   },
   "keywords": [
@@ -18,14 +18,12 @@
     "finance",
     "automation"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "files": [
     "dist"
   ],
   "bin": {
-    "midday": "dist/bin/midday.js"
+    "midday": "dist/bin/midday.js",
+    "agsaas": "dist/bin/midday.js"
   },
   "scripts": {
     "dev": "bun run bin/midday.ts",
@@ -41,11 +39,13 @@
     "escape-html": "^1.0.3",
     "commander": "^14.0.3",
     "open": "^11.0.0",
-    "ora": "^9.3.0"
+    "ora": "^9.3.0",
+    "@midday/utils": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/escape-html": "^1.0.4",
     "tsup": "^8.5.1"
-  }
+  },
+  "private": true
 }

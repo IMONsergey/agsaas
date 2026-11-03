@@ -17,17 +17,30 @@ export function LocaleSettings() {
   const { data: user } = useUserQuery();
   const updateUserMutation = useUserMutation();
 
-  const localeItems = Object.values(countries).map((c, index) => ({
-    id: index.toString(),
-    label: `${c.name} (${c.default_locale})`,
-    value: c.default_locale,
-  }));
+  // A locale is a formatting choice, not a unique country identifier.
+  // Several countries use "en"; choosing the first would display Anguilla.
+  const localeNames = new Intl.DisplayNames(["en"], { type: "language" });
+  const localeItems = [
+    ...new Set([
+      ...Object.values(countries).map((country) => country.default_locale),
+      ...(user?.locale ? [user.locale] : []),
+    ]),
+  ]
+    .map((locale) => ({
+      id: locale,
+      label: `${localeNames.of(locale) ?? locale} (${locale})`,
+      value: locale,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   return (
-    <Card className="flex justify-between items-center">
+    <Card className="flex flex-col gap-4 sm:flex-row justify-between sm:items-center">
       <CardHeader>
         <CardTitle>{t("locale.title")}</CardTitle>
-        <CardDescription>{t("locale.description")}</CardDescription>
+        <CardDescription>
+          Choose how numbers and dates are formatted. This does not change your
+          country or the interface language.
+        </CardDescription>
       </CardHeader>
 
       <CardContent>

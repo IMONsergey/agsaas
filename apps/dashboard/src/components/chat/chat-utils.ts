@@ -259,7 +259,7 @@ export function addUtmSource(url: string): string {
   try {
     const u = new URL(url);
     u.searchParams.delete("utm_source");
-    u.searchParams.set("utm_source", "midday.ai");
+    u.searchParams.set("utm_source", "agsaas");
     return u.toString();
   } catch {
     return url;

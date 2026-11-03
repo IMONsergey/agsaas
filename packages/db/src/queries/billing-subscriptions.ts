@@ -16,7 +16,11 @@ import {
  * Own products and the immutable customer external ID bind it to one team. */
 export async function applyBillingSubscriptionEvent(
   db: DatabaseOrTransaction,
-  input: { event: unknown; products: readonly BillingProduct[] },
+  input: {
+    event: unknown;
+    products: readonly BillingProduct[];
+    expectedBinding?: { teamId: string; subscriptionId: string };
+  },
 ) {
   const event = parseBillingSubscriptionEvent(input.event, input.products);
   if (!event) return { state: "unsupported" as const };
@@ -38,6 +42,13 @@ export async function applyBillingSubscriptionEvent(
       .where(eq(teams.id, event.teamId))
       .for("update");
     if (!team) return { state: "missing" as const };
+    if (
+      input.expectedBinding &&
+      (input.expectedBinding.teamId !== team.id ||
+        input.expectedBinding.subscriptionId !== team.billingSubscriptionId ||
+        event.subscriptionId !== input.expectedBinding.subscriptionId)
+    )
+      return { state: "foreign_subscription" as const };
 
     if (
       (team.billingSubscriptionId === null) !==
@@ -105,7 +116,7 @@ export async function applyBillingSubscriptionEvent(
     // same-version past_due delivery cannot become a no-op without an intent.
     const paymentIssue =
       event.subscriptionStatus === "past_due" &&
-      (event.action === "past_due" || team.subscriptionStatus !== "past_due");
+      team.subscriptionStatus !== "past_due";
     if (paymentIssue) {
       // Same primary transaction and team lock as the entitlement transition.
       // Never use an unscoped webhook email or a replica for this recipient.
@@ -153,4 +164,20 @@ export async function applyBillingSubscriptionEvent(
     }
     return { state: "applied" as const, ...event };
   });
+}
+
+/** Read-only primary binding for provider reconciliation; absence never triggers provider discovery by email. */
+export async function getBillingSubscriptionBinding(
+  db: DatabaseOrTransaction,
+  teamId: string,
+) {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Database routing, not React.
+  const primary = "usePrimaryOnly" in db ? db.usePrimaryOnly() : db;
+  const [row] = await primary
+    .select({ teamId: teams.id, subscriptionId: teams.billingSubscriptionId })
+    .from(teams)
+    .where(eq(teams.id, teamId));
+  return row?.subscriptionId
+    ? { teamId: row.teamId, subscriptionId: row.subscriptionId }
+    : null;
 }

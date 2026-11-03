@@ -25,6 +25,7 @@ x-app-environment: &app-environment
   # Server-only transport override. Public SDK URLs/cookie identity stay canonical.
   SUPABASE_INTERNAL_URL: http://api-gw:8000
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?Generate the matched publishable key}"
+  NEXT_PUBLIC_AUTH_COOKIE_NAME: "${NEXT_PUBLIC_AUTH_COOKIE_NAME:-}"
   SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Generate the matched server key}"
   NEXT_PUBLIC_URL: "${AGSAAS_DASHBOARD_URL:?Set the canonical dashboard URL}"
   NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the canonical API URL}"
@@ -38,6 +39,19 @@ x-app-environment: &app-environment
   MIDDAY_ENCRYPTION_KEY: "${MIDDAY_ENCRYPTION_KEY:?Generate and retain 32 bytes encoded as 64 hex characters}"
   FILE_KEY_SECRET: "${FILE_KEY_SECRET:?Generate and retain the file signing secret}"
   INVOICE_JWT_SECRET: "${INVOICE_JWT_SECRET:?Generate and retain the invoice signing secret}"
+
+# Server-only optional provider configuration. Missing keys keep sync pending.
+x-native-bank-environment: &native-bank-environment
+  PLAID_CLIENT_ID: "${PLAID_CLIENT_ID:-}"
+  PLAID_SECRET: "${PLAID_SECRET:-}"
+  PLAID_ENVIRONMENT: "${PLAID_ENVIRONMENT:-production}"
+  TELLER_CERT_BASE64: "${TELLER_CERT_BASE64:-}"
+  TELLER_KEY_BASE64: "${TELLER_KEY_BASE64:-}"
+  GOCARDLESS_SECRET_ID: "${GOCARDLESS_SECRET_ID:-}"
+  GOCARDLESS_SECRET_KEY: "${GOCARDLESS_SECRET_KEY:-}"
+  ENABLEBANKING_APPLICATION_ID: "${ENABLEBANKING_APPLICATION_ID:-}"
+  ENABLE_BANKING_KEY_CONTENT: "${ENABLE_BANKING_KEY_CONTENT:-}"
+  ENABLEBANKING_REDIRECT_URL: "${ENABLEBANKING_REDIRECT_URL:-}"
 
 services:
   api:
@@ -64,12 +78,15 @@ services:
       redis-queue:
         condition: service_healthy
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
+      # Optional operator-mounted CA bundle for verified external PostgreSQL TLS.
+      DATABASE_SSL_CA_FILE: "${DATABASE_SSL_CA_FILE:-}"
       DATABASE_PRIMARY_URL: "${AGSAAS_DATABASE_URL:?Provision the dedicated backend database role first}"
       SUPABASE_JWT_SECRET: "${JWT_SECRET:?Use the matching Supabase legacy signing secret}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"
+      AGSAAS_SUPPORT_INGEST_KEY: "${AGSAAS_SUPPORT_INGEST_KEY:-}"
       GMAIL_CLIENT_ID: "${GMAIL_CLIENT_ID:-}"
       GMAIL_CLIENT_SECRET: "${GMAIL_CLIENT_SECRET:-}"
       GMAIL_REDIRECT_URI: "${GMAIL_REDIRECT_URI:-}"
@@ -90,6 +107,8 @@ services:
       POLAR_PRO_YEARLY_PRODUCT_ID: "${POLAR_PRO_YEARLY_PRODUCT_ID:-}"
       PLAIN_API_KEY: "${PLAIN_API_KEY:-}"
       ALLOWED_API_ORIGINS: "${AGSAAS_DASHBOARD_URL:?Set the exact dashboard origin}"
+      # Default none. Trust only observed HTTP proxy peer IPs, never a subnet.
+      AGSAAS_TRUSTED_PROXY_IPS: "${AGSAAS_TRUSTED_PROXY_IPS:-}"
     healthcheck:
       test:
         - CMD
@@ -124,8 +143,10 @@ services:
       redis-queue:
         condition: service_healthy
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
+      # Optional operator-mounted CA bundle for verified external PostgreSQL TLS.
+      DATABASE_SSL_CA_FILE: "${DATABASE_SSL_CA_FILE:-}"
       DATABASE_PRIMARY_POOLER_URL: "${AGSAAS_WORKER_DATABASE_URL:?Set the dedicated role and transaction pooler tenant}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"
@@ -161,8 +182,10 @@ services:
       dockerfile: apps/dashboard/Dockerfile
       args:
         GIT_COMMIT_SHA: "${AGSAAS_RELEASE:?Set the exact application commit}"
+        NEXT_PUBLIC_RELEASE_SHA: "${AGSAAS_RELEASE:?Set the exact application commit}"
         NEXT_PUBLIC_SUPABASE_URL: "${SUPABASE_PUBLIC_URL:?Set the canonical Supabase URL before building}"
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?Generate the matched publishable key}"
+        NEXT_PUBLIC_AUTH_COOKIE_NAME: "${NEXT_PUBLIC_AUTH_COOKIE_NAME:-}"
         NEXT_PUBLIC_URL: "${AGSAAS_DASHBOARD_URL:?Set the canonical dashboard URL before building}"
         NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the canonical API URL before building}"
         NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:?Generate and retain a canonical base64-encoded 32-byte key}"
@@ -181,6 +204,8 @@ services:
       <<: *app-environment
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
+      GIT_COMMIT_SHA: "${AGSAAS_RELEASE:?Set the exact application commit}"
+      NEXT_PUBLIC_RELEASE_SHA: "${AGSAAS_RELEASE:?Set the exact application commit}"
       NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:?Use the same key as the image build}"
       # Omitted by default: no arbitrary historical signup cutoff for self-hosting.
       NEW_USER_SIGNUP_CUTOFF: "${NEW_USER_SIGNUP_CUTOFF:-}"

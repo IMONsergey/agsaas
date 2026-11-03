@@ -4,7 +4,12 @@ import {
   processTransactionAttachmentSchema,
 } from "@api/schemas/transaction-attachments";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
-import { createAttachments, deleteAttachment } from "@midday/db/queries";
+import { validateTeamStoragePath } from "@api/utils/tenant-storage";
+import {
+  assertTransactionAttachmentScope,
+  createAttachments,
+  deleteAttachment,
+} from "@midday/db/queries";
 import { allowedMimeTypes } from "@midday/documents/utils";
 import { triggerJob } from "@midday/job-client";
 
@@ -12,6 +17,7 @@ export const transactionAttachmentsRouter = createTRPCRouter({
   createMany: protectedProcedure
     .input(createAttachmentsSchema)
     .mutation(async ({ input, ctx: { db, teamId, session } }) => {
+      for (const item of input) validateTeamStoragePath(item.path, teamId!);
       return createAttachments(db, {
         teamId: teamId!,
         userId: session.user.id,
@@ -30,7 +36,9 @@ export const transactionAttachmentsRouter = createTRPCRouter({
 
   processAttachment: protectedProcedure
     .input(processTransactionAttachmentSchema)
-    .mutation(async ({ input, ctx: { teamId } }) => {
+    .mutation(async ({ input, ctx: { db, teamId } }) => {
+      for (const item of input) validateTeamStoragePath(item.filePath, teamId!);
+      await assertTransactionAttachmentScope(db, teamId!, input);
       const allowedAttachments = input.filter((item) =>
         allowedMimeTypes.includes(item.mimetype),
       );

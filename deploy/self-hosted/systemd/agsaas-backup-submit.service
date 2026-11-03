@@ -1,0 +1,27 @@
+[Unit]
+Description=Run the owned AGSaaS recovery job in the shared heavy slot
+After=docker.service
+ConditionPathExists=/etc/agsaas/backup.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/agsaas/preview-20261101/source
+ExecStart=/usr/bin/python3 /opt/agsaas/preview-20261101/source/scripts/self-hosted-admin-job.py scheduled --config /etc/agsaas/backup.json --lock-timeout 3600 --timeout 7200
+ExecStopPost=/usr/bin/python3 /opt/agsaas/preview-20261101/source/scripts/self-hosted-backup.py resume --if-idle --config /etc/agsaas/backup.json
+UMask=0077
+Nice=15
+CPUQuota=50%
+MemoryHigh=1536M
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=128
+IOWeight=10
+KillMode=mixed
+TimeoutStartSec=4h
+TimeoutStopSec=45min
+NoNewPrivileges=true
+
+# A separate authorized administrative operation uses the existing imon-job
+# heavy.lock inode. Do not grant Docker access or disable queue sandboxing.

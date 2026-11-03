@@ -69,11 +69,10 @@ app.use(
     onError: (c) =>
       c.json({ error: "Request body exceeds the MCP limit" }, 413),
   }),
-  rateLimiter({
+  rateLimiter<Context>({
     windowMs: 10 * 60 * 1000,
     limit: mcpRateLimit,
-    keyGenerator: (c) =>
-      c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown",
+    keyGenerator: (c) => c.get("clientIp") || "unknown",
     statusCode: 429,
     message: "Rate limit exceeded",
   }),
@@ -101,6 +100,7 @@ app.all("/", async (c) => {
     db,
     teamId,
     userId: user?.id ?? session.user.id,
+    sessionId: c.get("authType") === "session" ? session.sessionId : undefined,
     userEmail: user?.email ?? session.user.email ?? null,
     scopes,
     apiUrl,

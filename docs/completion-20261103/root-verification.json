@@ -1,0 +1,82 @@
+{
+  "verifiedAt": "2026-11-03T06:56:49.737038+00:00",
+  "job": "20261103T064931-d645baf884",
+  "scope": "root core and website candidate prior to integration",
+  "results": [
+    {
+      "name": "format",
+      "exitCode": 0,
+      "seconds": 0.87
+    },
+    {
+      "name": "source-freshness",
+      "exitCode": 0,
+      "seconds": 0.12
+    },
+    {
+      "name": "own-origins-inbox",
+      "exitCode": 0,
+      "seconds": 0.11
+    },
+    {
+      "name": "capabilities",
+      "exitCode": 0,
+      "seconds": 0.12
+    },
+    {
+      "name": "enrichment-cancellation",
+      "exitCode": 0,
+      "seconds": 0.17
+    },
+    {
+      "name": "enrichment-postgres",
+      "exitCode": 0,
+      "seconds": 0.77
+    },
+    {
+      "name": "support-postgres",
+      "exitCode": 0,
+      "seconds": 0.57
+    },
+    {
+      "name": "website-status",
+      "exitCode": 0,
+      "seconds": 0.12
+    },
+    {
+      "name": "types-packages-db",
+      "exitCode": 0,
+      "seconds": 23.43
+    },
+    {
+      "name": "types-apps-worker",
+      "exitCode": 0,
+      "seconds": 46.8
+    },
+    {
+      "name": "types-apps-api",
+      "exitCode": 0,
+      "seconds": 55.6
+    },
+    {
+      "name": "types-apps-dashboard",
+      "exitCode": 0,
+      "seconds": 66.65
+    },
+    {
+      "name": "types-apps-website",
+      "exitCode": 0,
+      "seconds": 18.06
+    },
+    {
+      "name": "website-build",
+      "exitCode": 0,
+      "seconds": 39.98
+    }
+  ],
+  "limits": [
+    "No live migration or rollout",
+    "Optional provider end-to-end pending configuration",
+    "Browser acceptance pending isolated build"
+  ]
+}

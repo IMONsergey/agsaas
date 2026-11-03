@@ -1,4 +1,5 @@
 export const SCOPES = [
+  "chat.write", // Start an assistant run; tools retain their individual scopes.
   "bank-accounts.read",
   "bank-accounts.write",
   "customers.read",

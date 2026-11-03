@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Context } from "@api/rest/types";
 import { isTeamEligibleForSync } from "@api/utils/check-team-eligibility";
 import { validateTellerSignature } from "@api/utils/teller";
@@ -6,9 +7,8 @@ import {
   getBankConnectionByEnrollmentId,
   updateBankConnectionStatus,
 } from "@midday/db/queries";
-import type { SyncConnectionPayload } from "@midday/jobs/schema";
+import { requestBankSync } from "@midday/db/queries/bank-sync";
 import { logger } from "@midday/logger";
-import { tasks } from "@trigger.dev/sdk";
 import { isAfter, subDays } from "date-fns";
 import { HTTPException } from "hono/http-exception";
 
@@ -101,11 +101,13 @@ app.openapi(
 
     const connectionData = await getBankConnectionByEnrollmentId(db, {
       enrollmentId: payload.enrollment_id,
+      provider: "teller",
     });
 
     if (!connectionData) {
       logger.warn("Teller webhook: connection not found", {
         enrollmentId: payload.enrollment_id,
+        provider: "teller",
       });
       return c.json({ success: true });
     }
@@ -118,6 +120,8 @@ app.openapi(
 
       await updateBankConnectionStatus(db, {
         id: connectionData.id,
+        expectedEnrollmentId: payload.enrollment_id,
+        provider: "teller",
         status: "disconnected",
       });
 
@@ -143,10 +147,15 @@ app.openapi(
           subDays(new Date(), 1),
         );
 
-        await tasks.trigger("sync-connection", {
+        await requestBankSync(db, {
           connectionId: connectionData.id,
-          manualSync,
-        } satisfies SyncConnectionPayload);
+          teamId: connectionData.team.id,
+          fullHistory: manualSync,
+          eventKey: createHash("sha256")
+            .update("teller\0")
+            .update(rawBody)
+            .digest("hex"),
+        });
 
         break;
       }

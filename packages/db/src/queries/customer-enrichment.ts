@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import { customers } from "../schema";
 
 export type CustomerForEnrichment = {
@@ -117,7 +117,7 @@ export async function updateCustomerEnrichmentStatus(
  * empty columns at write time, preserving manual edits made during the lookup.
  */
 export async function updateCustomerEnrichment(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: UpdateCustomerEnrichmentParams,
 ): Promise<void> {
   const { customerId, teamId, data } = params;
@@ -233,7 +233,7 @@ export async function getCustomersNeedingEnrichment(
  * Clear all enrichment data for a customer
  */
 export async function clearCustomerEnrichment(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: { customerId: string; teamId: string },
 ): Promise<void> {
   await db

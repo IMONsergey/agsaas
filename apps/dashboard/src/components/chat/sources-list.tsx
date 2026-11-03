@@ -6,7 +6,6 @@ import {
 } from "@midday/ui/tooltip";
 import { AnimatePresence, motion } from "framer-motion";
 import { OpenURL } from "@/components/open-url";
-import { getWebsiteLogo } from "@/utils/logos";
 import { addUtmSource, getRootDomain, type SourceUrlPart } from "./chat-utils";
 
 export function SourcesList({ sources }: { sources: SourceUrlPart[] }) {
@@ -53,11 +52,12 @@ export function SourcesList({ sources }: { sources: SourceUrlPart[] }) {
                     >
                       <OpenURL href={addUtmSource(source.url)}>
                         <div className="relative size-5 rounded-full bg-background border-2 border-border overflow-hidden flex items-center justify-center shadow-sm cursor-pointer">
-                          <img
-                            src={getWebsiteLogo(domain)}
-                            alt={domain}
-                            className="size-full object-cover"
-                          />
+                          <span
+                            aria-label={domain}
+                            className="text-[9px] font-medium"
+                          >
+                            {domain.slice(0, 1).toUpperCase() || "?"}
+                          </span>
                         </div>
                       </OpenURL>
                     </motion.div>

@@ -38,8 +38,18 @@ describe.skipIf(!isTestDatabaseAvailable())(
           "INSERT INTO public.teams(id,inbox_id,name) VALUES($1::uuid,$1::text,'Inbox migration fixture')",
           [teamId],
         );
+        // The real Auth bridge creates the profile before fixture fields are set.
         await client.query(
-          "INSERT INTO public.users(id,team_id,email) VALUES($1,$2,$3)",
+          `INSERT INTO auth.users(id,email,raw_user_meta_data)
+           VALUES($1,$2,jsonb_build_object('full_name','Inbox migration fixture'))
+           ON CONFLICT (id) DO UPDATE SET
+             email=excluded.email, raw_user_meta_data=excluded.raw_user_meta_data`,
+          [actorId, `${actorId}@example.test`],
+        );
+        await client.query(
+          `INSERT INTO public.users(id,team_id,email) VALUES($1,$2,$3)
+           ON CONFLICT (id) DO UPDATE SET
+             team_id=excluded.team_id, email=excluded.email`,
           [actorId, teamId, `${actorId}@example.test`],
         );
         await client.query(migration);

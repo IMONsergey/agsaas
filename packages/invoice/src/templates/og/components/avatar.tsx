@@ -1,3 +1,5 @@
+import { isInlineLogo } from "../../../utils/logo";
+
 type Props = {
   customerName?: string;
   logoUrl?: string | null;
@@ -5,7 +7,7 @@ type Props = {
 };
 
 export function Avatar({ logoUrl, isValidLogo, customerName }: Props) {
-  if (isValidLogo && logoUrl) {
+  if (isValidLogo && isInlineLogo(logoUrl)) {
     return (
       <img
         src={logoUrl}

@@ -6,6 +6,8 @@ export interface McpContext {
   db: Database;
   teamId: string;
   userId: string;
+  /** Set only from a verified interactive JWT, never model input. */
+  sessionId?: string;
   userEmail: string | null;
   scopes: Scope[];
   apiUrl: string;

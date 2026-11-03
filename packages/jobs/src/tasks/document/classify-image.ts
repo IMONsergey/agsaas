@@ -2,7 +2,8 @@ import { getDb } from "@jobs/init";
 import { updateDocumentByFileName } from "@midday/db/queries";
 import { limitWords, mapLanguageCodeToPostgresConfig } from "@midday/documents";
 import { DocumentClassifier } from "@midday/documents/classifier";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { embedDocumentTags } from "./embed-document-tags";
@@ -15,7 +16,8 @@ export const classifyImage = schemaTask({
   }),
   run: async ({ teamId, fileName }) => {
     try {
-      const supabase = createClient();
+      requireVaultPathForTeam(fileName, teamId);
+      const supabase = createTeamClient(teamId);
       const classifier = new DocumentClassifier();
 
       const { data: fileData } = await supabase.storage

@@ -1,8 +1,8 @@
 import { protectedMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
+import { startIntegrationOAuth } from "@api/utils/integration-oauth";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
-  encryptAccountingOAuthState,
   getAccountingProvider,
 } from "@midday/accounting";
 import { HTTPException } from "hono/http-exception";
@@ -17,7 +17,7 @@ app.use("*", ...protectedMiddleware);
 
 app.openapi(
   createRoute({
-    method: "get",
+    method: "post",
     path: "/",
     summary: "Get Xero install URL",
     operationId: "getXeroInstallUrl",
@@ -56,13 +56,7 @@ app.openapi(
       });
     }
 
-    // Encrypt state to prevent tampering with teamId
-    const state = encryptAccountingOAuthState({
-      teamId: session.teamId,
-      userId: session.user.id,
-      provider: "xero",
-      source: "apps",
-    });
+    const { state } = await startIntegrationOAuth(c, "xero");
 
     try {
       const provider = getAccountingProvider("xero");
@@ -70,10 +64,7 @@ app.openapi(
       return c.json({ url });
     } catch (error) {
       throw new HTTPException(500, {
-        message:
-          error instanceof Error
-            ? error.message
-            : "Xero OAuth configuration missing",
+        message: "Unable to start integration connection",
       });
     }
   },

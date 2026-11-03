@@ -134,48 +134,56 @@ export function DataTable() {
   });
 
   return (
-    <div className="w-full">
+    <div className="w-full min-w-0 max-w-full">
       <Header table={table} />
 
-      <Table>
-        <TableHeader>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map((header) => {
-                return (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )}
-                  </TableHead>
-                );
-              })}
-            </TableRow>
-          ))}
-        </TableHeader>
+      <div
+        className="w-full max-w-full overflow-x-auto"
+        role="region"
+        aria-label="Transaction categories"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: This named scroll region must be keyboard-focusable.
+        tabIndex={0}
+      >
+        <Table className="min-w-[560px]">
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map((header) => {
+                  return (
+                    <TableHead key={header.id}>
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )}
+                    </TableHead>
+                  );
+                })}
+              </TableRow>
+            ))}
+          </TableHeader>
 
-        <TableBody>
-          {table.getRowModel().rows.map((row) => (
-            <TableRow
-              className="hover:bg-muted/50 cursor-pointer"
-              key={row.id}
-              onClick={() => setParams({ categoryId: row.original.id })}
-            >
-              {row.getVisibleCells().map((cell, index) => (
-                <TableCell
-                  key={cell.id}
-                  className={cn(index === 3 && "w-[50px]")}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          <TableBody>
+            {table.getRowModel().rows.map((row) => (
+              <TableRow
+                className="hover:bg-muted/50 cursor-pointer"
+                key={row.id}
+                onClick={() => setParams({ categoryId: row.original.id })}
+              >
+                {row.getVisibleCells().map((cell, index) => (
+                  <TableCell
+                    key={cell.id}
+                    className={cn(index === 3 && "w-[50px]")}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }

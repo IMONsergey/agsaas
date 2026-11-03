@@ -22,15 +22,16 @@ import { useTRPC } from "@/trpc/client";
 import { formatAmount } from "@/utils/format";
 
 interface Report {
-  id: string;
   linkId: string | null;
   type: string | null;
   from: string | null;
   to: string | null;
   currency: string | null;
-  teamId: string | null;
   createdAt: string;
   expireAt: string | null;
+  mode: "snapshot" | "live";
+  revenueType: "net" | "gross";
+  snapshotAt: string | null;
 }
 
 interface PublicMetricViewProps {
@@ -54,6 +55,12 @@ export function PublicMetricView({
       <div className="mb-6 flex flex-col items-start">
         <h2 className="text-xl font-medium font-serif">{chartName}</h2>
         <p className="text-sm text-muted-foreground mt-1">{dateRangeDisplay}</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {report.mode === "snapshot"
+            ? `Snapshot as of ${report.snapshotAt ? format(new Date(report.snapshotAt), "PPP p") : "creation"}`
+            : "Live report: values may change"}{" "}
+          / {report.revenueType}
+        </p>
       </div>
       <div className={cn("border bg-background border-border p-6", className)}>
         <ChartRenderer type={type} linkId={linkId} />

@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { getDatabaseConnectionConfig } from "../connection-config";
 import {
   calculateAmountScore,
   calculateCurrencyScore,
@@ -1423,12 +1424,8 @@ Env:
   }
 
   const pool = new Pool({
-    connectionString: dbUrl,
-    ssl:
-      process.env.NODE_ENV === "development"
-        ? false
-        : { rejectUnauthorized: false },
     max: 2,
+    ...getDatabaseConnectionConfig(dbUrl),
   });
 
   // ── Live mode: evaluate against real inbox + transaction data ──

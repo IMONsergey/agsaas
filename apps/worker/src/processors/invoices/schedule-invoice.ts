@@ -1,5 +1,7 @@
+import { financialRequestHash } from "@midday/db/financial-job";
 import { getInvoiceById } from "@midday/db/queries";
 import { decodeJobId } from "@midday/job-client";
+import { reserveQueuedJob } from "@midday/job-client/resource-admission";
 import type { Job } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "../../config/job-options";
 import { invoicesQueue } from "../../queues/invoices";
@@ -104,15 +106,24 @@ export class ScheduleInvoiceProcessor extends BaseProcessor<ScheduleInvoicePaylo
     // the only place that transitions a currently scheduled invoice to unpaid.
     // Propagate this exact version: a later reschedule/cancel must invalidate
     // both queued generation and queued email, not just this scheduler job.
-    await invoicesQueue.add(
+    const payload = {
+      teamId: invoice.teamId,
+      invoiceId,
+      deliveryType: "create_and_send",
+      expectedScheduledJobId,
+    };
+    const jobId = await reserveQueuedJob(
+      "invoices",
+      payload,
+      `invoice-generation-${financialRequestHash([invoice.teamId, invoiceId, expectedScheduledJobId])}`,
       "generate-invoice",
-      {
-        invoiceId,
-        deliveryType: "create_and_send",
-        expectedScheduledJobId,
-      },
-      DEFAULT_JOB_OPTIONS,
     );
+    const created = await invoicesQueue.add("generate-invoice", payload, {
+      ...DEFAULT_JOB_OPTIONS,
+      jobId,
+    });
+    if (created.id !== jobId)
+      throw new Error("Scheduled invoice generation was not acknowledged");
 
     this.logger.info("Scheduled invoice queued for generation", {
       invoiceId,

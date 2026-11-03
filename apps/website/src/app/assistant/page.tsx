@@ -1,26 +1,11 @@
-import { Assistant } from "@/components/assistant";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "AI Assistant for Small Business",
+  title: "Assistant",
   description:
-    "Manage your finances, invoices, time tracking, and connected tools from a single conversation. An AI assistant that knows your business and gets things done.",
+    "Use configured AI tools to work with your workspace while retaining access to every manual workflow.",
   path: "/assistant",
-  og: {
-    title: "AI Assistant",
-    description: "One conversation to run your entire business",
-  },
-  keywords: [
-    "AI assistant",
-    "small business assistant",
-    "AI bookkeeping",
-    "invoice assistant",
-    "business finance AI",
-    "connected apps",
-    "AI time tracking",
-  ],
 });
-
 export default function Page() {
-  return <Assistant />;
+  return <ProductPage page="assistant" />;
 }

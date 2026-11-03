@@ -1,8 +1,20 @@
 import { updateSession } from "@midday/supabase/middleware";
+import { getAppUrl } from "@midday/utils/envs";
 import { type NextRequest, NextResponse } from "next/server";
 import { createI18nMiddleware } from "next-international/middleware";
+import pdfPublicAssets from "@/utils/pdf-public-assets.json";
 
-const ORIGIN = process.env.NEXT_PUBLIC_URL || "http://localhost:3001";
+const ORIGIN = getAppUrl();
+// Only reviewed, publicly distributed build files can bypass session handling.
+// The asset preparer checks this pinned inventory against React-PDF's dependency.
+const publicAssetPaths = new Set([
+  "/appicon.png",
+  "/assets/bg-login.jpg",
+  "/assets/bg-login-dark.jpg",
+  ...pdfPublicAssets.files.map(
+    (name) => `/vendor/pdfjs/${pdfPublicAssets.version}/${name}`,
+  ),
+]);
 
 const I18nMiddleware = createI18nMiddleware({
   locales: ["en"],
@@ -11,11 +23,24 @@ const I18nMiddleware = createI18nMiddleware({
 });
 
 export async function proxy(request: NextRequest) {
+  if (
+    (request.method === "GET" || request.method === "HEAD") &&
+    publicAssetPaths.has(request.nextUrl.pathname)
+  )
+    return NextResponse.next();
+
   const { response, isAuthenticated, supabase } = await updateSession(
     request,
     I18nMiddleware(request),
   );
 
+  // A refresh can occur before navigation; carry its cookies onto redirects.
+  const redirectWithSession = (url: URL | string) => {
+    const redirect = NextResponse.redirect(url);
+    for (const cookie of response.cookies.getAll())
+      redirect.cookies.set(cookie);
+    return redirect;
+  };
   const nextUrl = request.nextUrl;
 
   const pathnameWithoutLocale = nextUrl.pathname.replace(/^\/en(?=\/|$)/, "");
@@ -32,13 +57,10 @@ export async function proxy(request: NextRequest) {
     newUrl.pathname !== "/login" &&
     newUrl.pathname !== "/forgot-password" &&
     newUrl.pathname !== "/reset-password" &&
-    !newUrl.pathname.includes("/i/") &&
-    !newUrl.pathname.includes("/p/") &&
-    !newUrl.pathname.includes("/s/") &&
-    !newUrl.pathname.includes("/r/") &&
-    !newUrl.pathname.includes("/verify") &&
-    !newUrl.pathname.includes("/oauth-callback") &&
-    !newUrl.pathname.includes("/desktop/search")
+    !/^\/(?:i|p|s|r)\/[^/]+(?:\/|$)/.test(newUrl.pathname) &&
+    !/^\/(?:verify|oauth-callback|desktop\/search)(?:\/|$)/.test(
+      newUrl.pathname,
+    )
   ) {
     const loginUrl = new URL("/login", ORIGIN);
 
@@ -46,18 +68,10 @@ export async function proxy(request: NextRequest) {
       loginUrl.searchParams.append("return_to", encodedSearchParams);
     }
 
-    return NextResponse.redirect(loginUrl);
+    return redirectWithSession(loginUrl);
   }
 
   if (isAuthenticated) {
-    if (newUrl.pathname !== "/onboarding" && newUrl.pathname !== "/teams") {
-      const inviteCodeMatch = newUrl.pathname.startsWith("/teams/invite/");
-
-      if (inviteCodeMatch) {
-        return NextResponse.redirect(`${ORIGIN}${request.nextUrl.pathname}`);
-      }
-    }
-
     const { data: mfaData } =
       await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
     if (
@@ -72,7 +86,12 @@ export async function proxy(request: NextRequest) {
         mfaUrl.searchParams.append("return_to", encodedSearchParams);
       }
 
-      return NextResponse.redirect(mfaUrl);
+      return redirectWithSession(mfaUrl);
+    }
+    // Legacy invite links have no page of their own. The authenticated Teams
+    // page shows only invitations bound to this account, after the MFA check.
+    if (newUrl.pathname.startsWith("/teams/invite/")) {
+      return redirectWithSession(new URL("/teams", ORIGIN));
     }
   }
 

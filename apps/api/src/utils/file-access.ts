@@ -4,10 +4,17 @@ import { getUserById, hasTeamAccess } from "@midday/db/queries";
 import { verifyFileKey } from "@midday/encryption";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { isSessionActive } from "./auth-session";
 import { MfaPolicyError, requireSessionMfa } from "./mfa";
+import { admitFileRequest } from "./resource-admission";
 import type { Scope } from "./scopes";
 
-export type FileAccess = { userId: string; teamId: string };
+export type FileAccess = {
+  userId: string;
+  teamId: string;
+  interactive: boolean;
+  scopes: readonly Scope[];
+};
 
 /**
  * Dashboard img/download URLs use a short-lived, user-bound key. API/OAuth
@@ -34,7 +41,13 @@ export async function requireFileAccess(
         message: "No permission to access this file.",
       });
     }
-    return { userId: session.user.id, teamId };
+    await admitFileRequest(c, { userId: session.user.id, teamId });
+    return {
+      userId: session.user.id,
+      teamId,
+      interactive: c.get("authType") === "session" && !!session.sessionId,
+      scopes,
+    };
   }
 
   const identity = await verifyFileKey(fk);
@@ -48,6 +61,7 @@ export async function requireFileAccess(
   if (
     !user ||
     user.deletionStartedAt ||
+    !(await isSessionActive(authDb, identity.userId, identity.sessionId)) ||
     !(await hasTeamAccess(authDb, identity.teamId, identity.userId))
   ) {
     throw new HTTPException(401, { message: "Invalid or expired file key." });
@@ -66,5 +80,14 @@ export async function requireFileAccess(
     }
     throw error;
   }
-  return { userId: identity.userId, teamId: identity.teamId };
+  await admitFileRequest(c, {
+    userId: identity.userId,
+    teamId: identity.teamId,
+  });
+  return {
+    userId: identity.userId,
+    teamId: identity.teamId,
+    interactive: true,
+    scopes: [],
+  };
 }

@@ -1,6 +1,6 @@
 import { deleteApiKeySchema, upsertApiKeySchema } from "@api/schemas/api-keys";
 import { resend } from "@api/services/resend";
-import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { createTRPCRouter, ownerProcedure } from "@api/trpc/init";
 import { apiKeyCache } from "@midday/cache/api-key-cache";
 import {
   deleteApiKey,
@@ -15,11 +15,11 @@ import { ApiKeyCreatedEmail } from "@midday/email/emails/api-key-created";
 import { logger } from "@midday/logger";
 
 export const apiKeysRouter = createTRPCRouter({
-  get: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
+  get: ownerProcedure.query(async ({ ctx: { db, teamId } }) => {
     return getApiKeysByTeam(db, teamId!);
   }),
 
-  upsert: protectedProcedure
+  upsert: ownerProcedure
     .input(upsertApiKeySchema)
     .mutation(async ({ ctx: { db, teamId, session, geo }, input }) => {
       const { data, key, keyHash } = await upsertApiKey(db, {
@@ -66,10 +66,11 @@ export const apiKeysRouter = createTRPCRouter({
       };
     }),
 
-  delete: protectedProcedure
+  delete: ownerProcedure
     .input(deleteApiKeySchema)
-    .mutation(async ({ ctx: { db, teamId }, input }) => {
+    .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const keyHash = await deleteApiKey(db, {
+        actorUserId: session.user.id,
         teamId: teamId!,
         ...input,
       });
@@ -79,6 +80,6 @@ export const apiKeysRouter = createTRPCRouter({
         await apiKeyCache.delete(keyHash);
       }
 
-      return keyHash;
+      return { id: input.id, deleted: !!keyHash };
     }),
 });

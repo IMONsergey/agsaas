@@ -3,6 +3,32 @@ type ServerFetchOptions = {
   fetch?: typeof globalThis.fetch;
 };
 
+/** Keep the SDK's fetch contract, including Bun's optional runtime preconnect,
+ * while selecting cancellation for each request. Never detaches caller signals. */
+export function withFetchAbortSignal(
+  fetcher: typeof globalThis.fetch,
+  signalForRequest: () => AbortSignal,
+): typeof globalThis.fetch {
+  const boundedFetch = (
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ) => {
+    const callerSignal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const scopedSignal = signalForRequest();
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, scopedSignal])
+      : scopedSignal;
+    return fetcher(input, { ...init, signal });
+  };
+  return Object.assign(boundedFetch, {
+    preconnect: (
+      url: Parameters<typeof globalThis.fetch.preconnect>[0],
+      options?: Parameters<typeof globalThis.fetch.preconnect>[1],
+    ) => fetcher.preconnect?.(url, options),
+  });
+}
+
 function parseBaseUrl(value: string, setting: string): URL {
   try {
     const url = new URL(value);

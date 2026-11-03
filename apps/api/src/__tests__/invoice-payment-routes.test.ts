@@ -90,6 +90,11 @@ let event: {
   data: { object: Record<string, unknown> };
 };
 const constructEvent = mock(async () => event);
+const unexpectedAdministration = () => {
+  throw new Error(
+    "Public invoice payment tests must not enter integration administration",
+  );
+};
 
 mock.module("@api/rest/middleware", () => ({
   publicMiddleware: [],
@@ -108,6 +113,13 @@ mock.module("@midday/db/queries", () => ({
   getTeamById: async () => null,
   updateTeamById: async () => null,
   getTeamByStripeAccountId: async () => null,
+  createIntegrationOAuthIntent: unexpectedAdministration,
+  findIntegrationOAuthIntent: unexpectedAdministration,
+  consumeIntegrationOAuthIntent: unexpectedAdministration,
+  completeIntegrationOAuthIntent: unexpectedAdministration,
+  getTeamMemberRole: unexpectedAdministration,
+  assertNoPendingProviderCleanup: unexpectedAdministration,
+  requestStripeDisconnect: unexpectedAdministration,
 }));
 mock.module("@midday/job-client", () => ({ triggerJob: queue }));
 mock.module("@midday/logger", () => ({
@@ -304,7 +316,8 @@ describe("Stripe webhook boundary", () => {
     expect((await webhook()).status).toBe(500);
     expect(applyEvent).not.toHaveBeenCalled();
   });
-  test("partial charge refund does not label the entire invoice refunded", async () => {
+  test("partial charge refund forwards exact evidence without claiming a full refund", async () => {
+    applyEvent.mockImplementation(async () => ({ invoice, notify: false }));
     event.type = "charge.refunded";
     event.data.object = {
       id: "ch_fixture",
@@ -333,7 +346,13 @@ describe("Stripe webhook boundary", () => {
       has_more: false,
     }));
     expect((await webhook()).status).toBe(200);
-    expect(applyEvent).not.toHaveBeenCalled();
+    expect(applyEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        amountMinor: 12005,
+        refunds: [{ id: "re_fixture", amountMinor: 1000, status: "succeeded" }],
+      }),
+    );
     expect(queue).not.toHaveBeenCalled();
   });
   test("full refund accepts expanded intent IDs and applies verified binding", async () => {
@@ -367,7 +386,8 @@ describe("Stripe webhook boundary", () => {
       jobId: "stripe-invoice-refunded-pi_fixture",
     });
   });
-  test("a fully refunded charge flag with a pending refund does not prematurely finalize", async () => {
+  test("a pending refund forwards evidence but does not prematurely finalize", async () => {
+    applyEvent.mockImplementation(async () => ({ invoice, notify: false }));
     event.type = "charge.refunded";
     event.data.object = {
       id: "ch_fixture",
@@ -396,7 +416,13 @@ describe("Stripe webhook boundary", () => {
       has_more: false,
     }));
     expect((await webhook()).status).toBe(200);
-    expect(applyEvent).not.toHaveBeenCalled();
+    expect(applyEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        refunds: [{ id: "re_fixture", amountMinor: 12005, status: "pending" }],
+      }),
+    );
+    expect(queue).not.toHaveBeenCalled();
   });
   test("later refund.updated confirms full success without needing another charge event", async () => {
     event.type = "refund.updated";
@@ -446,6 +472,7 @@ describe("Stripe webhook boundary", () => {
       amountMinor: 12005,
       currency: "usd",
       kind: "refunded",
+      refunds: [{ id: "re_fixture", amountMinor: 12005, status: "succeeded" }],
       occurredAt: new Date(event.created * 1000).toISOString(),
     });
   });
@@ -477,6 +504,9 @@ describe("Stripe webhook boundary", () => {
         amountMinor: 12005,
         currency: "usd",
         kind: "refunded",
+        refunds: [
+          { id: "re_fixture", amountMinor: 12005, status: "succeeded" },
+        ],
         occurredAt: new Date(event.created * 1000).toISOString(),
       });
     });

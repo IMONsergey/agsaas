@@ -42,7 +42,7 @@ mock.module("@midday/db/queries", () => ({
   hasTeamAccess: async () => false,
 }));
 mock.module("@midday/invoice/token", () => ({ verify: token }));
-mock.module("@midday/invoice", () => ({
+mock.module("@midday/invoice/server", () => ({
   PdfTemplate: async (data: unknown) => data,
   renderToStream: render,
 }));

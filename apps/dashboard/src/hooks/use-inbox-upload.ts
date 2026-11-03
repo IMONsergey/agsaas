@@ -3,13 +3,12 @@
 import { LogEvents } from "@midday/events/events";
 import { createClient } from "@midday/supabase/client";
 import { useToast } from "@midday/ui/use-toast";
-import { stripSpecialCharacters } from "@midday/utils";
 import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef } from "react";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
-import { resumableUpload } from "@/utils/upload";
+import { prepareVaultUploads, resumableUpload } from "@/utils/upload";
 
 export function useInboxUpload() {
   const trpc = useTRPC();
@@ -19,6 +18,7 @@ export function useInboxUpload() {
   const queryClient = useQueryClient();
   const { toast, dismiss, update } = useToast();
   const toastIdRef = useRef<string | undefined>(undefined);
+  const uploadingRef = useRef(false);
 
   // dismiss/update from useToast are new arrow functions each render;
   // keep them in a ref so the callback doesn't recreate every render.
@@ -28,13 +28,14 @@ export function useInboxUpload() {
   const { mutateAsync: createInboxItem } = useMutation(
     trpc.inbox.create.mutationOptions(),
   );
-  const { mutate: processAttachments } = useMutation(
+  const { mutateAsync: processAttachments } = useMutation(
     trpc.inbox.processAttachments.mutationOptions(),
   );
 
   const uploadFiles = useCallback(
     async (files: File[]) => {
-      if (!files.length) return;
+      if (!files.length || uploadingRef.current) return;
+      uploadingRef.current = true;
 
       const path = [user?.teamId, "inbox"] as string[];
       const progress = files.map(() => 0);
@@ -50,12 +51,11 @@ export function useInboxUpload() {
       toastIdRef.current = id;
 
       try {
+        const uploads = prepareVaultUploads(files, path);
         await Promise.all(
-          files.map(async (file) => {
-            const processedFilename = stripSpecialCharacters(file.name);
-            const filePath = [...path, processedFilename];
+          uploads.map(async ({ file, displayName, filePath }) => {
             return createInboxItem({
-              filename: processedFilename,
+              filename: displayName,
               mimetype: file.type,
               size: file.size,
               filePath,
@@ -71,11 +71,10 @@ export function useInboxUpload() {
         });
 
         const results = await Promise.all(
-          files.map(async (file, idx) =>
+          uploads.map(async (upload, idx) =>
             resumableUpload(supabase, {
               bucket: "vault",
-              path,
-              file,
+              ...upload,
               onProgress: (bytesUploaded, bytesTotal) => {
                 progress[idx] = (bytesUploaded / bytesTotal) * 100;
                 const total = Math.round(
@@ -93,15 +92,15 @@ export function useInboxUpload() {
           ),
         );
 
-        processAttachments(
-          (results as { filename: string; file: File }[]).map((result) => ({
-            filePath: [...path, result.filename],
+        await processAttachments(
+          results.map((result) => ({
+            filePath: result.filePath,
             mimetype: result.file.type,
             size: result.file.size,
           })),
         );
 
-        toastRef.current.dismiss(toastIdRef.current);
+        if (toastIdRef.current) toastRef.current.dismiss(toastIdRef.current);
         toastIdRef.current = undefined;
 
         track(LogEvents.InboxUpload.name, { count: files.length });
@@ -114,7 +113,7 @@ export function useInboxUpload() {
         queryClient.invalidateQueries({
           queryKey: trpc.inbox.get.queryKey(),
         });
-        toastRef.current.dismiss(toastIdRef.current);
+        if (toastIdRef.current) toastRef.current.dismiss(toastIdRef.current);
         toastIdRef.current = undefined;
 
         toastRef.current.toast({
@@ -122,6 +121,8 @@ export function useInboxUpload() {
           variant: "error",
           title: "Something went wrong please try again.",
         });
+      } finally {
+        uploadingRef.current = false;
       }
     },
     [

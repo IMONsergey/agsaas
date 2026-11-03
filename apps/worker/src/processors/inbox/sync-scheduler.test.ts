@@ -70,7 +70,7 @@ mock.module("@midday/job-client", () => ({
   },
 }));
 mock.module("@midday/supabase/job", () => ({
-  createClient: () => ({
+  createTeamClient: () => ({
     storage: {
       from: () => ({
         upload: async (key: string, _data: unknown, options: unknown) => {

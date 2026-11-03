@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   PlatformIdentityAlreadyLinkedToAnotherTeamError,
   PlatformIdentityAlreadyLinkedToAnotherUserError,
@@ -12,7 +12,7 @@ export type PlatformProvider = "slack" | "telegram" | "whatsapp" | "sendblue";
 type PlatformIdentityRecord = typeof platformIdentities.$inferSelect;
 
 export async function getPlatformIdentity(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: {
     provider: PlatformProvider;
     externalUserId: string;
@@ -86,7 +86,7 @@ export async function listPlatformIdentitiesForTeam(
 }
 
 export async function createOrUpdatePlatformIdentity(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: {
     provider: PlatformProvider;
     teamId: string;

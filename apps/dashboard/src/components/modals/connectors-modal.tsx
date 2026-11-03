@@ -473,7 +473,11 @@ function ConnectorsContent({
         }
 
         const listener = (e: MessageEvent) => {
-          if (e.data === "connector_oauth_completed") {
+          if (
+            e.origin === window.location.origin &&
+            e.source === popup &&
+            e.data === "connector_oauth_completed"
+          ) {
             window.removeEventListener("message", listener);
             setIsConnecting(false);
             invalidateConnectors();

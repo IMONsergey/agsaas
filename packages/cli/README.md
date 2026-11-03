@@ -1,18 +1,21 @@
-# @midday-ai/cli
+# AGSaaS CLI
 
-Run your business from the command line. The Midday CLI gives you full access to transactions, invoices, time tracking, reports, and more — designed for humans and AI agents alike.
+The CLI connects to the AGSaaS installation you configure. This repository keeps the existing package identifier and the `midday` command as compatibility names; it is private and must be built from this repository. The upstream npm package does not contain these changes.
 
-## Install
+## Build and configure
 
-```bash
-npx @midday-ai/cli@latest
-```
-
-Or install globally:
+From this repository:
 
 ```bash
-npm install -g @midday-ai/cli
+bun run --cwd packages/cli build
+export AGSAAS_API_URL=https://api.your-installation.example
+export AGSAAS_DASHBOARD_URL=https://app.your-installation.example
+node packages/cli/dist/bin/midday.js auth login
 ```
+
+Replace the two example origins with this installation's actual HTTPS origins, including ports when required. Loopback HTTP is allowed for local development. API and dashboard origins are configured separately; there is no default remote server or hostname substitution. Do not use upstream npm installation instructions for this fork.
+
+The local executable may be linked as `agsaas` or the compatible `midday` alias used in the command examples below.
 
 ## Authentication
 
@@ -217,8 +220,11 @@ echo $API_KEY | midday auth login --token-stdin
 
 | Variable | Description |
 |----------|-------------|
-| `MIDDAY_API_KEY` | API key (skip `auth login`) |
-| `MIDDAY_API_URL` | Override API endpoint |
+| `AGSAAS_API_KEY` | API key bound to the explicitly configured API origin |
+| `MIDDAY_API_KEY` | Legacy alias for `AGSAAS_API_KEY` |
+| `AGSAAS_API_URL` | Required API origin; no remote default |
+| `AGSAAS_DASHBOARD_URL` | Required dashboard origin for browser login |
+| `MIDDAY_API_URL` / `MIDDAY_DASHBOARD_URL` | Explicit legacy aliases |
 | `MIDDAY_DASHBOARD_URL` | Override dashboard URL for OAuth |
 | `NO_COLOR` | Disable colored output |
 
@@ -234,3 +240,9 @@ bun run lint                    # Lint
 ## License
 
 See the [LICENSE](../../LICENSE) file in the repository root.
+
+## Credential boundaries
+
+Credentials are stored under $XDG_CONFIG_HOME/agsaas (or ~/.config/agsaas) with a private directory and atomically replaced mode-0600 files. Tokens are bound to an exact validated API origin, including its port. Unbound legacy tokens and credentials from another installation are not reused. Authenticate again after changing installations or when an access token expires. Automatic refresh is not implemented.
+
+--api-url applies to login and API requests. A stored token must match that origin. An environment API key additionally requires the same explicitly configured AGSAAS_API_URL (or legacy alias); the flag cannot silently redirect it elsewhere. Requests reject off-origin paths and redirects. Browser login uses a state-protected loopback listener which closes on success, failure, cancellation or timeout.

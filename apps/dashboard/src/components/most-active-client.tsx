@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@midday/ui/card";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useTRPC } from "@/trpc/client";
+import { secondsToHoursAndMinutes } from "@/utils/format";
 
 export function MostActiveClient() {
   const trpc = useTRPC();
@@ -31,13 +32,7 @@ export function MostActiveClient() {
     );
   }
 
-  const trackerHours = Math.round(data.totalTrackerTime / 3600);
-  const trackerMinutes = Math.round((data.totalTrackerTime % 3600) / 60);
-
-  const timeDisplay =
-    trackerHours > 0
-      ? `${trackerHours}h${trackerMinutes > 0 ? ` ${trackerMinutes}m` : ""}`
-      : `${trackerMinutes}m`;
+  const timeDisplay = secondsToHoursAndMinutes(data.totalTrackerTime);
 
   return (
     <Card className="hidden sm:block">
@@ -63,6 +58,9 @@ export function MostActiveClient() {
               </>
             )}
             {" past 30 days"}
+            <span className="block text-xs">
+              Ranked by invoice count plus whole tracked hours.
+            </span>
           </div>
         </div>
       </CardContent>

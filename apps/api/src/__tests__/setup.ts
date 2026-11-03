@@ -95,6 +95,26 @@ export function asMock(fn: (...args: any[]) => any): MockFn {
 
 // Create reusable mock functions that tests can access
 export const mocks = {
+  getOwnAuthSessions: mock(() => Promise.resolve([])) as MockFn,
+  revokeAuthSessions: mock(() => Promise.resolve({ revoked: 0 })) as MockFn,
+  isAuthSessionActive: mock(() => Promise.resolve(true)) as MockFn,
+  requestCustomerEnrichment: mock(() => null) as MockFn,
+  cancelCustomerEnrichment: mock(() => false) as MockFn,
+
+  // Tracked administrative writes: denial tests assert zero side effects.
+  disconnectApp: mock(() => Promise.resolve({})) as MockFn,
+  requestStripeDisconnect: mock(() =>
+    Promise.resolve({
+      success: true,
+      cleanupPending: true,
+      cleanupId: "f5418c2c-7595-4a41-8daf-008482ac8016",
+    }),
+  ) as MockFn,
+  createBankConnection: mock(() => Promise.resolve({})) as MockFn,
+  reconnectBankConnection: mock(() => Promise.resolve({})) as MockFn,
+  addProviderAccounts: mock(() => Promise.resolve({})) as MockFn,
+  assertTransactionAttachmentScope: mock(() => Promise.resolve()) as MockFn,
+  assertInboxUploadScope: mock(() => Promise.resolve()) as MockFn,
   // Transaction queries
   getTransactions: mock(() => ({
     data: [],
@@ -121,8 +141,38 @@ export const mocks = {
   getPublishedInvoiceById: mock(() => null) as MockFn,
   getInvoiceDocumentById: mock(() => null) as MockFn,
   getInvoiceRefundContext: mock(() => null) as MockFn,
+  getInvoiceSettlement: mock(() =>
+    Promise.resolve({
+      entries: [],
+      projection: null,
+      reconciliationRequired: false,
+      providerReconciliationRequired: false,
+      providerVerificationAvailable: false,
+      reason: null,
+    }),
+  ) as MockFn,
+  recordInvoiceSettlement: mock(() =>
+    Promise.resolve({ replayed: false }),
+  ) as MockFn,
+  reconcileInvoiceSettlement: mock(() =>
+    Promise.resolve({ state: "consistent", changed: false }),
+  ) as MockFn,
+  getInvoiceProviderReconciliationPlan: mock(() =>
+    Promise.resolve(null),
+  ) as MockFn,
+  applyInvoiceProviderReconciliation: mock(() =>
+    Promise.resolve({ state: "verified", changed: true }),
+  ) as MockFn,
+  getBillingSubscriptionBinding: mock(() => Promise.resolve(null)) as MockFn,
+  applyBillingSubscriptionEvent: mock(() =>
+    Promise.resolve({ state: "applied" }),
+  ) as MockFn,
   createInvoice: mock(() => ({})) as MockFn,
   updateInvoice: mock(() => ({})) as MockFn,
+  updateInvoiceWithIntent: mock(() => ({})) as MockFn,
+  issueInvoice: mock(() => ({})) as MockFn,
+  scheduleInvoice: mock(() => ({})) as MockFn,
+  cancelInvoiceSchedule: mock(() => ({})) as MockFn,
   deleteInvoice: mock(() => ({})) as MockFn,
   draftInvoice: mock(() => ({
     id: "d1e2f3a4-b5c6-7890-abcd-ef1234567890",
@@ -501,6 +551,8 @@ export const mocks = {
       result: [],
     }),
   ) as MockFn,
+  listSharedReports: mock(() => ({ data: [], hasNextPage: false })) as MockFn,
+  revokeSharedReport: mock(() => null) as MockFn,
   createReport: mock(() =>
     Promise.resolve({
       id: "report-row-id",
@@ -677,6 +729,7 @@ export const mocks = {
   polarSubscriptionsList: mock(() =>
     Promise.resolve({ result: { items: [] as unknown[] } }),
   ) as MockFn,
+  polarSubscriptionsGet: mock(() => Promise.resolve(null)) as MockFn,
   polarSubscriptionsUpdate: mock(() => Promise.resolve({})) as MockFn,
 
   // Notifications (activities)
@@ -822,6 +875,11 @@ const createDefaultMock = () => mock(() => null);
 // Mock @midday/db/queries with a Proxy to handle any export
 const dbQueriesMock = new Proxy(
   {
+    // Bun enumerates named ESM exports before the Proxy getter can run.
+    getOwnAuthSessions: mocks.getOwnAuthSessions,
+    revokeAuthSessions: mocks.revokeAuthSessions,
+    isAuthSessionActive: mocks.isAuthSessionActive,
+    requestStripeDisconnect: mocks.requestStripeDisconnect,
     // Transaction functions
     getTransactions: mocks.getTransactions,
     getTransactionById: mocks.getTransactionById,
@@ -843,8 +901,21 @@ const dbQueriesMock = new Proxy(
     getPublishedInvoiceById: mocks.getPublishedInvoiceById,
     getInvoiceDocumentById: mocks.getInvoiceDocumentById,
     getInvoiceRefundContext: mocks.getInvoiceRefundContext,
+    getInvoiceSettlement: mocks.getInvoiceSettlement,
+    recordInvoiceSettlement: mocks.recordInvoiceSettlement,
+    reconcileInvoiceSettlement: mocks.reconcileInvoiceSettlement,
+    getInvoiceProviderReconciliationPlan:
+      mocks.getInvoiceProviderReconciliationPlan,
+    applyInvoiceProviderReconciliation:
+      mocks.applyInvoiceProviderReconciliation,
+    getBillingSubscriptionBinding: mocks.getBillingSubscriptionBinding,
+    applyBillingSubscriptionEvent: mocks.applyBillingSubscriptionEvent,
     createInvoice: mocks.createInvoice,
     updateInvoice: mocks.updateInvoice,
+    updateInvoiceWithIntent: mocks.updateInvoiceWithIntent,
+    issueInvoice: mocks.issueInvoice,
+    scheduleInvoice: mocks.scheduleInvoice,
+    cancelInvoiceSchedule: mocks.cancelInvoiceSchedule,
     deleteInvoice: mocks.deleteInvoice,
     draftInvoice: mocks.draftInvoice,
     duplicateInvoice: mocks.duplicateInvoice,
@@ -1084,6 +1155,8 @@ const dbQueriesMock = new Proxy(
     getRevenueForecast: createDefaultMock(),
     getTaxSummary: mocks.getTaxSummary,
     createReport: mocks.createReport,
+    listSharedReports: mocks.listSharedReports,
+    revokeSharedReport: mocks.revokeSharedReport,
     getReportByLinkId: mocks.getReportByLinkId,
 
     // Validation
@@ -1127,15 +1200,18 @@ const dbQueriesMock = new Proxy(
     deleteTransactionTag: mocks.deleteTransactionTag,
 
     // Apps (mutations on router)
-    disconnectApp: createDefaultMock(),
+    disconnectApp: mocks.disconnectApp,
     updateAppSettings: createDefaultMock(),
     updateAppSettingsBulk: createDefaultMock(),
     removeWhatsAppConnection: createDefaultMock(),
 
+    assertTransactionAttachmentScope: mocks.assertTransactionAttachmentScope,
+    assertInboxUploadScope: mocks.assertInboxUploadScope,
+
     // Bank connections (mutations on router)
-    addProviderAccounts: createDefaultMock(),
-    createBankConnection: createDefaultMock(),
-    reconnectBankConnection: createDefaultMock(),
+    addProviderAccounts: mocks.addProviderAccounts,
+    createBankConnection: mocks.createBankConnection,
+    reconnectBankConnection: mocks.reconnectBankConnection,
 
     // OAuth applications router (additional @midday/db/queries named imports)
     claimDCRApplication: createDefaultMock(),
@@ -1287,8 +1363,7 @@ mock.module("@midday/invoice/token", () => ({
   verify: mock(() => ({ id: "invoice-123", teamId: "test-team-id" })),
 }));
 
-mock.module("@midday/invoice", () => ({
-  DEFAULT_TEMPLATE: {},
+const invoicePdfRendererMocks = {
   PdfTemplate: mock(async () => ({})),
   renderToStream: mock(() =>
     Promise.resolve(
@@ -1300,7 +1375,12 @@ mock.module("@midday/invoice", () => ({
       }),
     ),
   ),
+};
+mock.module("@midday/invoice", () => ({
+  DEFAULT_TEMPLATE: {},
+  ...invoicePdfRendererMocks,
 }));
+mock.module("@midday/invoice/server", () => invoicePdfRendererMocks);
 
 // Mock @api/services/supabase
 mock.module("@api/services/supabase", () => ({
@@ -1355,6 +1435,7 @@ mock.module("@api/utils/polar", () => ({
     },
     subscriptions: {
       list: mocks.polarSubscriptionsList,
+      get: mocks.polarSubscriptionsGet,
       update: mocks.polarSubscriptionsUpdate,
     },
   },

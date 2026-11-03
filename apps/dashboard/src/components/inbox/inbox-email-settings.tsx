@@ -21,7 +21,14 @@ export function InboxEmailSettings() {
       </CardHeader>
 
       <div className="px-6 pb-6 max-w-[400px]">
-        <CopyInput value={inboxEmail} />
+        {inboxEmail ? (
+          <CopyInput value={inboxEmail} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Email forwarding is not configured for this installation. Upload
+            receipts directly or connect an available email integration.
+          </p>
+        )}
       </div>
     </Card>
   );

@@ -1,11 +1,14 @@
 // Import Sentry instrumentation first, before any other modules
 import "./instrument";
 
+import { getApiUrl, getAppUrl } from "@midday/utils/envs";
+
 import { trpcServer } from "@hono/trpc-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { bot } from "@midday/bot";
 import { closeSharedRedisClient } from "@midday/cache/shared-redis";
 import { closeDb, getPoolStats } from "@midday/db/client";
+import { readTeamQuotaError } from "@midday/db/team-quota-error";
 import {
   buildDependenciesResponse,
   checkDependencies,
@@ -40,9 +43,14 @@ app.use(
 );
 
 // Register before general CORS so these preflights permit the HttpOnly nonce.
-// No other route acquires credentialed CORS from this exception.
-app.use("/apps/gmail/install-url", inboxOAuthStartCors());
-app.use("/apps/outlook/install-url", inboxOAuthStartCors());
+// Only authenticated OAuth start endpoints acquire credentialed CORS.
+const oauthStartPaths = new Set([
+  "/apps/gmail/install-url", "/apps/outlook/install-url",
+  "/apps/xero/install-url", "/apps/quickbooks/install-url",
+  "/apps/fortnox/install-url", "/apps/slack/install-url",
+  "/invoice-payments/connect-stripe",
+]);
+for (const path of oauthStartPaths) app.use(path, inboxOAuthStartCors());
 
 const generalApiCors = cors({
   origin: process.env.ALLOWED_API_ORIGINS?.split(",") ?? [],
@@ -70,14 +78,12 @@ const generalApiCors = cors({
     "Cache-Control",
     "Cross-Origin-Resource-Policy",
     "Server-Timing",
+    "Retry-After",
   ],
   maxAge: 86400,
 });
 app.use("*", (c, next) => {
-  if (
-    c.req.path === "/apps/gmail/install-url" ||
-    c.req.path === "/apps/outlook/install-url"
-  ) {
+  if (oauthStartPaths.has(c.req.path)) {
     return next();
   }
   return generalApiCors(c, next);
@@ -118,7 +124,7 @@ app.use(
   trpcServer({
     router: appRouter,
     createContext: createTRPCContext,
-    onError: ({ error, path, input }) => {
+    onError: ({ error, path }) => {
       logger.error(`[tRPC] ${path}`, {
         message: error.message,
         code: error.code,
@@ -130,10 +136,8 @@ app.use(
       if (error.code === "INTERNAL_SERVER_ERROR") {
         Sentry.captureException(error, {
           tags: { source: "trpc", path: path ?? "unknown" },
-          extra: {
-            input:
-              typeof input === "object" ? JSON.stringify(input) : undefined,
-          },
+          // Never attach the raw tRPC input: it may contain tokens or finance data.
+          extra: { code: error.code },
         });
       }
     },
@@ -173,22 +177,21 @@ const openAPIConfig = {
   openapi: "3.1.0",
   info: {
     version: "0.0.1",
-    title: "Midday API",
+    title: "AGSaaS API",
     description:
-      "Midday is a platform for Invoicing, Time tracking, File reconciliation, Storage & Financial Overview.",
+      "AGSaaS provides invoices, transactions, customers, documents, time tracking and financial reports for this installation.",
     contact: {
-      name: "Midday Support",
-      email: "engineer@midday.ai",
-      url: "https://midday.ai",
+      name: "AGSaaS support",
+      url: `${getAppUrl()}/account/support`,
     },
     license: {
       name: "AGPL-3.0 license",
-      url: "https://github.com/midday-ai/midday/blob/main/LICENSE",
+      url: "https://github.com/IMONsergey/agsaas/blob/main/LICENSE",
     },
   },
   servers: [
     {
-      url: "https://api.midday.ai",
+      url: getApiUrl(),
       description: "Production API",
     },
   ],
@@ -298,9 +301,8 @@ app.openAPIRegistry.registerComponent("securitySchemes", "token", {
   "x-speakeasy-example": "MIDDAY_API_KEY",
 });
 
-const dashboardUrl =
-  process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
-const apiUrl = process.env.MIDDAY_API_URL || "https://api.midday.ai";
+const dashboardUrl = getAppUrl();
+const apiUrl = getApiUrl();
 
 app.openAPIRegistry.registerComponent("securitySchemes", "oauth2", {
   type: "oauth2",
@@ -343,7 +345,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "oauth2", {
 
 app.get(
   "/",
-  Scalar({ url: "/openapi", pageTitle: "Midday API", theme: "saturn" }),
+  Scalar({ url: "/openapi", pageTitle: "AGSaaS API", theme: "saturn" }),
 );
 
 app.route("/", routers);
@@ -373,6 +375,8 @@ if (poolStatsIntervalMs <= 0) {
 
 // Global error handler — captures unhandled route errors to Sentry
 app.onError((err, c) => {
+  const quota = readTeamQuotaError(err);
+  if (quota) return c.json({ error: quota.message, quota }, 409);
   if (err instanceof HTTPException) {
     return err.getResponse();
   }

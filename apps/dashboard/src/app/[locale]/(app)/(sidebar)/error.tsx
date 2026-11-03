@@ -12,10 +12,11 @@ import { useEffect } from "react";
  */
 export default function SidebarError({
   error,
-  reset,
+  retry,
 }: {
   error: Error & { digest?: string };
   reset: () => void;
+  retry: () => void;
 }) {
   useEffect(() => {
     if (process.env.NODE_ENV === "production") {
@@ -39,7 +40,7 @@ export default function SidebarError({
           </p>
         )}
 
-        <Button onClick={() => reset()} variant="outline" className="mt-6">
+        <Button onClick={() => retry()} variant="outline" className="mt-6">
           Try again
         </Button>
       </div>

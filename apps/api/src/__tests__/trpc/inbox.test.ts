@@ -100,13 +100,26 @@ describe("tRPC: inbox.delete", () => {
     mocks.deleteInbox.mockReset();
     mocks.deleteInbox.mockImplementation(() => ({
       id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      filePath: null,
+      cleanupPending: false,
+      cleanupId: null,
     }));
   });
 
   test("deletes inbox item successfully", async () => {
     const caller = createCaller(createTestContext());
-    await caller.delete({ id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d" });
-    expect(mocks.deleteInbox).toHaveBeenCalled();
+    expect(
+      await caller.delete({ id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d" }),
+    ).toEqual({
+      id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      filePath: null,
+      cleanupPending: false,
+      cleanupId: null,
+    });
+    expect(mocks.deleteInbox).toHaveBeenCalledWith(expect.anything(), {
+      id: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      teamId: "test-team-id",
+    });
   });
 });
 
@@ -127,6 +140,26 @@ describe("tRPC: inbox.getByStatus", () => {
 });
 
 const INBOX_NEW_ID = "b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4";
+const UPLOAD_TEAM_ID = "d9ea81b7-9e02-4c12-b2c3-dcaeb6c4d311";
+
+function createUploadContext() {
+  const ctx = createTestContext({ teamId: UPLOAD_TEAM_ID });
+  const db = {
+    ...ctx.db,
+    query: {
+      ...ctx.db.query,
+      users: {
+        findFirst: async () => ({
+          id: ctx.session.user.id,
+          teamId: UPLOAD_TEAM_ID,
+          usersOnTeams: [{ id: "upload-membership", teamId: UPLOAD_TEAM_ID }],
+        }),
+      },
+    },
+  };
+  db.usePrimaryOnly = () => db;
+  return { ...ctx, db };
+}
 
 describe("tRPC: inbox.create", () => {
   beforeEach(() => {
@@ -137,27 +170,44 @@ describe("tRPC: inbox.create", () => {
   });
 
   test("creates inbox row from upload metadata", async () => {
-    const caller = createCaller(createTestContext());
+    const caller = createCaller(createUploadContext());
     const result = await caller.create({
       filename: "invoice.pdf",
       mimetype: "application/pdf",
       size: 2048,
-      filePath: ["test-team-id", "inbox", "invoice.pdf"],
+      filePath: [UPLOAD_TEAM_ID, "inbox", "invoice.pdf"],
     });
 
     expect(result).toMatchObject({ id: INBOX_NEW_ID });
     expect(mocks.createInbox).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        teamId: "test-team-id",
+        teamId: UPLOAD_TEAM_ID,
         displayName: "invoice.pdf",
         fileName: "invoice.pdf",
-        filePath: ["test-team-id", "inbox", "invoice.pdf"],
+        filePath: [UPLOAD_TEAM_ID, "inbox", "invoice.pdf"],
         contentType: "application/pdf",
         size: 2048,
         status: "processing",
       }),
     );
+  });
+
+  test("rejects another team's file before writing inbox metadata", async () => {
+    const caller = createCaller(createUploadContext());
+    await expect(
+      caller.create({
+        filename: "invoice.pdf",
+        mimetype: "application/pdf",
+        size: 2048,
+        filePath: [
+          "b02dd84b-5fb6-4e66-9ed1-c63164715b8d",
+          "inbox",
+          "invoice.pdf",
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.createInbox).not.toHaveBeenCalled();
   });
 });
 
@@ -165,7 +215,14 @@ describe("tRPC: inbox.deleteMany", () => {
   beforeEach(() => {
     mocks.deleteInboxMany.mockReset();
     mocks.deleteInboxMany.mockImplementation(() =>
-      Promise.resolve([{ id: INBOX_NEW_ID, filePath: null }]),
+      Promise.resolve([
+        {
+          id: INBOX_NEW_ID,
+          filePath: null,
+          cleanupPending: false,
+          cleanupId: null,
+        },
+      ]),
     );
   });
 
@@ -173,7 +230,14 @@ describe("tRPC: inbox.deleteMany", () => {
     const caller = createCaller(createTestContext());
     const result = await caller.deleteMany([INBOX_NEW_ID]);
 
-    expect(result).toEqual([{ id: INBOX_NEW_ID, filePath: null }]);
+    expect(result).toEqual([
+      {
+        id: INBOX_NEW_ID,
+        filePath: null,
+        cleanupPending: false,
+        cleanupId: null,
+      },
+    ]);
     expect(mocks.deleteInboxMany).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -181,6 +245,20 @@ describe("tRPC: inbox.deleteMany", () => {
         teamId: "test-team-id",
       }),
     );
+  });
+  test("an attached object's deferred cleanup remains visible in the response", async () => {
+    const receipt = {
+      id: INBOX_NEW_ID,
+      filePath: ["test-team-id", "inbox", "invoice.pdf"],
+      cleanupPending: true,
+      cleanupId: "1cccb8f3-febf-4d7f-969b-60b3d3fe166d",
+    };
+    mocks.deleteInboxMany.mockImplementationOnce(() =>
+      Promise.resolve([receipt]),
+    );
+    expect(
+      await createCaller(createTestContext()).deleteMany([INBOX_NEW_ID]),
+    ).toEqual([receipt]);
   });
 });
 

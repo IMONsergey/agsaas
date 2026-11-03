@@ -2,7 +2,12 @@
 
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
-import { Sheet, SheetContent } from "@midday/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@midday/ui/sheet";
 import { useState } from "react";
 import { MainMenu } from "./main-menu";
 
@@ -13,6 +18,7 @@ export function MobileMenu() {
     <Sheet open={isOpen} onOpenChange={setOpen}>
       <div>
         <Button
+          aria-label="Open navigation"
           variant="outline"
           size="icon"
           onClick={() => setOpen(true)}
@@ -22,6 +28,10 @@ export function MobileMenu() {
         </Button>
       </div>
       <SheetContent side="left" className="border-none rounded-none -ml-4">
+        <SheetTitle className="sr-only">Navigation</SheetTitle>
+        <SheetDescription className="sr-only">
+          Choose an AGSaaS workspace section.
+        </SheetDescription>
         <div className="ml-2 mb-8">
           <Icons.LogoSmall />
         </div>

@@ -135,6 +135,7 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/midday_test
+      AGSAAS_CI_POSTGRES_FIXTURE: fresh-github-actions-pg16-midday-test
       REDIS_TEST_URL: redis://127.0.0.1:6379/15
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +144,44 @@ jobs:
           bun-version: "1.3.11"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Verify fresh PostgreSQL fixture contracts
+        run: bun --no-env-file test --exit --timeout 30000 scripts/ci-synthetic-postgres.test.ts
+      - name: Prepare fresh native PostgreSQL fixture
+        run: bun --no-env-file scripts/ci-synthetic-postgres.mts
       - name: Isolated PostgreSQL calculations and tenant boundaries
-        run: bun run test:db
+        run: bun run --cwd packages/db test:e2e
+      - name: Native export snapshots, history and archive access
+        working-directory: packages/db
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_export_suite() {
+            local suite_path="$1"
+            local expected_passes="$2"
+            local log_path="$RUNNER_TEMP/agsaas-${suite_path##*/}.log"
+            bun --no-env-file test --exit --timeout 30000 "$suite_path" 2>&1 | tee "$log_path"
+            python3 - "$log_path" "$expected_passes" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          output = re.sub(r"\x1b\[[0-9;]*m", "", Path(sys.argv[1]).read_text())
+          expected = int(sys.argv[2])
+          counts = {
+              kind: [int(value) for value in re.findall(rf"(?m)^\s*(\d+) {kind}\s*$", output)]
+              for kind in ("pass", "fail", "skip", "todo")
+          }
+          if (
+              counts["pass"] != [expected]
+              or counts["fail"] != [0]
+              or any(value != 0 for kind in ("skip", "todo") for value in counts[kind])
+              or re.search(r"(?m)^\s*\((?:skip|todo)\)", output)
+          ):
+              raise SystemExit("Export PostgreSQL suite must pass its exact case count without skips or TODOs")
+          PY
+          }
+          run_export_suite src/test/export-snapshots-postgres.test.ts 6
+          run_export_suite src/test/export-history-postgres.test.ts 5
+          run_export_suite src/test/export-file-access-postgres.test.ts 1
       - name: Real Redis and BullMQ regressions
         run: bun run test:redis

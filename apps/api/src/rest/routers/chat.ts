@@ -1,12 +1,14 @@
 import { streamMiddayAssistant } from "@api/chat/assistant-runtime";
 import type { MentionedApp } from "@api/chat/prompt";
 import { buildSystemPrompt } from "@api/chat/prompt";
+import { assertChatRequestBudget } from "@api/chat/request-budget";
 import {
   decodeDataUrl,
   stripFileAndImageParts,
   writeChatTitle,
 } from "@api/chat/utils";
 import type { McpContext } from "@api/mcp/types";
+import { withRequiredScope } from "@api/rest/middleware/scope";
 import type { Context } from "@api/rest/types";
 import { getGeoContext } from "@api/utils/geo";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -17,11 +19,13 @@ import {
   processInboxUpload,
 } from "@midday/bot";
 import { logger } from "@midday/logger";
+import { getApiUrl } from "@midday/utils/envs";
 import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
 } from "ai";
+import { bodyLimit } from "hono/body-limit";
 import { type RateLimitInfo, rateLimiter } from "hono-rate-limiter";
 
 type ChatContext = {
@@ -45,6 +49,37 @@ app.use(
   }),
 );
 
+// Authentication middleware sets scopes/authType from verified credentials.
+// These gates precede body parsing, file decoding, Storage, queues and AI tools.
+app.use(withRequiredScope("chat.write"));
+app.use(async (c, next) => {
+  if (!c.get("teamId"))
+    return c.json(
+      { code: "TEAM_REQUIRED", error: "Select a team before using chat" },
+      403,
+    );
+  if (!process.env.OPENAI_API_KEY?.trim()) {
+    return c.json(
+      {
+        code: "AI_NOT_CONFIGURED",
+        error: "AI is not configured for this instance",
+      },
+      503,
+    );
+  }
+  await next();
+});
+app.use(
+  bodyLimit({
+    maxSize: 20 * 1024 * 1024,
+    onError: (c) =>
+      c.json(
+        { code: "PAYLOAD_TOO_LARGE", error: "Chat request is too large" },
+        413,
+      ),
+  }),
+);
+
 app.post("/", async (c) => {
   try {
     const db = c.get("db");
@@ -54,8 +89,48 @@ app.post("/", async (c) => {
     const geo = getGeoContext(c.req);
     const user = c.get("user");
 
-    const body = await c.req.json();
+    let body: Record<string, any>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json(
+        { code: "INVALID_REQUEST", error: "Invalid chat request" },
+        400,
+      );
+    }
+    if (
+      !body ||
+      !Array.isArray(body.messages) ||
+      body.messages.length === 0 ||
+      body.messages.length > 100 ||
+      body.messages.some(
+        (message: any) =>
+          !message ||
+          !["user", "assistant", "system"].includes(message.role) ||
+          !Array.isArray(message.parts) ||
+          message.parts.length > 100,
+      )
+    ) {
+      return c.json(
+        { code: "INVALID_REQUEST", error: "Invalid chat messages" },
+        400,
+      );
+    }
     const uiMessages = body.messages as any[];
+    try {
+      assertChatRequestBudget(uiMessages);
+    } catch (error) {
+      return c.json(
+        {
+          code: "PAYLOAD_TOO_LARGE",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Chat request exceeds its budget",
+        },
+        413,
+      );
+    }
     const latestUserMessage = [...uiMessages]
       .reverse()
       .find((message) => message?.role === "user");
@@ -69,9 +144,11 @@ app.post("/", async (c) => {
       db,
       teamId,
       userId: user?.id ?? session.user.id,
+      sessionId:
+        c.get("authType") === "session" ? session.sessionId : undefined,
       userEmail: user?.email ?? session.user.email ?? null,
       scopes,
-      apiUrl: process.env.MIDDAY_API_URL || "https://api.midday.ai",
+      apiUrl: getApiUrl(),
       timezone: resolvedTimezone,
       locale: user?.locale || geo.locale,
       countryCode: geo.country,
@@ -92,6 +169,15 @@ app.post("/", async (c) => {
           isSupportedInboxUploadMediaType(part?.mediaType),
       );
 
+      if (fileParts.length > 0 && !scopes.includes("inbox.write")) {
+        return c.json(
+          {
+            code: "INSUFFICIENT_SCOPE",
+            error: "Inbox write permission is required to upload files",
+          },
+          403,
+        );
+      }
       for (const [index, part] of fileParts.entries()) {
         try {
           const decoded = decodeDataUrl(new URL(part.url));
@@ -157,6 +243,7 @@ app.post("/", async (c) => {
           mcpCtx,
           systemPrompt,
           modelMessages,
+          allowExternalTools: c.get("authType") === "session",
         });
 
         writer.merge(result.toUIMessageStream({ sendSources: true }));
@@ -168,10 +255,7 @@ app.post("/", async (c) => {
   } catch (err) {
     logger.error("[chat] Error:", { error: err });
 
-    return c.json(
-      { error: err instanceof Error ? err.message : "Internal error" },
-      500,
-    );
+    return c.json({ error: "Unable to complete the chat request" }, 500);
   }
 });
 

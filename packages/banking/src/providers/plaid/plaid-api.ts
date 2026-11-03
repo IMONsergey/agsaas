@@ -13,8 +13,12 @@ import type { ConnectionStatus, GetInstitutionsRequest } from "../../types";
 import { PLAID_COUNTRIES } from "../../utils/countries";
 import { ProviderError } from "../../utils/error";
 import { logger } from "../../utils/logger";
+import { getBankWebhookUrl } from "../../utils/own-webhook-url";
 import { paginate } from "../../utils/paginate";
-import { withRateLimitRetry, withRetry } from "../../utils/retry";
+import {
+  withRateLimitRetry as retryWithRateLimit,
+  withRetry,
+} from "../../utils/retry";
 import type {
   DisconnectAccountRequest,
   GetAccountBalanceRequest,
@@ -31,19 +35,27 @@ import type {
 import { isError } from "./utils";
 
 export class PlaidApi {
+  #signal?: AbortSignal;
+  #withRateLimitRetry<TResult>(fn: () => TResult | Promise<TResult>) {
+    return retryWithRateLimit(fn, { signal: this.#signal });
+  }
+
   #client: PlaidBaseApi;
   #clientId: string;
   #clientSecret: string;
 
   #countryCodes = PLAID_COUNTRIES as CountryCode[];
 
-  constructor() {
+  constructor(signal?: AbortSignal) {
+    this.#signal = signal;
     this.#clientId = env.PLAID_CLIENT_ID;
     this.#clientSecret = env.PLAID_SECRET;
 
     const configuration = new Configuration({
       basePath: PlaidEnvironments[env.PLAID_ENVIRONMENT],
       baseOptions: {
+        signal,
+        timeout: 30_000,
         headers: {
           "PLAID-CLIENT-ID": this.#clientId,
           "PLAID-SECRET": this.#clientSecret,
@@ -54,18 +66,11 @@ export class PlaidApi {
     this.#client = new PlaidBaseApi(configuration);
   }
 
-  #generateWebhookUrl(environment: "sandbox" | "production") {
-    if (environment === "sandbox") {
-      return "https://api-staging.midday.ai/webhook/plaid";
-    }
-
-    return "https://api.midday.ai/webhook/plaid";
-  }
-
   async getHealthCheck() {
     try {
       const response = await fetch(
         "https://status.plaid.com/api/v2/status.json",
+        { signal: this.#signal ?? AbortSignal.timeout(30_000) },
       );
 
       const data = (await response.json()) as GetStatusResponse;
@@ -84,7 +89,7 @@ export class PlaidApi {
     accountId,
   }: GetAccountBalanceRequest): Promise<GetAccountBalanceResponse | undefined> {
     try {
-      const accounts = await withRateLimitRetry(() =>
+      const accounts = await this.#withRateLimitRetry(() =>
         this.#client.accountsGet({
           access_token: accessToken,
           options: {
@@ -94,7 +99,7 @@ export class PlaidApi {
       );
 
       const account = accounts.data.accounts.at(0);
-      if (!account) return undefined;
+      if (!account) throw new Error("Provider account balance is unavailable");
 
       // Return both balances and type so provider can infer correct balance field
       return {
@@ -107,6 +112,7 @@ export class PlaidApi {
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -115,7 +121,7 @@ export class PlaidApi {
     institutionId,
   }: GetAccountsRequest): Promise<GetAccountsResponse | undefined> {
     try {
-      const accounts = await withRateLimitRetry(() =>
+      const accounts = await this.#withRateLimitRetry(() =>
         this.#client.accountsGet({
           access_token: accessToken,
         }),
@@ -136,6 +142,7 @@ export class PlaidApi {
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -149,7 +156,7 @@ export class PlaidApi {
 
       if (latest) {
         // Get transactions from the last 5 days using /transactions/get
-        const { data } = await withRateLimitRetry(() =>
+        const { data } = await this.#withRateLimitRetry(() =>
           this.#client.transactionsGet({
             access_token: accessToken,
             start_date: formatISO(subDays(new Date(), 5), {
@@ -168,7 +175,7 @@ export class PlaidApi {
         let hasMore = true;
 
         while (hasMore) {
-          const { data } = await withRateLimitRetry(() =>
+          const { data } = await this.#withRateLimitRetry(() =>
             this.#client.transactionsSync({
               access_token: accessToken,
               cursor,
@@ -192,6 +199,7 @@ export class PlaidApi {
       if (parsedError) {
         throw new ProviderError(parsedError);
       }
+      throw error;
     }
   }
 
@@ -199,17 +207,16 @@ export class PlaidApi {
     userId,
     language = "en",
     accessToken,
-    environment = "production",
   }: LinkTokenCreateRequest): ReturnType<PlaidBaseApi["linkTokenCreate"]> {
     return this.#client.linkTokenCreate({
       client_id: this.#clientId,
       secret: this.#clientSecret,
-      client_name: "Midday",
+      client_name: (process.env.APP_NAME?.trim() || "AGSaaS").slice(0, 100),
       products: [Products.Transactions],
       language,
       access_token: accessToken,
       country_codes: this.#countryCodes,
-      webhook: this.#generateWebhookUrl(environment),
+      webhook: getBankWebhookUrl("plaid"),
       transactions: {
         days_requested: 730,
       },
@@ -308,11 +315,8 @@ export class PlaidApi {
         }
       }
 
-      logger.error("Plaid connection status check failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      return { status: "connected" };
+      // Unknown/aborted responses do not prove a healthy consent.
+      throw error;
     }
   }
 }

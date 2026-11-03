@@ -143,7 +143,7 @@ export function AccountingSection() {
           >
             Learn more about pre-accounting
             <MaterialIcon
-              name="arrow_forward"
+              name="arrow_outward"
               className="text-foreground"
               size={14}
             />

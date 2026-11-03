@@ -1,3 +1,4 @@
+import { reconcileHostedBankConsents } from "@midday/db/queries/hosted-bank-consents";
 import { listRecoverableBankConnectionCleanups } from "@midday/db/queries/bank-connection-cleanups";
 import type { Job } from "bullmq";
 import { cleanupBankConnection } from "../../utils/bank-connection-cleanup";
@@ -10,6 +11,7 @@ export class ReconcileBankConnectionsProcessor extends BaseProcessor<
 > {
   async process(_job: Job<Record<string, never>>) {
     const db = getDb();
+    const consentReconciled = await reconcileHostedBankConsents(db, 20);
     const due = await listRecoverableBankConnectionCleanups(db, 10);
     let completed = 0,
       pending = 0,
@@ -31,6 +33,12 @@ export class ReconcileBankConnectionsProcessor extends BaseProcessor<
         }
       }),
     );
-    return { scanned: due.length, completed, pending, reconciliation };
+    return {
+      scanned: due.length,
+      completed,
+      pending,
+      reconciliation,
+      consentReconciled,
+    };
   }
 }

@@ -75,8 +75,12 @@ describe("optional provider imports", () => {
   });
 
   test("disabled Composio tools and connections need neither SDK nor Redis", async () => {
-    expect(await connectors.getComposioTools("user-1")).toEqual({});
-    expect(await connectors.getUserToolkits("user-1")).toEqual([]);
+    // Unapproved external tools and user-scoped helpers are no longer exposed.
+    expect("getComposioTools" in connectors).toBe(false);
+    expect("getUserToolkits" in connectors).toBe(false);
+    expect(
+      await connectors.getTeamToolkits("922b0346-5f35-46f9-b81d-ee34d4b049a5"),
+    ).toEqual([]);
     expect(readCache).not.toHaveBeenCalled();
     expect(composioConstructed).not.toHaveBeenCalled();
   });
@@ -140,7 +144,7 @@ describe("optional provider imports", () => {
     delete process.env.COMPOSIO_API_KEY;
   });
 
-  test("configured Composio REST requests preserve URL, header, and payload", async () => {
+  test("configured Composio REST requests remain bounded and refuse redirects", async () => {
     process.env.COMPOSIO_API_KEY = "local-test-composio-rest-key";
     fetchSpy.mockResolvedValueOnce(Response.json({ slug: "example" }));
 
@@ -149,7 +153,11 @@ describe("optional provider imports", () => {
     });
     expect(fetchSpy).toHaveBeenLastCalledWith(
       "https://backend.composio.dev/api/v3/toolkits/example",
-      { headers: { "x-api-key": "local-test-composio-rest-key" } },
+      {
+        headers: { "x-api-key": "local-test-composio-rest-key" },
+        redirect: "error",
+        signal: expect.any(AbortSignal),
+      },
     );
     delete process.env.COMPOSIO_API_KEY;
   });

@@ -34,3 +34,19 @@ describe("tRPC: apps.get", () => {
     ]);
   });
 });
+
+
+test("apps.get strips credentials at the transport boundary even from an unsanitized query result", async () => {
+  const secret = "fixture-private-token";
+  mocks.getApps.mockImplementation(() => Promise.resolve([
+    { app_id: "slack", settings: null, config: { access_token: secret, team_name: "Workspace" } },
+    { app_id: "xero", settings: null, config: { provider: "xero", accessToken: secret, refreshToken: secret, tenantName: "Company" } },
+    { app_id: "future-provider", settings: null, config: { unknown: secret } },
+  ]));
+  const caller = createCaller(createTestContext());
+  const result = await caller.get();
+  expect(JSON.stringify(result)).not.toContain(secret);
+  expect(result[0]?.config).toEqual({ team_name: "Workspace" });
+  expect(result[1]?.config).toEqual({ provider: "xero", tenantName: "Company" });
+  expect(result[2]?.config).toBeNull();
+});

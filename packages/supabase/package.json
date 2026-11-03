@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@midday/banking": "workspace:*",
+    "@midday/utils": "workspace:*",
     "@supabase/postgrest-js": "^2.101.1",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",
@@ -35,6 +36,8 @@
     "./storage": "./src/utils/storage.ts",
     "./storage-path": "./src/utils/storage-path.ts",
     "./types": "./src/types/index.ts",
-    "./account-matching": "./src/utils/account-matching.ts"
+    "./account-matching": "./src/utils/account-matching.ts",
+    "./cleanup": "./src/client/cleanup.ts",
+    "./deletion-proof": "./src/client/deletion-proof.ts"
   }
 }

@@ -1,16 +1,26 @@
+import { createHash } from "node:crypto";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const hashedBuildInputs = [
   "GIT_COMMIT_SHA",
   "SENTRY_RELEASE",
   "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY",
+  "DASHBOARD_URL",
+  "NEXT_PUBLIC_URL",
 ] as const;
 
-const publicBuildInput = "NEXT_PUBLIC_API_URL";
+export const publicBuildInputs = [
+  "NEXT_PUBLIC_API_URL",
+  "NEXT_PUBLIC_RELEASE_SHA",
+] as const;
 const undeclaredInput = "DASHBOARD_BUILD_CONTRACT_UNDECLARED";
-type BuildInput = (typeof hashedBuildInputs)[number] | typeof publicBuildInput;
+export const browserAssetManifest = "src/utils/pdf-public-assets.json";
+type BuildInput =
+  | (typeof hashedBuildInputs)[number]
+  | (typeof publicBuildInputs)[number];
 type Environment = Record<string, string | undefined>;
 type JsonObject = Record<string, unknown>;
 
@@ -40,11 +50,14 @@ export function buildContractEnvironment(source: Environment): Environment {
     TURBO_TELEMETRY_DISABLED: "1",
     NEXT_TELEMETRY_DISABLED: "1",
     DO_NOT_TRACK: "1",
-    GIT_COMMIT_SHA: "dashboard-contract-baseline",
+    GIT_COMMIT_SHA: "a".repeat(40),
     SENTRY_RELEASE: "dashboard-contract-baseline",
     // Synthetic input for a dry run only. No application is built with this key.
     NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+    DASHBOARD_URL: "https://dashboard-contract.invalid",
+    NEXT_PUBLIC_URL: "https://dashboard-contract.invalid",
     NEXT_PUBLIC_API_URL: "https://dashboard-contract.invalid",
+    NEXT_PUBLIC_RELEASE_SHA: "a".repeat(40),
     [undeclaredInput]: "must-not-reach-the-build",
   };
   for (const key of [
@@ -93,14 +106,25 @@ export function inspectDashboardBuildReport(raw: string): { hash: string } {
       "Dashboard build must retain its .next output cache contract.",
     );
   }
+  if (!strings(definition?.outputs).includes("public/vendor/pdfjs/**")) {
+    throw new BuildContractError(
+      "Dashboard build must cache its prepared public/vendor/pdfjs/** assets.",
+    );
+  }
   // Turbo resolves $TURBO_DEFAULT$ into task.inputs and removes the token from
   // resolvedTaskDefinition.inputs. Inspect real source hashes, not that token.
   const inputs = object(task.inputs);
   if (
     !strings(definition?.inputs).includes(".env") ||
-    ["package.json", "next.config.ts", "src/app/[locale]/layout.tsx"].some(
-      (name) => typeof inputs?.[name] !== "string",
-    )
+    [
+      "package.json",
+      "next.config.ts",
+      "src/app/[locale]/layout.tsx",
+      "scripts/prepare-browser-assets.mjs",
+      "scripts/verify-release-source.mjs",
+      "src/app/[locale]/(public)/source/page.tsx",
+      browserAssetManifest,
+    ].some((name) => typeof inputs?.[name] !== "string")
   ) {
     throw new BuildContractError(
       "Dashboard build must retain its default source inputs.",
@@ -125,10 +149,10 @@ export function inspectDashboardBuildReport(raw: string): { hash: string } {
       );
     }
   }
-  if (!configured.has(publicBuildInput) && !inferred.has(publicBuildInput)) {
-    throw new BuildContractError(
-      `${publicBuildInput} must be forwarded and hashed.`,
-    );
+  for (const name of publicBuildInputs) {
+    if (!configured.has(name) && !inferred.has(name)) {
+      throw new BuildContractError(`${name} must be forwarded and hashed.`);
+    }
   }
   if (
     [
@@ -162,6 +186,166 @@ export function assertBuildInputChangesHash(
       `${name} changed without invalidating the dashboard build cache.`,
     );
   }
+}
+
+export function inspectDashboardAssetPreparation(scripts: unknown) {
+  const commands = object(scripts);
+  for (const name of ["build", "dev"] as const) {
+    const command = commands?.[name];
+    if (
+      typeof command !== "string" ||
+      !command.startsWith("node scripts/prepare-browser-assets.mjs && ") ||
+      !command.includes(`next ${name}`)
+    ) {
+      throw new BuildContractError(
+        "Dashboard build/dev must prepare owned PDF.js assets before Next.js.",
+      );
+    }
+  }
+}
+
+function digest(path: string): string {
+  if (!lstatSync(path).isFile()) {
+    throw new BuildContractError("PDF.js assets must be regular files.");
+  }
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function assetHashes(directory: string, prefix = ""): Map<string, string> {
+  if (!lstatSync(directory).isDirectory()) {
+    throw new BuildContractError(
+      "PDF.js asset directories must not be symlinks.",
+    );
+  }
+  const result = new Map<string, string>();
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      for (const [child, hash] of assetHashes(path, name))
+        result.set(child, hash);
+    } else {
+      result.set(name, digest(path));
+    }
+  }
+  return result;
+}
+
+function browserAssetInputs(root: string) {
+  const dashboard = join(root, "apps/dashboard");
+  const require = createRequire(join(dashboard, "package.json"));
+  let pdfPackage: string;
+  try {
+    // This can differ from the workspace's direct pdfjs-dist dependency.
+    const reactPdfRequire = createRequire(require.resolve("react-pdf"));
+    pdfPackage = reactPdfRequire.resolve("pdfjs-dist/package.json");
+  } catch {
+    throw new BuildContractError(
+      "React-PDF's installed PDF.js dependency is missing.",
+    );
+  }
+  const version = object(JSON.parse(readFileSync(pdfPackage, "utf8")))?.version;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new BuildContractError("The installed PDF.js version is invalid.");
+  }
+  const source = dirname(pdfPackage);
+  const expected = new Map([
+    ["pdf.worker.min.mjs", digest(join(source, "build/pdf.worker.min.mjs"))],
+    ["LICENSE", digest(join(source, "LICENSE"))],
+  ]);
+  for (const directory of ["cmaps", "standard_fonts", "wasm"]) {
+    const files = assetHashes(join(source, directory), directory);
+    if (!files.size)
+      throw new BuildContractError(
+        "An installed PDF.js asset directory is empty.",
+      );
+    for (const [name, hash] of files) expected.set(name, hash);
+  }
+  const manifest = object(
+    JSON.parse(readFileSync(join(dashboard, browserAssetManifest), "utf8")),
+  );
+  const files = strings(manifest?.files);
+  const expectedNames = [...expected.keys()].sort();
+  if (
+    manifest?.version !== version ||
+    files.length !== expectedNames.length ||
+    files.some((name, index) => name !== expectedNames[index])
+  ) {
+    throw new BuildContractError(
+      "The reviewed public PDF.js manifest does not match React-PDF's installed dependency.",
+    );
+  }
+  return { dashboard, version, expected };
+}
+
+/** Verify every decoder/font/map byte, not only the worker receipt. */
+export function verifyPreparedDashboardBrowserAssets(root: string) {
+  const { dashboard, version, expected } = browserAssetInputs(root);
+  const output = join(dashboard, "public/vendor/pdfjs", version);
+  const actual = assetHashes(output);
+  const receipt = object(
+    JSON.parse(readFileSync(join(output, "receipt.json"), "utf8")),
+  );
+  if (
+    receipt?.kind !== "agsaas-own-pdf-assets-v1" ||
+    receipt.version !== version ||
+    receipt.workerSha256 !== expected.get("pdf.worker.min.mjs") ||
+    receipt.publicBase !== `/vendor/pdfjs/${version}/` ||
+    receipt.license !== "LICENSE"
+  ) {
+    throw new BuildContractError(
+      "The prepared PDF.js receipt does not match its installed source.",
+    );
+  }
+  actual.delete("receipt.json");
+  if (
+    actual.size !== expected.size ||
+    [...expected].some(([name, hash]) => actual.get(name) !== hash)
+  ) {
+    throw new BuildContractError(
+      "Prepared PDF.js assets are missing, unexpected or differ from the installed source.",
+    );
+  }
+  return {
+    version,
+    assetFiles: expected.size,
+    workerSha256: expected.get("pdf.worker.min.mjs")!,
+  };
+}
+
+function prepareDashboardBrowserAssets(root: string) {
+  const { dashboard } = browserAssetInputs(root);
+  inspectDashboardAssetPreparation(
+    object(JSON.parse(readFileSync(join(dashboard, "package.json"), "utf8")))
+      ?.scripts,
+  );
+  const script = join(dashboard, "scripts/prepare-browser-assets.mjs");
+  if (!lstatSync(script).isFile())
+    throw new BuildContractError("The PDF.js asset preparer is missing.");
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    result = Bun.spawnSync({
+      cmd: ["node", script],
+      cwd: dashboard,
+      env: buildContractEnvironment(process.env),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 1024 * 1024,
+    });
+  } catch {
+    throw new BuildContractError(
+      "The offline PDF.js asset preparer could not be started.",
+    );
+  }
+  if (!result.success) {
+    throw new BuildContractError(
+      "The offline PDF.js asset preparation failed; no application build was executed.",
+    );
+  }
+  return verifyPreparedDashboardBrowserAssets(root);
 }
 
 function installedTurboBinary(root: string): string {
@@ -234,12 +418,15 @@ export function verifyDashboardBuildContract(root: string) {
   };
   const baseline = run(baselineEnv);
   const variants: Record<BuildInput, string> = {
-    GIT_COMMIT_SHA: "dashboard-contract-changed",
+    GIT_COMMIT_SHA: "b".repeat(40),
     SENTRY_RELEASE: "dashboard-contract-changed",
     NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: Buffer.alloc(32, 2).toString("base64"),
+    DASHBOARD_URL: "https://dashboard-server-changed.invalid",
+    NEXT_PUBLIC_URL: "https://dashboard-public-changed.invalid",
     NEXT_PUBLIC_API_URL: "https://dashboard-contract-changed.invalid",
+    NEXT_PUBLIC_RELEASE_SHA: "b".repeat(40),
   };
-  for (const name of [...hashedBuildInputs, publicBuildInput] as const) {
+  for (const name of [...hashedBuildInputs, ...publicBuildInputs] as const) {
     assertBuildInputChangesHash(
       name,
       baseline,
@@ -251,15 +438,19 @@ export function verifyDashboardBuildContract(root: string) {
       "The baseline build hash changed during verification; retry with a stable working tree.",
     );
   }
+  return prepareDashboardBrowserAssets(root);
 }
 
 if (import.meta.main) {
   try {
-    verifyDashboardBuildContract(
+    const assets = verifyDashboardBuildContract(
       dirname(dirname(fileURLToPath(import.meta.url))),
     );
     console.log(
-      "Dashboard build contract passed: strict environment, source/output/dependency contracts, and four cache-invalidating inputs (six dry runs, no application build).",
+      "Dashboard build contract passed: strict environment, source/output/dependency contracts, seven cache-invalidating inputs (nine dry runs), and verified offline PDF.js asset preparation; no application build or cache restore was executed.",
+    );
+    console.log(
+      JSON.stringify({ kind: "agsaas-dashboard-asset-contract-v1", ...assets }),
     );
   } catch (error) {
     console.error(

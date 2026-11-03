@@ -10,7 +10,15 @@ import { Input } from "@midday/ui/input";
 import { Skeleton } from "@midday/ui/skeleton";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Build copies the exact React-PDF dependency, including its license and decoders.
+const pdfAssetBase = `/vendor/pdfjs/${pdfjs.version}/`;
+pdfjs.GlobalWorkerOptions.workerSrc = `${pdfAssetBase}pdf.worker.min.mjs`;
+const pdfOptions = {
+  cMapUrl: `${pdfAssetBase}cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `${pdfAssetBase}standard_fonts/`,
+  wasmUrl: `${pdfAssetBase}wasm/`,
+};
 
 interface PdfViewerProps {
   url: string;
@@ -201,6 +209,7 @@ export function PdfViewer({ url, maxWidth }: PdfViewerProps) {
               <Document
                 key={`${url}_${isPasswordProtected}`}
                 file={url}
+                options={pdfOptions}
                 onLoadSuccess={onDocumentLoadSuccess}
                 onLoadError={onDocumentLoadError}
                 onPassword={onPassword}

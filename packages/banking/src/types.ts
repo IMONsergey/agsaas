@@ -4,6 +4,7 @@ export type Providers = "teller" | "plaid" | "gocardless" | "enablebanking";
 
 export type ProviderParams = {
   provider: Providers;
+  signal?: AbortSignal;
 };
 
 export type Transaction = {

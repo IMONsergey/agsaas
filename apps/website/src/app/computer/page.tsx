@@ -1,25 +1,35 @@
-import { Computer } from "@/components/computer";
+import Link from "next/link";
+import { InformationPage } from "@/components/information-page";
 import { createPageMetadata } from "@/lib/metadata";
-
+import { workspaceUrl } from "@/lib/site";
 export const metadata = createPageMetadata({
-  title: "Computer — Autonomous AI agents for your business",
+  title: "Work with the web application",
   description:
-    "Describe what you need, and Midday deploys an autonomous agent that runs on your schedule, learns over time, and delivers results while you sleep.",
+    "The browser workspace is the supported interface for this installation.",
   path: "/computer",
-  og: {
-    title: "Midday Computer",
-    description: "Your business runs even when you don't",
-  },
-  keywords: [
-    "autonomous agents",
-    "business automation",
-    "AI agents",
-    "Midday Computer",
-    "business workflows",
-    "scheduled agents",
-  ],
 });
-
 export default function Page() {
-  return <Computer />;
+  return (
+    <InformationPage
+      title="Work with the web application"
+      intro="The browser workspace is the supported interface for this installation."
+    >
+      <p>
+        Use direct manual workflows for invoices, transactions, customers,
+        documents and time tracking. Optional AI connections are configured
+        separately.
+      </p>
+      <a
+        href={workspaceUrl("/login")}
+        className="inline-block bg-foreground text-background px-5 py-3"
+      >
+        Open workspace
+      </a>
+      <p>
+        <Link href="/mcp" className="underline">
+          Connect a compatible AI client
+        </Link>
+      </p>
+    </InformationPage>
+  );
 }

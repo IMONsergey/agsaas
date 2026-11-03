@@ -1117,7 +1117,7 @@ export const invoicePaymentReservations = pgTable(
     invoiceNumber: text("invoice_number").notNull(),
     paymentIntentId: text("payment_intent_id"),
     state: text()
-      .$type<"reserved" | "attached" | "reconciliation_required">()
+      .$type<"reserved" | "attached" | "settled" | "reconciliation_required">()
       .default("reserved")
       .notNull(),
     failureCode: text("failure_code"),
@@ -1132,7 +1132,12 @@ export const invoicePaymentReservations = pgTable(
       .notNull(),
   },
   (table) => [
-    unique("invoice_payment_reservations_invoice_id_key").on(table.invoiceId),
+    uniqueIndex("invoice_payment_reservations_active_unique")
+      .on(table.invoiceId)
+      .where(sql`${table.state} <> 'settled'`),
+    uniqueIndex("invoice_payment_reservations_intent_unique")
+      .on(table.stripeAccountId, table.paymentIntentId)
+      .where(sql`${table.paymentIntentId} IS NOT NULL`),
     index("invoice_payment_reservations_team_id_idx").on(table.teamId),
     foreignKey({
       columns: [table.invoiceId, table.teamId],
@@ -1149,11 +1154,11 @@ export const invoicePaymentReservations = pgTable(
     ),
     check(
       "invoice_payment_reservations_state_check",
-      sql`${table.state} IN ('reserved', 'attached', 'reconciliation_required')`,
+      sql`${table.state} IN ('reserved', 'attached', 'settled', 'reconciliation_required')`,
     ),
     check(
       "invoice_payment_reservations_attached_check",
-      sql`${table.state} <> 'attached' OR ${table.paymentIntentId} IS NOT NULL`,
+      sql`${table.state} NOT IN ('attached','settled') OR ${table.paymentIntentId} IS NOT NULL`,
     ),
     pgPolicy("agsaas_backend", {
       as: "permissive",
@@ -1447,10 +1452,35 @@ export const reports = pgTable(
     to: timestamp({ withTimezone: true, mode: "string" }),
     type: reportTypesEnum(),
     expireAt: timestamp("expire_at", { withTimezone: true, mode: "string" }),
+    mode: text("mode").$type<"snapshot" | "live">().default("live").notNull(),
+    revenueType: text("revenue_type")
+      .$type<"net" | "gross">()
+      .default("net")
+      .notNull(),
+    forecastMonths: integer("forecast_months").default(6).notNull(),
+    chartSnapshot: jsonb("chart_snapshot").$type<Record<string, unknown>>(),
+    snapshotAt: timestamp("snapshot_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "string" }),
     currency: text(),
     createdBy: uuid("created_by"),
   },
   (table) => [
+    check("reports_mode_check", sql`${table.mode} in ('live','snapshot')`),
+    check(
+      "reports_revenue_type_check",
+      sql`${table.revenueType} in ('net','gross')`,
+    ),
+    check(
+      "reports_forecast_months_check",
+      sql`${table.forecastMonths} between 1 and 24`,
+    ),
+    check(
+      "reports_snapshot_check",
+      sql`(${table.mode}<>'snapshot' or (${table.chartSnapshot} is not null and ${table.chartSnapshot}->>'version'='1' and ${table.snapshotAt} is not null)) is true`,
+    ),
     index("reports_team_id_idx").using(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
@@ -4737,7 +4767,7 @@ export const financialJobDispatches = pgTable(
     ),
     check(
       "financial_job_dispatches_queue_check",
-      sql`(${table.jobName}, ${table.queueName}) in (('generate-invoice', 'invoices'), ('enrich-transactions', 'transactions'), ('match-transactions-bidirectional', 'inbox'), ('notification', 'notifications'))`,
+      sql`(${table.jobName}, ${table.queueName}) in (('generate-invoice', 'invoices'), ('send-invoice-email', 'invoices'), ('enrich-transactions', 'transactions'), ('match-transactions-bidirectional', 'inbox'), ('notification', 'notifications'))`,
     ),
     check(
       "financial_job_dispatches_payload_check",
@@ -4904,6 +4934,361 @@ export const bankConnectionCleanups = pgTable(
       to: ["agsaas_app"],
       using: sql`true`,
       withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+export const customerEnrichmentOperations = pgTable(
+  "customer_enrichment_operations",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    isCurrent: boolean("is_current").notNull().default(true),
+    status: text().notNull().default("queued"),
+    attemptId: uuid("attempt_id"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    requestedAt: timestamp("requested_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .defaultNow(),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "string",
+    })
+      .notNull()
+      .defaultNow(),
+    errorCode: text("error_code"),
+  },
+  (table) => [
+    uniqueIndex("customer_enrichment_one_current")
+      .on(table.customerId)
+      .where(sql`${table.isCurrent}`),
+    index("customer_enrichment_pending")
+      .on(table.nextAttemptAt, table.requestedAt)
+      .where(
+        sql`${table.isCurrent} AND ${table.status} IN ('queued','processing')`,
+      ),
+    check(
+      "customer_enrichment_operation_status",
+      sql`${table.status} IN ('queued','processing','completed','failed','cancelled')`,
+    ),
+    check(
+      "customer_enrichment_operation_attempts",
+      sql`${table.attemptCount} BETWEEN 0 AND 3`,
+    ),
+  ],
+).enableRLS();
+
+export const supportRequests = pgTable(
+  "support_requests",
+  {
+    id: uuid().primaryKey().notNull(),
+    source: text().notNull(),
+    scopeKey: text("scope_key").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "set null",
+    }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    email: text().notNull(),
+    fullName: text("full_name").notNull(),
+    subject: text().notNull(),
+    priority: text().notNull(),
+    product: text().notNull(),
+    message: text().notNull(),
+    status: text().default("received").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("support_requests_scope_created").on(table.scopeKey, table.createdAt),
+    index("support_requests_team_user").on(
+      table.teamId,
+      table.userId,
+      table.createdAt,
+    ),
+  ],
+).enableRLS();
+
+/** Immutable business export input. Files and delivery credentials are not stored here. */
+export const exportSnapshots = pgTable(
+  "export_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    operationKey: text("operation_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    snapshot: jsonb("snapshot").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    result: jsonb("result"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("export_snapshots_team_id_operation_key_key").on(
+      table.teamId,
+      table.operationKey,
+    ),
+    check(
+      "export_snapshots_operation_key_check",
+      sql`${table.operationKey} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "export_snapshots_request_hash_check",
+      sql`${table.requestHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "export_snapshots_snapshot_hash_check",
+      sql`${table.snapshotHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "export_snapshots_snapshot_check",
+      sql`(jsonb_typeof(${table.snapshot})='object' AND ${table.snapshot}->>'teamId'=${table.teamId}::text AND ${table.snapshot}->>'version'='1') IS TRUE`,
+    ),
+    pgPolicy("agsaas_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+export const invoiceSettlementEntries = pgTable(
+  "invoice_settlement_entries",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    operationKey: text("operation_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    kind: text("kind").notNull(),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    currency: text().notNull(),
+    paymentId: uuid("payment_id"),
+    reversesId: uuid("reverses_id"),
+    provider: text().notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
+    providerResourceId: text("provider_resource_id").notNull(),
+    occurredAt: timestamp("occurred_at", {
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    actorId: uuid("actor_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reason: text().notNull(),
+  },
+  (table) => [
+    uniqueIndex("invoice_settlement_operation_unique").on(
+      table.teamId,
+      table.operationKey,
+    ),
+    uniqueIndex("invoice_settlement_resource_unique").on(
+      table.provider,
+      table.providerAccountId,
+      table.providerResourceId,
+      table.kind,
+    ),
+    index("invoice_settlement_entries_invoice_idx").on(
+      table.teamId,
+      table.invoiceId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.paymentId],
+      foreignColumns: [table.id],
+      name: "invoice_settlement_entries_payment_id_fkey",
+    }),
+    foreignKey({
+      columns: [table.reversesId],
+      foreignColumns: [table.id],
+      name: "invoice_settlement_entries_reverses_id_fkey",
+    }),
+    check(
+      "invoice_settlement_kind_check",
+      sql`${table.kind} IN ('payment','refund','refund_reversal')`,
+    ),
+    check(
+      "invoice_settlement_amount_check",
+      sql`${table.amountMinor}>0 AND ${table.amountMinor}<=9007199254740991`,
+    ),
+    check(
+      "invoice_settlement_currency_check",
+      sql`${table.currency} ~ '^[a-z]{3}$'`,
+    ),
+    check(
+      "invoice_settlement_operation_check",
+      sql`${table.operationKey} ~ '^[a-f0-9]{64}$' AND ${table.requestHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    foreignKey({
+      columns: [table.invoiceId, table.teamId],
+      foreignColumns: [invoices.id, invoices.teamId],
+      name: "invoice_settlement_entries_invoice_team_fkey",
+    }).onDelete("cascade"),
+    pgPolicy("invoice_settlement_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+export const invoiceSettlementState = pgTable(
+  "invoice_settlement_state",
+  {
+    invoiceId: uuid("invoice_id")
+      .primaryKey()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    projection: jsonb().notNull(),
+    entryCount: integer("entry_count").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    reconciliationRequired: boolean("reconciliation_required")
+      .notNull()
+      .default(false),
+    reason: text(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.invoiceId, table.teamId],
+      foreignColumns: [invoices.id, invoices.teamId],
+      name: "invoice_settlement_state_invoice_team_fkey",
+    }).onDelete("cascade"),
+    check("invoice_settlement_count_check", sql`${table.entryCount}>=0`),
+    pgPolicy("invoice_settlement_state_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+export const teamQuotaUsage = pgTable(
+  "team_quota_usage",
+  {
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    kind: text().notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    period: date().notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    source: text().notNull().default("admission"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.kind, table.resourceId] }),
+    index("team_quota_usage_period_idx").on(
+      table.teamId,
+      table.period,
+      table.kind,
+    ),
+    pgPolicy("quota_backend", {
+      for: "select",
+      to: ["agsaas_app"],
+      using: sql`true`,
+    }),
+  ],
+).enableRLS();
+export const teamConnectorReservations = pgTable(
+  "team_connector_reservations",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    toolkit: text().notNull(),
+    entityId: text("entity_id").notNull(),
+    status: text().notNull().default("pending"),
+    providerAccountId: text("provider_account_id"),
+    actorId: uuid("actor_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table) => [
+    uniqueIndex("team_connector_active_toolkit_unique")
+      .on(table.teamId, table.toolkit)
+      .where(sql`${table.status}<>'released'`),
+    uniqueIndex("team_connector_provider_account_unique")
+      .on(table.providerAccountId)
+      .where(sql`${table.providerAccountId} IS NOT NULL`),
+    pgPolicy("connector_quota_backend", {
+      for: "all",
+      to: ["agsaas_app"],
+      using: sql`true`,
+      withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+export const generatedStorageGrants = pgTable(
+  "generated_storage_grants",
+  {
+    bucketId: text("bucket_id").notNull(),
+    name: text().notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    bytes: bigint({ mode: "number" }).notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.bucketId, table.name] }),
+    pgPolicy("generated_storage_backend", {
+      for: "select",
+      to: ["agsaas_app"],
+      using: sql`true`,
     }),
   ],
 ).enableRLS();

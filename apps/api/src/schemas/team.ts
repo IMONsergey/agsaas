@@ -1,5 +1,7 @@
 import { isOwnPublicAvatarUrl } from "@api/utils/public-avatar-url";
 import { z } from "@hono/zod-openapi";
+import countries from "@midday/location/country-flags";
+import { uniqueCurrencies } from "@midday/location/currencies";
 
 export const teamResponseSchema = z.object({
   id: z.string().uuid().openapi({
@@ -165,19 +167,33 @@ export const updateTeamByIdSchema = z.object({
 });
 
 export const createTeamSchema = z.object({
-  name: z.string().openapi({
+  name: z.string().trim().min(2).max(100).openapi({
     description: "Name of the team or organization",
     example: "Acme Corporation",
   }),
-  baseCurrency: z.string().openapi({
-    description:
-      "Base currency for the team in ISO 4217 format (3-letter currency code)",
-    example: "USD",
-  }),
-  countryCode: z.string().optional().openapi({
-    description: "Country code for the team",
-    example: "US",
-  }),
+  baseCurrency: z
+    .string()
+    .refine(
+      (value) => uniqueCurrencies.includes(value),
+      "Select a supported reporting currency",
+    )
+    .openapi({
+      description:
+        "Base currency for the team in ISO 4217 format (3-letter currency code)",
+      example: "USD",
+    }),
+  countryCode: z
+    .string()
+    .refine(
+      (value) =>
+        Object.values(countries).some((country) => country.code === value),
+      "Select a valid business country",
+    )
+    .optional()
+    .openapi({
+      description: "Country code for the team",
+      example: "US",
+    }),
   fiscalYearStartMonth: z
     .number()
     .int()
@@ -367,3 +383,20 @@ export const teamMembersResponseSchema = z.object({
     description: "Array of team members with their roles and information",
   }),
 });
+
+export const exportHistoryInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(25).default(10),
+    cursor: z
+      .object({
+        createdAt: z.string().datetime({ precision: 6 }),
+        id: z.string().uuid(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const exportHistoryEntryInputSchema = z
+  .object({ id: z.string().uuid() })
+  .strict();

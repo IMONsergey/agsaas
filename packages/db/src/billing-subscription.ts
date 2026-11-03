@@ -58,6 +58,8 @@ export function parseBillingSubscriptionEvent(
       "subscription.canceled",
       "subscription.past_due",
       "subscription.revoked",
+      "subscription.updated",
+      "subscription.uncanceled",
     ].includes(String(event.type))
   ) {
     return null;
@@ -95,6 +97,23 @@ export function parseBillingSubscriptionEvent(
 
   let action: BillingSubscriptionEvent["action"];
   switch (event.type) {
+    case "subscription.updated":
+    case "subscription.uncanceled":
+      if (event.type === "subscription.uncanceled" && data.cancelAtPeriodEnd)
+        throw new BillingSubscriptionEventError();
+      if (["active", "trialing", "past_due"].includes(String(data.status))) {
+        action = data.cancelAtPeriodEnd
+          ? "canceled"
+          : (data.status as "active" | "trialing" | "past_due");
+      } else if (
+        event.type === "subscription.updated" &&
+        ["canceled", "unpaid", "incomplete", "incomplete_expired"].includes(
+          String(data.status),
+        )
+      ) {
+        action = "revoked";
+      } else throw new BillingSubscriptionEventError();
+      break;
     case "subscription.created":
       if (data.status !== "trialing" && data.status !== "active") return null;
       action = data.status;

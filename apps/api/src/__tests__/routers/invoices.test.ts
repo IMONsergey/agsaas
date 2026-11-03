@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { invoicesRouter } from "../../rest/routers/invoices";
-import { createTestApp } from "../helpers";
+import { createTestApp, type TestAppOptions } from "../helpers";
 import { mocks } from "../setup";
 
 // Type for response JSON
@@ -21,8 +21,8 @@ interface InvoiceResponse {
   [key: string]: unknown;
 }
 
-function createApp() {
-  const app = createTestApp();
+function createApp(options: TestAppOptions = {}) {
+  const app = createTestApp(options);
   app.route("/invoices", invoicesRouter);
   return app;
 }
@@ -242,5 +242,76 @@ describe("REST: DELETE /invoices/:id", () => {
         teamId: "test-team-id",
       }),
     );
+  });
+});
+
+describe("REST: PUT /invoices/:id durable status changes", () => {
+  const primary = { fixtureConnection: "primary" } as unknown as NonNullable<
+    TestAppOptions["db"]
+  >;
+  const usePrimaryOnly = mock(() => primary);
+  const routed = { usePrimaryOnly } as unknown as NonNullable<
+    TestAppOptions["db"]
+  >;
+  const app = createApp({ db: routed });
+  const id = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const operation = {
+    id: "11111111-1111-4111-8111-111111111111",
+    status: "pending",
+  };
+  beforeEach(() => {
+    usePrimaryOnly.mockClear();
+    mocks.updateInvoiceWithIntent.mockReset();
+    mocks.updateInvoice.mockClear();
+    mocks.triggerJob.mockClear();
+    mocks.getInvoiceById.mockReset();
+    mocks.getInvoiceById.mockImplementation(() => ({
+      ...createValidInvoiceForRest(),
+      status: "unpaid",
+    }));
+  });
+  test("uses the atomic command and preserves its receipt", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => ({
+      id,
+      status: "unpaid",
+      operation,
+    }));
+    const response = await app.request(`/invoices/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "unpaid" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id,
+      status: "unpaid",
+      operation,
+    });
+    expect(mocks.updateInvoiceWithIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id, teamId: "test-team-id", status: "unpaid" }),
+    );
+    expect(usePrimaryOnly).toHaveBeenCalledTimes(1);
+    expect(mocks.getInvoiceById).toHaveBeenCalledWith(primary, {
+      id,
+      teamId: "test-team-id",
+    });
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("command failure never returns a successful unchanged detail or queues fallback work", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => {
+      throw new Error("atomic fixture failure");
+    });
+    const response = await app.request(`/invoices/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "unpaid" }),
+    });
+    expect(response.status).toBe(500);
+    expect(usePrimaryOnly).not.toHaveBeenCalled();
+    expect(mocks.getInvoiceById).not.toHaveBeenCalled();
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
   });
 });

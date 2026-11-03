@@ -3,7 +3,8 @@ import { processDocumentSchema } from "@jobs/schema";
 import { updateDocumentByPath } from "@midday/db/queries";
 import { loadDocument } from "@midday/documents/loader";
 import { getContentSample } from "@midday/documents/utils";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { schemaTask, tasks } from "@trigger.dev/sdk";
 import { classifyDocument } from "./classify-document";
 import { classifyImage } from "./classify-image";
@@ -18,7 +19,8 @@ export const processDocument = schemaTask({
     concurrencyLimit: 50,
   },
   run: async ({ mimetype, filePath, teamId }) => {
-    const supabase = createClient();
+    requireVaultPathForTeam(filePath, teamId);
+    const supabase = createTeamClient(teamId);
 
     // Create activity for document upload
     await tasks.trigger("notification", {
@@ -33,6 +35,7 @@ export const processDocument = schemaTask({
       // If the file is a HEIC we need to convert it to a JPG
       if (mimetype === "image/heic") {
         await convertHeic.triggerAndWait({
+          teamId,
           filePath,
         });
       }

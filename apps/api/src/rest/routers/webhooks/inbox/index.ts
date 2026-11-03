@@ -1,4 +1,5 @@
 import type { Context } from "@api/rest/types";
+import { InvalidInboxWebhookAttachment } from "@api/services/inbox-webhook-ingestion";
 import { resend } from "@api/services/resend";
 import { createAdminClient } from "@api/services/supabase";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
@@ -12,31 +13,33 @@ import {
 import { getInboxIdFromEmail, inboxWebhookPostSchema } from "@midday/inbox";
 import { logger } from "@midday/logger";
 import { basicAuth } from "hono/basic-auth";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
 import {
   ALLOWED_FORWARDING_EMAILS,
   filterAttachments,
   POSTMARK_IP_RANGE,
-  triggerProcessingJobs,
-  type UploadResult,
-  uploadAttachment,
+  receiveInboxAttachments,
 } from "./utils";
 
 const app = new OpenAPIHono<Context>();
 
-// HTTP Basic Authentication
-// Postmark supports basic auth by including credentials in the webhook URL:
-// https://username:password@domain.com/webhook/inbox
-if (process.env.INBOX_WEBHOOK_USERNAME && process.env.INBOX_WEBHOOK_PASSWORD) {
-  app.use(
-    "*",
-    basicAuth({
-      username: process.env.INBOX_WEBHOOK_USERNAME,
-      password: process.env.INBOX_WEBHOOK_PASSWORD,
-    }),
-  );
-}
+// Authenticate before IP checks, body parsing or any service-role operation.
+// A missing configuration is retryable; it must never make this route public.
+// Postmark supports credentials in its webhook URL. IP filtering is additional
+// protection and cannot replace authentication at this boundary.
+app.use("*", async (c, next) => {
+  const username = process.env.INBOX_WEBHOOK_USERNAME;
+  const password = process.env.INBOX_WEBHOOK_PASSWORD;
+  if (!username?.trim() || !password?.trim()) {
+    return c.json(
+      { success: false as const, error: "Inbox webhook is not configured" },
+      503,
+    );
+  }
+  return basicAuth({ username, password })(c, next);
+});
 
 // IP address validation
 app.use("*", async (c, next) => {
@@ -79,6 +82,9 @@ app.use("*", async (c, next) => {
 
   await next();
 });
+
+// 50 MiB of decoded attachments plus base64 expansion and email metadata.
+app.use("*", bodyLimit({ maxSize: 70 * 1024 * 1024 }));
 
 app.openapi(
   createRoute({
@@ -127,8 +133,32 @@ app.openapi(
           },
         },
       },
+      401: {
+        description: "Missing or invalid webhook credentials",
+      },
       403: {
         description: "Invalid IP address",
+      },
+      503: {
+        description:
+          "Webhook configuration or durable attachment handoff is unavailable; retry this delivery",
+        content: {
+          "application/json": {
+            schema: z.union([
+              z.object({
+                success: z.literal(false),
+                error: z.literal("Inbox webhook is not configured"),
+              }),
+              z.object({
+                success: z.literal(false),
+                error: z.string(),
+                attempted: z.number(),
+                accepted: z.number(),
+                failed: z.number(),
+              }),
+            ]),
+          },
+        },
       },
       500: {
         description: "Internal server error",
@@ -249,6 +279,10 @@ app.openapi(
         return c.json({ success: true });
       }
 
+      if ((Attachments?.length ?? 0) > 100) {
+        return c.json({ error: "Too many inbound attachments" }, 400);
+      }
+
       const allowedAttachments = getAllowedAttachments(Attachments);
 
       if (!allowedAttachments?.length) {
@@ -291,68 +325,48 @@ app.openapi(
         allowedCount: allowedAttachments.length,
       });
 
-      // Upload all attachments in parallel
-      const uploadPromises = filteredAttachments.map((attachment) =>
-        uploadAttachment(
-          supabase,
-          teamId,
-          attachment,
-          FromFull?.Email || null,
-          Subject,
-          MessageID,
-        ),
+      // Preserve source positions by object identity across both filters. The
+      // provider Attachment type intentionally has no Zod passthrough index signature.
+      const originalAttachmentIndices = new Map<object, number>(
+        Attachments!.map((attachment, index) => [attachment, index]),
       );
-
-      const uploadResults = await Promise.all(uploadPromises);
-
-      // Filter out failed uploads
-      const successfulUploads = uploadResults.filter(
-        (result): result is UploadResult => result !== null,
-      );
-
-      const failedUploads = uploadResults.length - successfulUploads.length;
-
-      if (failedUploads > 0) {
-        logger.warn("Some attachments failed to upload", {
-          teamId,
-          inboxId,
-          messageId: MessageID,
-          successful: successfulUploads.length,
-          failed: failedUploads,
-          total: uploadResults.length,
-        });
-      }
-
-      if (!successfulUploads.length) {
-        logger.warn("No successful uploads", {
-          teamId,
-          inboxId,
-          messageId: MessageID,
-          attempted: uploadResults.length,
-        });
-        return c.json({ success: true });
-      }
-
-      logger.info("Successfully uploaded attachments", {
+      const result = await receiveInboxAttachments(db, supabase, {
         teamId,
-        inboxId,
         messageId: MessageID,
-        uploadCount: successfulUploads.length,
-        failedCount: failedUploads,
+        attachments: filteredAttachments.map((attachment) => ({
+          attachment,
+          index: originalAttachmentIndices.get(attachment) ?? -1,
+        })),
+        senderEmail: FromFull.Email || null,
+        subject: Subject,
       });
 
-      // Trigger processing jobs
-      await triggerProcessingJobs(teamId, successfulUploads);
-
+      if (!result.success) {
+        c.header("Retry-After", "60");
+        return c.json(
+          {
+            success: false as const,
+            error:
+              "Some attachments could not be retained and queued; retry this delivery",
+            attempted: result.attempted,
+            accepted: result.accepted,
+            failed: result.failed,
+          },
+          503,
+        );
+      }
       logger.info("Inbox webhook processed successfully", {
         teamId,
         inboxId,
         messageId: MessageID,
-        attachmentsProcessed: successfulUploads.length,
+        attachmentsProcessed: result.accepted,
       });
 
       return c.json({ success: true });
     } catch (error) {
+      if (error instanceof InvalidInboxWebhookAttachment) {
+        return c.json({ error: error.message }, 400);
+      }
       // Re-throw HTTPException as-is
       if (error instanceof HTTPException) {
         throw error;

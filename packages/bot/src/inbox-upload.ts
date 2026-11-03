@@ -1,3 +1,5 @@
+import { createReceiptObjectPath, createReceiptReferenceId } from "@midday/utils/receipt-path";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Database } from "@midday/db/client";
 import {
   createInbox,
@@ -8,7 +10,7 @@ import {
 import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
 import { logger } from "@midday/logger";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import { getExtensionFromMimeType } from "@midday/utils";
 import { nanoid } from "nanoid";
 
@@ -132,21 +134,22 @@ export async function processInboxUpload(
     mimeType,
     fileName,
     caption,
-    referenceId,
+    referenceId: sourceReferenceId,
     platform,
     platformMeta,
   } = params;
 
-  const supabase = createClient();
+  const supabase = createTeamClient(teamId);
   const resolvedFileName = resolveFileName(fileName, mimeType);
-  const filePath = [teamId, "inbox", resolvedFileName];
+  const referenceId = await createReceiptReferenceId({ teamId, platform, userId, referenceId: sourceReferenceId });
+  const filePath = createReceiptObjectPath(teamId, getExtensionFromMimeType(mimeType));
   const filePathStr = filePath.join("/");
 
-  const { data: uploadData, error: uploadError } = await supabase.storage
+  const { error: uploadError } = await supabase.storage
     .from("vault")
     .upload(filePathStr, fileData, {
       contentType: mimeType,
-      upsert: true,
+      upsert: false,
     });
 
   if (uploadError) {
@@ -173,8 +176,14 @@ export async function processInboxUpload(
     throw new Error("Failed to create inbox entry");
   }
 
+  const persistedPath = requireVaultPathForTeam(inboxData.filePath ?? filePath, teamId).normalizedPath;
+  if (persistedPath !== filePathStr) {
+    // A retry kept an existing row; never analyze new bytes as its old document.
+    const cleanup = await supabase.storage.from("vault").remove([filePathStr]);
+    if (cleanup.error) logger.warn("Failed to clean up a duplicate receipt object", { inboxId: inboxData.id });
+  }
   try {
-    const pathForSignedUrl = uploadData?.path || filePathStr;
+    const pathForSignedUrl = persistedPath;
     const { data: signedUrlData, error: signedUrlError } =
       await supabase.storage
         .from("vault")
@@ -189,7 +198,7 @@ export async function processInboxUpload(
     const document = new DocumentClient();
     const result = await document.getInvoiceOrReceipt({
       documentUrl: signedUrlData.signedUrl,
-      mimetype: mimeType,
+      mimetype: inboxData.contentType ?? mimeType,
     });
 
     if (result.document_type === "other") {

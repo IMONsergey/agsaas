@@ -2,6 +2,7 @@ import { getDb } from "@jobs/init";
 import { updateDocumentByFileName } from "@midday/db/queries";
 import { limitWords, mapLanguageCodeToPostgresConfig } from "@midday/documents";
 import { DocumentClassifier } from "@midday/documents/classifier";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { embedDocumentTags } from "./embed-document-tags";
@@ -14,6 +15,7 @@ export const classifyDocument = schemaTask({
     teamId: z.string(),
   }),
   run: async ({ content, fileName, teamId }) => {
+    requireVaultPathForTeam(fileName, teamId);
     try {
       const classifier = new DocumentClassifier();
       const result = await classifier.classifyDocument({ content });

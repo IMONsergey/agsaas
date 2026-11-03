@@ -37,9 +37,9 @@ export function Status({
   return (
     <div
       tw={`flex px-4 py-1 rounded-full max-w-full text-[22px] ${getStatusStyles()}`}
-      style={{ fontFamily: "hedvig-sans" }}
+      style={{ fontFamily: "Liberation Sans" }}
     >
-      <span style={{ fontFamily: "hedvig-sans" }}>
+      <span style={{ fontFamily: "Liberation Sans" }}>
         {status.charAt(0).toUpperCase() + status.slice(1)}
       </span>
     </div>

@@ -32,7 +32,6 @@ import { Tabs, TabsList, TabsTrigger } from "@midday/ui/tabs";
 import { Textarea } from "@midday/ui/textarea";
 import { useToast } from "@midday/ui/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { nanoid } from "nanoid";
 import { useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useFieldArray } from "react-hook-form";
@@ -44,6 +43,11 @@ import { useZodForm } from "@/hooks/use-zod-form";
 import { useOAuthSecretModalStore } from "@/store/oauth-secret-modal";
 import { useTRPC } from "@/trpc/client";
 import { RESOURCES } from "@/utils/scopes";
+import {
+  PUBLIC_IMAGE_NOTICE,
+  publicImagePath,
+} from "@/utils/public-image-upload";
+
 import { LogoUpload } from "../logo-upload";
 import { ScopeSelector } from "../scope-selector";
 
@@ -324,13 +328,9 @@ export function OAuthApplicationForm({ data }: Props) {
     try {
       const uploadedUrls = await Promise.all(
         imageFiles.map(async (file) => {
-          const originalFilename = file.name ?? "";
-          const extension = originalFilename.split(".").pop() || "";
-          const filename = extension ? `${nanoid()}.${extension}` : nanoid();
-
           const { url } = await uploadFile({
             bucket: "apps",
-            path: ["screenshots", filename],
+            path: publicImagePath(file, user?.teamId ?? "", "app-screenshot"),
             file,
           });
 
@@ -357,7 +357,7 @@ export function OAuthApplicationForm({ data }: Props) {
         if (rejection.errors.find(({ code }) => code === "file-too-large")) {
           toast({
             title: "File too large",
-            description: "Screenshots must be smaller than 3MB",
+            description: "Screenshots must be no larger than 5 MiB",
           });
         }
         if (rejection.errors.find(({ code }) => code === "file-invalid-type")) {
@@ -368,20 +368,12 @@ export function OAuthApplicationForm({ data }: Props) {
         }
       }
     },
-    maxSize: 3000000, // 3MB
+    maxSize: 5 * 1024 * 1024,
     accept: {
-      "image/*": [
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".webp",
-        ".heic",
-        ".heif",
-        ".avif",
-        ".tiff",
-        ".bmp",
-      ],
+      "image/jpeg": [".jpg", ".jpeg"],
+      "image/png": [".png"],
+      "image/gif": [".gif"],
+      "image/webp": [".webp"],
     },
   });
 
@@ -707,6 +699,9 @@ export function OAuthApplicationForm({ data }: Props) {
                 Screenshots
               </AccordionTrigger>
               <AccordionContent>
+                <p className="text-xs text-muted-foreground mb-2">
+                  {PUBLIC_IMAGE_NOTICE}
+                </p>
                 <span className="text-[0.8rem] text-muted-foreground">
                   You can upload up to 4 screenshots that will be displayed on
                   the apps and integrations page.

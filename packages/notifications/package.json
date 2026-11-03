@@ -9,7 +9,8 @@
     "./email-delivery-result": "./src/services/email-delivery-result.ts",
     "./types/*": "./src/types/*.ts",
     "./team-invitation-config": "./src/services/team-invitation-config.ts",
-    "./team-invitation-delivery": "./src/services/team-invitation-delivery.ts"
+    "./team-invitation-delivery": "./src/services/team-invitation-delivery.ts",
+    "./onboarding-delivery": "./src/services/onboarding-delivery.ts"
   },
   "scripts": {
     "clean": "rm -rf .turbo node_modules",

@@ -15,6 +15,7 @@ import {
   publicProcedure,
 } from "@api/trpc/init";
 import {
+  cancelCustomerEnrichment,
   clearCustomerEnrichment,
   deleteCustomer,
   getCustomerById,
@@ -22,8 +23,8 @@ import {
   getCustomerInvoiceSummary,
   getCustomerPortalInvoices,
   getCustomers,
+  requestCustomerEnrichment,
   toggleCustomerPortal,
-  updateCustomerEnrichmentStatus,
   upsertCustomer,
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
@@ -31,6 +32,31 @@ import { createLoggerWithContext } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
 
 const logger = createLoggerWithContext("trpc:customers");
+
+async function startEnrichment(
+  db: Parameters<typeof requestCustomerEnrichment>[0],
+  identity: { customerId: string; teamId: string },
+) {
+  const operation = await requestCustomerEnrichment(db, identity);
+  if (!operation)
+    throw new TRPCError({ code: "NOT_FOUND", message: "Customer not found" });
+  try {
+    await triggerJob(
+      "enrich-customer",
+      { ...identity, operationId: operation.operationId },
+      "customers",
+      {
+        jobId: `enrich-${operation.operationId}-${operation.attemptCount}`,
+        attempts: 1,
+      },
+    );
+  } catch {
+    logger.warn("Customer enrichment intent awaits queue reconciliation", {
+      operationId: operation.operationId,
+    });
+  }
+  return { queued: true, operationId: operation.operationId };
+}
 
 export const customersRouter = createTRPCRouter({
   get: protectedProcedure
@@ -71,38 +97,19 @@ export const customersRouter = createTRPCRouter({
         userId: session.user.id,
       });
 
-      // Auto-trigger enrichment for new customers with a website or email
       if (
         isNewCustomer &&
+        process.env.COMPANY_ENRICH_API_KEY?.trim() &&
         (customer?.website || customer?.email) &&
         customer?.id
       ) {
         try {
-          // Set status to pending first, then trigger job
-          await updateCustomerEnrichmentStatus(db, {
+          await startEnrichment(db, {
             customerId: customer.id,
-            status: "pending",
+            teamId: teamId!,
           });
-
-          await triggerJob(
-            "enrich-customer",
-            {
-              customerId: customer.id,
-              teamId: teamId!,
-            },
-            "customers",
-            { attempts: 1 },
-          );
-        } catch (error) {
-          // Log but don't fail the customer creation
-          logger.error("Failed to trigger customer enrichment", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // Reset status since job wasn't queued
-          await updateCustomerEnrichmentStatus(db, {
-            customerId: customer.id,
-            status: null,
-          }).catch(() => {}); // Ignore errors on cleanup
+        } catch {
+          logger.warn("Automatic customer enrichment was not accepted");
         }
       }
 
@@ -121,6 +128,12 @@ export const customersRouter = createTRPCRouter({
   enrich: protectedProcedure
     .input(enrichCustomerSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
+      if (!process.env.COMPANY_ENRICH_API_KEY?.trim())
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Customer enrichment is not configured for this installation",
+        });
       const customer = await getCustomerById(db, {
         id: input.id,
         teamId: teamId!,
@@ -141,23 +154,7 @@ export const customersRouter = createTRPCRouter({
         });
       }
 
-      // Set status to pending first, then trigger job
-      await updateCustomerEnrichmentStatus(db, {
-        customerId: customer.id,
-        status: "pending",
-      });
-
-      await triggerJob(
-        "enrich-customer",
-        {
-          customerId: customer.id,
-          teamId: teamId!,
-        },
-        "customers",
-        { attempts: 1 },
-      );
-
-      return { queued: true };
+      return startEnrichment(db, { customerId: customer.id, teamId: teamId! });
     }),
 
   cancelEnrichment: protectedProcedure
@@ -175,14 +172,11 @@ export const customersRouter = createTRPCRouter({
         });
       }
 
-      // Reset status to null (no enrichment in progress)
-      // The job may still complete in background but UI won't show as processing
-      await updateCustomerEnrichmentStatus(db, {
+      const cancelled = await cancelCustomerEnrichment(db, {
         customerId: customer.id,
-        status: null,
+        teamId: teamId!,
       });
-
-      return { cancelled: true };
+      return { cancelled };
     }),
 
   clearEnrichment: protectedProcedure
@@ -200,9 +194,15 @@ export const customersRouter = createTRPCRouter({
         });
       }
 
-      await clearCustomerEnrichment(db, {
-        customerId: customer.id,
-        teamId: teamId!,
+      await db.transaction(async (tx) => {
+        await cancelCustomerEnrichment(tx, {
+          customerId: customer.id,
+          teamId: teamId!,
+        });
+        await clearCustomerEnrichment(tx, {
+          customerId: customer.id,
+          teamId: teamId!,
+        });
       });
 
       return { cleared: true };

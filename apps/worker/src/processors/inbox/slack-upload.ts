@@ -10,16 +10,22 @@ import {
   updateInbox,
   updateInboxWithProcessedData,
 } from "@midday/db/queries";
-import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import { getExtensionFromMimeType } from "@midday/utils";
+import { getAppUrl } from "@midday/utils/envs";
+import {
+  createReceiptObjectPath,
+  createReceiptReferenceId,
+} from "@midday/utils/receipt-path";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { generateText } from "ai";
 import type { Job } from "bullmq";
 import { format, parseISO } from "date-fns";
 import type { SlackUploadPayload } from "../../schemas/inbox";
 import { getDb } from "../../utils/db";
-import { TIMEOUTS, withTimeout } from "../../utils/timeout";
+import { runDocumentTask } from "../../utils/document-isolation";
+import { TIMEOUTS } from "../../utils/timeout";
 import { BaseProcessor } from "../base";
 
 export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
@@ -31,7 +37,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
       fileName: file.name,
       channelId,
     });
-    const supabase = createClient();
+    const supabase = createTeamClient(teamId);
     const db = getDb();
 
     const slackClient = createSlackWebClient({ token });
@@ -99,7 +105,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
     };
 
     // Wrap all processing in try-catch to ensure reaction cleanup on any error
-    let inboxData: { id: string } | null | undefined = null;
+    let inboxData: Awaited<ReturnType<typeof createInbox>> | null = null;
 
     try {
       // Download file from Slack
@@ -136,7 +142,10 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
         ? file.name
         : `${file.name}${getExtensionFromMimeType(file.mimetype)}`;
 
-      const filePath = [teamId, "inbox", fileName];
+      const filePath = createReceiptObjectPath(
+        teamId,
+        getExtensionFromMimeType(file.mimetype),
+      );
       const filePathStr = filePath.join("/");
 
       // Upload file to vault
@@ -149,7 +158,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
         .from("vault")
         .upload(filePathStr, new Uint8Array(fileData), {
           contentType: file.mimetype,
-          upsert: true,
+          upsert: false,
         });
 
       if (uploadError) {
@@ -179,8 +188,12 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
         filePath,
         fileName,
         contentType: file.mimetype,
-        size: file.size,
-        referenceId: `slack_${file.id}_${fileName}`,
+        size: fileData.byteLength,
+        referenceId: await createReceiptReferenceId({
+          teamId,
+          platform: "slack",
+          referenceId: `${channelId}:${file.id}`,
+        }),
         meta: {
           source: "slack",
           sourceMetadata: {
@@ -202,7 +215,23 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
       });
 
       // Get signed URL for document processing (30 minutes expiration)
-      const pathForSignedUrl = uploadData.path || filePathStr;
+      // A deduplicated inbox row owns the file reference for both processing jobs.
+      // Missing canonical storage must fail instead of using an unreferenced upload.
+      const canonicalFile = requireVaultPathForTeam(
+        inboxData.filePath ?? [],
+        teamId,
+      );
+      const pathForSignedUrl = canonicalFile.normalizedPath;
+      const documentMimeType = inboxData.contentType ?? file.mimetype;
+      if (pathForSignedUrl !== filePathStr) {
+        const cleanup = await supabase.storage
+          .from("vault")
+          .remove([filePathStr]);
+        if (cleanup.error)
+          this.logger.warn("Failed to clean up duplicate receipt object", {
+            inboxId: inboxData.id,
+          });
+      }
       const { data: signedUrlData, error: signedUrlError } =
         await supabase.storage
           .from("vault")
@@ -242,16 +271,16 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
         throw new Error("Signed URL is empty or invalid");
       }
 
-      const document = new DocumentClient();
-
       // Process document
-      const result = await withTimeout(
-        document.getInvoiceOrReceipt({
-          documentUrl: signedUrl,
-          mimetype: file.mimetype,
-        }),
-        TIMEOUTS.DOCUMENT_PROCESSING,
-        `Document processing timed out after ${TIMEOUTS.DOCUMENT_PROCESSING}ms`,
+      const result = await runDocumentTask(
+        {
+          kind: "extract",
+          request: {
+            documentUrl: signedUrl,
+            mimetype: documentMimeType,
+          },
+        },
+        { timeoutMs: TIMEOUTS.DOCUMENT_PROCESSING },
       );
 
       // Check if document is classified as "other" (non-financial document)
@@ -471,7 +500,7 @@ Focus on what was purchased (e.g., "office supplies", "software subscription", "
                   text: "View in Midday",
                   emoji: true,
                 },
-                url: `https://app.midday.ai/inbox?inboxId=${encodeURIComponent(updatedInbox.id)}`,
+                url: `${getAppUrl()}/inbox?inboxId=${encodeURIComponent(updatedInbox.id)}`,
                 action_id: "view_receipt",
               },
             ],
@@ -513,8 +542,8 @@ Focus on what was purchased (e.g., "office supplies", "software subscription", "
       await triggerJob(
         "process-document",
         {
-          mimetype: file.mimetype,
-          filePath,
+          mimetype: documentMimeType,
+          filePath: canonicalFile.pathArray,
           teamId,
         },
         "documents",

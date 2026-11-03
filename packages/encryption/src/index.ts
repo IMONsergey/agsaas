@@ -179,6 +179,7 @@ const FILE_KEY_AUDIENCE = "agsaas-private-files";
 const FILE_KEY_ISSUER = "agsaas-api";
 
 export type FileKeyIdentity = {
+  sessionId: string;
   userId: string;
   teamId: string;
   aal: "aal1" | "aal2";
@@ -189,6 +190,9 @@ export async function generateFileKey(
   identity: FileKeyIdentity,
 ): Promise<string> {
   if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      identity.sessionId,
+    ) ||
     !identity.userId ||
     !identity.teamId ||
     !["aal1", "aal2"].includes(identity.aal)
@@ -202,7 +206,8 @@ export async function generateFileKey(
   const secretKey = new TextEncoder().encode(secret);
   const issuedAt = Math.floor(Date.now() / 1000);
   const token = await new jose.SignJWT({
-    v: 2,
+    v: 3,
+    sessionId: identity.sessionId,
     teamId: identity.teamId,
     aal: identity.aal,
   })
@@ -216,7 +221,7 @@ export async function generateFileKey(
   return token;
 }
 
-/** Reject legacy team-only keys and require the dedicated, bounded v2 token. */
+/** Reject legacy team-only keys and require the dedicated, bounded session-bound v3 token. */
 export async function verifyFileKey(
   token: string,
 ): Promise<FileKeyIdentity | null> {
@@ -235,7 +240,11 @@ export async function verifyFileKey(
       clockTolerance: 0,
     });
     if (
-      payload.v !== 2 ||
+      payload.v !== 3 ||
+      typeof payload.sessionId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        payload.sessionId,
+      ) ||
       typeof payload.sub !== "string" ||
       !payload.sub ||
       typeof payload.teamId !== "string" ||
@@ -248,7 +257,12 @@ export async function verifyFileKey(
     ) {
       return null;
     }
-    return { userId: payload.sub, teamId: payload.teamId, aal: payload.aal };
+    return {
+      sessionId: payload.sessionId,
+      userId: payload.sub,
+      teamId: payload.teamId,
+      aal: payload.aal,
+    };
   } catch {
     return null;
   }

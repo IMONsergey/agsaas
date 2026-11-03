@@ -17,8 +17,8 @@ import {
 export class TellerProvider implements Provider {
   #api: TellerApi;
 
-  constructor() {
-    this.#api = new TellerApi();
+  constructor(signal?: AbortSignal) {
+    this.#api = new TellerApi(signal);
   }
 
   async getHealthCheck() {

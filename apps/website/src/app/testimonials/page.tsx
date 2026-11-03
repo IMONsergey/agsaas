@@ -1,24 +1,25 @@
-import { Testimonials } from "@/components/testimonials";
+import Link from "next/link";
+import { InformationPage } from "@/components/information-page";
+
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Customer Stories",
-  description:
-    "See how solo founders use Midday to run their businesses with less admin.",
+  title: "Customer stories",
+  description: "Verified AGSaaS customer stories have not been published.",
   path: "/testimonials",
-  og: {
-    title: "Customer Stories",
-    description: "How founders run their business with Midday",
-  },
-  keywords: [
-    "customer testimonials",
-    "user stories",
-    "midday reviews",
-    "customer success",
-    "testimonials",
-  ],
 });
-
 export default function Page() {
-  return <Testimonials />;
+  return (
+    <InformationPage
+      title="Customer stories"
+      intro="Verified AGSaaS customer stories have not been published."
+    >
+      <p>
+        Testimonials for other products are not presented as evidence for this
+        installation.
+      </p>
+      <Link href="/docs" className="underline">
+        Explore the actual workflows
+      </Link>
+    </InformationPage>
+  );
 }

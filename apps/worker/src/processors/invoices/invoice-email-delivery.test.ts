@@ -9,7 +9,7 @@ import {
 } from "bun:test";
 import { Socket } from "node:net";
 import type { NotificationOptions } from "@midday/notifications";
-import type { Job } from "bullmq";
+import type { Job, JobsOptions } from "bullmq";
 import {
   canSendInvoiceEmail,
   canSendInvoiceReminder,
@@ -106,11 +106,22 @@ let duringUpload: (() => void) | undefined;
 let rendered = 0;
 let uploaded = 0;
 let queueFailure = false;
+let intentFailure = false;
 let durableReceipt: "pending" | "accepted" | "completed" | null = null;
 let durableFinalizations = 0;
 let durableRecoveries = 0;
 const queued: Array<{ name: string; payload: unknown }> = [];
 const documentsQueued: Array<{ name: string; payload: unknown }> = [];
+const queuedOptions: JobsOptions[] = [];
+const documentOptions: JobsOptions[] = [];
+const admissionCalls: Array<{
+  queueName: string;
+  payload: unknown;
+  id: string;
+  jobName: string | undefined;
+}> = [];
+const queueEvents: string[] = [];
+let admissionBlocked = false;
 const fileWrites: Array<Record<string, unknown>> = [];
 const uploadedPaths: string[] = [];
 const notificationCalls: Array<{
@@ -129,6 +140,7 @@ const writes: Array<{
 }> = [];
 
 mock.module("@midday/db/queries", () => ({
+  reserveGeneratedStorage: async () => {},
   INVOICE_EMAIL_ENVELOPE_MAX_BYTES: 4 * 1024 * 1024,
   deferInvoiceEmailFinalization: async () => undefined,
   canSendInvoiceEmail,
@@ -208,26 +220,77 @@ mock.module("@midday/db/queries", () => ({
     };
   },
 }));
+mock.module("@midday/db/queries/financial-job-dispatches", () => ({
+  ensureFinancialJobDispatch: async (
+    _db: unknown,
+    input: { jobName: string; source: string; payload: unknown },
+  ) => {
+    if (intentFailure) throw new Error("Fixture SQL intent unavailable");
+    if (
+      !queued.some(
+        (job) =>
+          job.name === input.jobName &&
+          JSON.stringify(job.payload) === JSON.stringify(input.payload),
+      )
+    ) {
+      queued.push({ name: input.jobName, payload: input.payload });
+    }
+    return { id: "intent-fixture", status: "pending" };
+  },
+}));
 mock.module("@midday/db/worker-client", () => ({ getWorkerDb: () => ({}) }));
 mock.module("@midday/job-client", () => ({ decodeJobId }));
+// These processor fixtures use fake queues. Admission has its own real-Redis
+// generation/lock race gate; no production Redis is opened by money fixtures.
+mock.module("@midday/job-client/resource-admission", () => ({
+  queuePayloadTeam: (payload: { teamId?: string } | null) =>
+    payload?.teamId ?? null,
+  reserveQueuedJob: async (
+    queueName: string,
+    payload: unknown,
+    id?: string,
+    jobName?: string,
+  ) => {
+    queueEvents.push(`${queueName}:reserve`);
+    if (!id) throw new Error("Invoice child requires a stable admission ID");
+    admissionCalls.push({ queueName, payload, id, jobName });
+    if (admissionBlocked)
+      throw new Error("Fixture admission capacity exhausted");
+    return id;
+  },
+  captureQueuedJobReservation: async () => ({
+    generation: "fixture-admission",
+    retry: "none",
+  }),
+  captureWorkerQueuedJobReservation: async () => ({
+    generation: "fixture-admission",
+    retry: "none",
+  }),
+  releaseQueuedJob: async () => true,
+  releaseWorkerQueuedJobReservation: async () => true,
+}));
 mock.module("../../queues/invoices", () => ({
   invoicesQueue: {
-    add: async (name: string, payload: unknown) => {
+    add: async (name: string, payload: unknown, options: JobsOptions) => {
+      queueEvents.push("invoices:add");
+      queuedOptions.push(options);
       if (queueFailure) throw new Error("Fixture queue unavailable");
       queued.push({ name, payload });
-      return { id: "generation-fixture-1" };
+      return { id: options.jobId };
     },
   },
 }));
 mock.module("../../queues/documents", () => ({
   documentsQueue: {
-    add: async (name: string, payload: unknown) => {
+    add: async (name: string, payload: unknown, options: JobsOptions) => {
+      queueEvents.push("documents:add");
+      documentOptions.push(options);
       documentsQueued.push({ name, payload });
-      return { id: "document-fixture-1" };
+      return { id: options.jobId };
     },
   },
 }));
-mock.module("@midday/invoice", () => ({
+mock.module("@midday/invoice/server", () => ({
   PdfTemplate: async () => ({}),
   renderToBuffer: async () => {
     rendered += 1;
@@ -271,7 +334,7 @@ mock.module("@midday/notifications", () => ({
   },
 }));
 mock.module("@midday/supabase/job", () => ({
-  createClient: () => {
+  createTeamClient: () => {
     storageConstructed += 1;
     return {
       storage: {
@@ -396,11 +459,17 @@ beforeEach(() => {
   rendered = 0;
   uploaded = 0;
   queueFailure = false;
+  intentFailure = false;
   durableReceipt = null;
   durableFinalizations = 0;
   durableRecoveries = 0;
   queued.length = 0;
   documentsQueued.length = 0;
+  queuedOptions.length = 0;
+  documentOptions.length = 0;
+  admissionCalls.length = 0;
+  queueEvents.length = 0;
+  admissionBlocked = false;
   fileWrites.length = 0;
   uploadedPaths.length = 0;
   notificationCalls.length = 0;
@@ -421,6 +490,7 @@ describe("scheduled invoice handoff", () => {
       {
         name: "generate-invoice",
         payload: {
+          teamId,
           invoiceId,
           deliveryType: "create_and_send",
           expectedScheduledJobId: scheduleVersion,
@@ -441,6 +511,7 @@ describe("scheduled invoice handoff", () => {
     expect(invoice.status).toBe("scheduled");
     expect(invoice.scheduledJobId).toBe("invoices:schedule-fixture-1");
     queueFailure = false;
+    intentFailure = false;
     await scheduleProcessor.handle(scheduleJob());
     expect(queued).toHaveLength(1);
   });
@@ -481,6 +552,93 @@ describe("scheduled invoice handoff", () => {
       expect(queued).toHaveLength(0);
     });
   }
+});
+
+describe("invoice child admission", () => {
+  test("a scheduled invoice uses its stored team and cannot enqueue when admission is full", async () => {
+    invoice.status = "scheduled";
+    admissionBlocked = true;
+    await expect(scheduleProcessor.handle(scheduleJob())).rejects.toThrow(
+      "Fixture admission capacity exhausted",
+    );
+    expect(queued).toEqual([]);
+    expect(queuedOptions).toEqual([]);
+    expect(queueEvents).toEqual(["invoices:reserve"]);
+    expect(admissionCalls[0]).toMatchObject({
+      queueName: "invoices",
+      jobName: "generate-invoice",
+      payload: { teamId, invoiceId, expectedScheduledJobId: scheduleVersion },
+    });
+    expect(invoice.status).toBe("scheduled");
+    expect(invoice.scheduledJobId).toBe(scheduleVersion);
+  });
+  test("a retried schedule handoff reuses its admission ID and keeps queue retry options", async () => {
+    invoice.status = "scheduled";
+    queueFailure = true;
+    await expect(scheduleProcessor.handle(scheduleJob())).rejects.toThrow(
+      "Fixture queue unavailable",
+    );
+    queueFailure = false;
+    await scheduleProcessor.handle(scheduleJob());
+    expect(admissionCalls).toHaveLength(2);
+    expect(admissionCalls[1]?.id).toBe(admissionCalls[0]?.id);
+    expect(queuedOptions).toEqual([
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+    ]);
+    expect(queueEvents).toEqual([
+      "invoices:reserve",
+      "invoices:add",
+      "invoices:reserve",
+      "invoices:add",
+    ]);
+  });
+  test("document classification waits for admission and retries with the same canonical child ID", async () => {
+    admissionBlocked = true;
+    await expect(
+      generateProcessor.handle(
+        generateJob({ invoiceId, deliveryType: "create" }),
+      ),
+    ).rejects.toThrow("Fixture admission capacity exhausted");
+    expect(documentsQueued).toEqual([]);
+    expect(documentOptions).toEqual([]);
+    expect(queueEvents).toEqual(["documents:reserve"]);
+    expect(admissionCalls[0]).toMatchObject({
+      queueName: "documents",
+      jobName: "process-document",
+      payload: {
+        teamId,
+        mimetype: "application/pdf",
+        filePath: [teamId, "invoices", `${invoiceId}.pdf`],
+      },
+    });
+    admissionBlocked = false;
+    await generateProcessor.handle(
+      generateJob({ invoiceId, deliveryType: "create" }),
+    );
+    expect(admissionCalls).toHaveLength(2);
+    expect(admissionCalls[1]?.id).toBe(admissionCalls[0]?.id);
+    expect(documentOptions).toEqual([
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+    ]);
+    expect(queueEvents).toEqual([
+      "documents:reserve",
+      "documents:reserve",
+      "documents:add",
+    ]);
+  });
 });
 
 describe("canonical invoice PDF identity", () => {
@@ -953,5 +1111,82 @@ describe("invoice reminder processor", () => {
     expect(notificationCalls).toHaveLength(2);
     expect(writes).toHaveLength(2);
     expect(invoice.reminderSentAt).toBe(delivery.acceptedAt!);
+  });
+});
+
+describe("generation durable email handoff", () => {
+  test("SQL intent failure keeps generation retryable and no email intent is invented", async () => {
+    invoice.status = "unpaid";
+    intentFailure = true;
+    const job = generateJob({
+      invoiceId,
+      deliveryType: "create_and_send",
+      deliveryKey: "a".repeat(64),
+    });
+    await expect(generateProcessor.handle(job)).rejects.toThrow(
+      "SQL intent unavailable",
+    );
+    expect(
+      queued.filter((item) => item.name === "send-invoice-email"),
+    ).toHaveLength(0);
+    expect(notificationCalls).toHaveLength(0);
+    intentFailure = false;
+    await generateProcessor.handle(job);
+    await generateProcessor.handle(job);
+    expect(
+      queued.filter((item) => item.name === "send-invoice-email"),
+    ).toHaveLength(1);
+    expect(notificationCalls).toHaveLength(0);
+  });
+});
+
+describe("approved invoice recipient fence", () => {
+  const approvedRecipients = {
+    recipient: "approved@example.test",
+    bcc: ["approved-bcc@example.test"],
+    customerName: "Approved name",
+    replyTo: "approved-reply@example.test",
+  };
+  test("generation preserves the exact approved recipient envelope in its durable email intent", async () => {
+    invoice.status = "unpaid";
+    await generateProcessor.handle(
+      generateJob({
+        invoiceId,
+        deliveryType: "create_and_send",
+        approvedRecipients,
+      }),
+    );
+    expect(
+      queued.find((item) => item.name === "send-invoice-email")?.payload,
+    ).toMatchObject({ approvedRecipients });
+  });
+  test("later customer, billing-copy and reply-to changes cannot redirect an approved send", async () => {
+    invoice.status = "unpaid";
+    invoice.customer.email = "changed@example.test";
+    invoice.customer.billingEmail = "changed-bcc@example.test";
+    invoice.user = { email: "changed-author@example.test" };
+    invoice.team.email = "changed-reply@example.test";
+    const job = sendJob();
+    job.data.approvedRecipients = approvedRecipients;
+    await sendProcessor.handle(job);
+    expect(notificationCalls).toHaveLength(1);
+    expect(notificationCalls[0]!.payload).toMatchObject({
+      customerEmail: "approved@example.test",
+      customerName: "Approved name",
+    });
+    expect(notificationCalls[0]!.options).toMatchObject({
+      bcc: ["approved-bcc@example.test"],
+      replyTo: "approved-reply@example.test",
+    });
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed@example.test",
+    );
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed-bcc@example.test",
+    );
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed-author@example.test",
+    );
+    expect(writes[0]!.recipient).toBe("approved@example.test");
   });
 });

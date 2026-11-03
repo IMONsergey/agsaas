@@ -5,6 +5,8 @@ import {
   deleteTeamInviteSchema,
   deleteTeamMemberSchema,
   deleteTeamSchema,
+  exportHistoryEntryInputSchema,
+  exportHistoryInputSchema,
   inviteTeamMembersSchema,
   leaveTeamSchema,
   updateBaseCurrencySchema,
@@ -12,9 +14,12 @@ import {
   updateTeamMemberSchema,
 } from "@api/schemas/team";
 import { enqueueTeamInvitations } from "@api/services/team-invitation-queue";
-import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import {
+  createTRPCRouter,
+  ownerProcedure,
+  protectedProcedure,
+} from "@api/trpc/init";
 import { withTeamMembershipErrors } from "@api/utils/team-membership";
-
 import { teamCache } from "@midday/cache/team-cache";
 import {
   acceptTeamInvite,
@@ -36,11 +41,19 @@ import {
   updateTeamById,
   updateTeamMember,
 } from "@midday/db/queries";
+import {
+  getTeamExportHistoryById,
+  listTeamExportHistory,
+} from "@midday/db/queries/export-snapshots";
+import { getTeamEntitlements } from "@midday/db/queries/team-entitlements";
 import { triggerJob } from "@midday/job-client";
 import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
 import { TRPCError } from "@trpc/server";
 
 export const teamRouter = createTRPCRouter({
+  entitlements: protectedProcedure.query(({ ctx: { db, teamId } }) =>
+    getTeamEntitlements(db, teamId!),
+  ),
   current: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
     if (!teamId) {
       return null;
@@ -49,7 +62,7 @@ export const teamRouter = createTRPCRouter({
     return getTeamById(db, teamId!);
   }),
 
-  update: protectedProcedure
+  update: ownerProcedure
     .input(updateTeamByIdSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
       return updateTeamById(db, {
@@ -280,7 +293,7 @@ export const teamRouter = createTRPCRouter({
     return getAvailablePlans(db, teamId!);
   }),
 
-  updateBaseCurrency: protectedProcedure
+  updateBaseCurrency: ownerProcedure
     .input(updateBaseCurrencySchema)
     .mutation(async ({ ctx: { teamId }, input }) => {
       return triggerJob(
@@ -291,6 +304,26 @@ export const teamRouter = createTRPCRouter({
         },
         "transactions",
       );
+    }),
+
+  exportHistory: protectedProcedure
+    .input(exportHistoryInputSchema)
+    .query(({ ctx: { db, teamId }, input }) => {
+      if (!teamId)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Team not found" });
+      return listTeamExportHistory(db, {
+        teamId,
+        limit: input.limit,
+        cursor: input.cursor,
+      });
+    }),
+
+  exportHistoryEntry: protectedProcedure
+    .input(exportHistoryEntryInputSchema)
+    .query(({ ctx: { db, teamId }, input }) => {
+      if (!teamId)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Team not found" });
+      return getTeamExportHistoryById(db, { teamId, id: input.id });
     }),
 
   exportAllData: protectedProcedure.mutation(

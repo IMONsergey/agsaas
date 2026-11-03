@@ -6,6 +6,7 @@ import {
   invoiceSummarySchema,
   updateInvoiceSchema,
 } from "@api/schemas/invoice";
+import { embedInvoiceLogoForDisplay } from "@api/services/invoice-display-assets";
 import {
   deleteInvoice,
   draftInvoice,
@@ -26,11 +27,13 @@ import {
   getTrackerProjectById,
   getTrackerRecordsByRange,
   isInvoiceNumberUsed,
+  issueInvoice,
   searchInvoiceNumber,
-  updateInvoice,
+  updateInvoiceWithIntent as updateInvoice,
 } from "@midday/db/queries";
-import { DEFAULT_TEMPLATE, PdfTemplate, renderToStream } from "@midday/invoice";
+import { DEFAULT_TEMPLATE } from "@midday/invoice";
 import { calculateTotal } from "@midday/invoice/calculate";
+import { PdfTemplate, renderToStream } from "@midday/invoice/server";
 import { transformCustomerToContent } from "@midday/invoice/utils";
 import { triggerJob } from "@midday/job-client";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
@@ -58,40 +61,6 @@ import {
   truncateListResponse,
   withErrorHandling,
 } from "../utils";
-
-function isAllowedLogoUrl(url: string): boolean {
-  return url.startsWith("https://service.midday.ai/");
-}
-
-async function embedLogoAsDataUrl(
-  invoice: Record<string, any>,
-): Promise<Record<string, any>> {
-  const logoUrl = invoice.template?.logoUrl;
-  if (!logoUrl || typeof logoUrl !== "string") return invoice;
-  if (logoUrl.startsWith("data:")) return invoice;
-  if (!isAllowedLogoUrl(logoUrl)) return invoice;
-
-  try {
-    const res = await fetch(logoUrl, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return invoice;
-
-    const contentType = res.headers.get("content-type") || "image/png";
-    const buffer = await res.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString("base64");
-
-    return {
-      ...invoice,
-      template: {
-        ...invoice.template,
-        logoUrl: `data:${contentType};base64,${base64}`,
-      },
-    };
-  } catch {
-    return invoice;
-  }
-}
 
 export const registerInvoiceTools: RegisterTools = (server, ctx) => {
   const { db, teamId, userId, apiUrl } = ctx;
@@ -256,7 +225,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
           }
         }
 
-        const invoiceForUI = await embedLogoAsDataUrl(clean);
+        const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
         return { content, structuredContent: { invoice: invoiceForUI } };
       }, "Failed to get invoice"),
     );
@@ -1128,24 +1097,19 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
 
           const delivery = params.deliveryType ?? "draft";
 
-          if (delivery !== "draft") {
-            await updateInvoice(db, {
-              id: result.id,
-              status: "unpaid",
-              teamId,
-              userId,
-              sentTo:
-                delivery === "create_and_send"
-                  ? (customer.email ?? null)
-                  : null,
-            });
-
-            await triggerJob(
-              "generate-invoice",
-              { invoiceId: result.id, deliveryType: delivery },
-              "invoices",
-            );
-          }
+          const issued =
+            delivery !== "draft"
+              ? await issueInvoice(db, {
+                  id: result.id,
+                  teamId,
+                  userId,
+                  deliveryType: delivery,
+                  sentTo:
+                    delivery === "create_and_send"
+                      ? (customer.email ?? null)
+                      : null,
+                })
+              : undefined;
 
           const fresh = await getInvoiceById(db, {
             id: result.id,
@@ -1161,6 +1125,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
 
           const clean = sanitize(mcpInvoiceDetailSchema, {
             ...(fresh ?? result),
+            operation: issued?.operation,
             pdfUrl,
             previewUrl,
           });
@@ -1172,7 +1137,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
                 ? "saved as draft — use invoices_send to send, or open the previewUrl to review"
                 : "created";
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Invoice ${invoiceNumber} ${action}. Total: ${total} ${mergedTemplate.currency}`,
@@ -1510,7 +1475,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             previewUrl,
           });
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Draft invoice ${existing.invoiceNumber} updated. Total: ${total} ${templateCurrency}`,
@@ -1543,7 +1508,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
       {
         title: "Send Invoice",
         description:
-          "Send a draft invoice to the customer via email. Generates the PDF and emails it. Only works on invoices in draft status — use invoices_create with deliveryType 'draft' first, then invoices_send to send after review.",
+          "Send a draft invoice to the customer via email. Generates the PDF and emails it. Use invoices_create with deliveryType 'draft' first, then invoices_send after review. Retrying the same invoice reuses its durable delivery operation.",
         inputSchema: {
           id: z.string().uuid().describe("ID of the draft invoice to send"),
           sentTo: z
@@ -1567,18 +1532,6 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          if (existing.status !== "draft") {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Cannot send invoice with status "${existing.status}". Only draft invoices can be sent. Use invoices_create with deliveryType 'create_and_send' for new invoices.`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
           const recipientEmail =
             sentTo ?? existing.sentTo ?? existing.customer?.email ?? null;
 
@@ -1594,19 +1547,13 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          await updateInvoice(db, {
+          const issued = await issueInvoice(db, {
             id,
             teamId,
             userId,
-            status: "unpaid",
+            deliveryType: "create_and_send",
             sentTo: recipientEmail,
           });
-
-          await triggerJob(
-            "generate-invoice",
-            { invoiceId: id, deliveryType: "create_and_send" },
-            "invoices",
-          );
 
           const previewUrl = existing.token
             ? `${DASHBOARD_URL}/i/${existing.token}`
@@ -1615,6 +1562,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
           const response = {
             message: `Invoice ${existing.invoiceNumber} is being sent to ${recipientEmail}`,
             invoiceId: id,
+            operation: issued?.operation,
             sentTo: recipientEmail,
             previewUrl,
           };
@@ -1942,7 +1890,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             previewUrl,
           });
 
-          const invoiceForUI = await embedLogoAsDataUrl(clean);
+          const invoiceForUI = await embedInvoiceLogoForDisplay(clean);
 
           const response = {
             message: `Invoice ${invoiceNumber} created from ${totalHours}h tracked on "${project.name}". Total: ${total} ${currency}`,

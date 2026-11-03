@@ -3,20 +3,19 @@ import { createTRPCRouter } from "../init";
 import { accountingRouter } from "./accounting";
 import { apiKeysRouter } from "./api-keys";
 import { appsRouter } from "./apps";
+import { bankConsentsRouter } from "./bank-consents";
 import { bankAccountsRouter } from "./bank-accounts";
 import { bankConnectionsRouter } from "./bank-connections";
+import { bankSyncRouter } from "./bank-sync";
 import { bankingRouter } from "./banking";
 import { billingRouter } from "./billing";
-
 import { connectorsRouter } from "./connectors";
 import { customersRouter } from "./customers";
 import { documentTagAssignmentsRouter } from "./document-tag-assignments";
 import { documentTagsRouter } from "./document-tags";
 import { documentsRouter } from "./documents";
-
 import { inboxRouter } from "./inbox";
 import { inboxAccountsRouter } from "./inbox-accounts";
-
 import { institutionsRouter } from "./institutions";
 import { invoiceRouter } from "./invoice";
 import { invoicePaymentsRouter } from "./invoice-payments";
@@ -29,8 +28,11 @@ import { notificationsRouter } from "./notifications";
 import { oauthApplicationsRouter } from "./oauth-applications";
 import { overviewRouter } from "./overview";
 import { reportsRouter } from "./reports";
+import { resourceCleanupsRouter } from "./resource-cleanups";
 import { searchRouter } from "./search";
+import { securityAuditRouter } from "./security-audit";
 import { shortLinksRouter } from "./short-links";
+import { supportRouter } from "./support";
 
 import { tagsRouter } from "./tags";
 import { teamRouter } from "./team";
@@ -43,6 +45,10 @@ import { transactionsRouter } from "./transactions";
 import { userRouter } from "./user";
 
 export const appRouter = createTRPCRouter({
+  bankSync: bankSyncRouter,
+  bankConsents: bankConsentsRouter,
+  securityAudit: securityAuditRouter,
+  resourceCleanup: resourceCleanupsRouter,
   accounting: accountingRouter,
   banking: bankingRouter,
   notifications: notificationsRouter,
@@ -82,6 +88,7 @@ export const appRouter = createTRPCRouter({
   transactionTags: transactionTagsRouter,
   user: userRouter,
   search: searchRouter,
+  support: supportRouter,
   shortLinks: shortLinksRouter,
   apiKeys: apiKeysRouter,
 });

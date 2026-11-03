@@ -9,6 +9,7 @@ import {
   signedUrlsSchema,
 } from "@api/schemas/documents";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { validateTeamStoragePath } from "@api/utils/tenant-storage";
 import {
   checkDocumentAttachments,
   deleteDocument,
@@ -20,7 +21,7 @@ import {
 } from "@midday/db/queries";
 import { isMimeTypeSupportedForProcessing } from "@midday/documents/utils";
 import { triggerJob } from "@midday/job-client";
-import { remove, signedUrl } from "@midday/supabase/storage";
+import { signedUrl } from "@midday/supabase/storage";
 import { TRPCError } from "@trpc/server";
 
 export const documentsRouter = createTRPCRouter({
@@ -66,7 +67,7 @@ export const documentsRouter = createTRPCRouter({
 
   delete: protectedProcedure
     .input(deleteDocumentSchema)
-    .mutation(async ({ input, ctx: { db, supabase, teamId } }) => {
+    .mutation(async ({ input, ctx: { db, teamId } }) => {
       const document = await deleteDocument(db, {
         id: input.id,
         teamId: teamId!,
@@ -79,18 +80,13 @@ export const documentsRouter = createTRPCRouter({
         });
       }
 
-      // Delete from storage
-      await remove(supabase, {
-        bucket: "vault",
-        path: document.pathTokens,
-      });
-
       return document;
     }),
 
   processDocument: protectedProcedure
     .input(processDocumentSchema)
     .mutation(async ({ ctx: { teamId, db }, input }) => {
+      for (const item of input) validateTeamStoragePath(item.filePath, teamId!);
       const supportedDocuments = input.filter((item) =>
         isMimeTypeSupportedForProcessing(item.mimetype),
       );

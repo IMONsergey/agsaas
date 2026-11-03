@@ -1,6 +1,7 @@
 import { Link, Text, View } from "@react-pdf/renderer";
 import type { Style } from "@react-pdf/types";
 import type { EditorDoc } from "../../types";
+import { OWNED_INVOICE_FONT_FAMILY } from "../../utils/owned-fonts";
 
 type PDFTextStyle = Style & {
   fontFamily?: string;
@@ -31,7 +32,7 @@ export function formatEditorContent(doc?: EditorDoc) {
                   if (inlineContent.type === "text") {
                     const style: PDFTextStyle = {
                       fontSize: 9,
-                      fontFamily: "Inter",
+                      fontFamily: OWNED_INVOICE_FONT_FAMILY,
                     };
                     let href: string | undefined;
                     let hasUnderline = false;

@@ -120,20 +120,27 @@ export const reprocessDocumentSchema = z.object({
     }),
 });
 
-export const processDocumentSchema = z.array(
-  z.object({
-    mimetype: z.string(),
-    size: z.number(),
-    filePath: z.array(z.string()),
-  }),
-);
+export const processDocumentSchema = z
+  .array(
+    z.object({
+      mimetype: z.string(),
+      size: z
+        .number()
+        .int()
+        .min(1)
+        .max(50 * 1024 * 1024),
+      filePath: z.array(z.string().min(1).max(255)).min(2).max(32),
+    }),
+  )
+  .min(1)
+  .max(20);
 
 export const signedUrlSchema = z.object({
   filePath: z.string(),
-  expireIn: z.number(),
+  expireIn: z.number().int().min(1).max(300),
 });
 
-export const signedUrlsSchema = z.array(z.string());
+export const signedUrlsSchema = z.array(z.string().max(2048)).min(1).max(100);
 
 export const getDocumentPreSignedUrlSchema = z.object({
   id: z

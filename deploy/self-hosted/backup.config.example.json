@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": "agsaas-preview-20261101",
+  "runtime": "/opt/agsaas/preview-20261101/runtime/supabase",
+  "control": "/opt/agsaas/preview-20261101/control",
+  "source": "/opt/agsaas/preview-20261101/source",
+  "backupRoot": "/var/backups/agsaas/preview",
+  "restoreRoot": "/opt/agsaas/restores",
+  "dbAdmin": "supabase_admin",
+  "dbName": "postgres",
+  "includeImages": "all",
+  "retainLocal": 7,
+  "retainRemote": 14
+}

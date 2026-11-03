@@ -1,0 +1,12 @@
+{
+  "website": "https://94.249.186.240:8546",
+  "dashboard": "https://94.249.186.240:8543",
+  "api": "https://94.249.186.240:8544",
+  "supabase": "https://94.249.186.240:8545",
+  "release": null,
+  "email": null,
+  "password": null,
+  "publishableKey": null,
+  "teamId": null,
+  "allowMutations": false
+}

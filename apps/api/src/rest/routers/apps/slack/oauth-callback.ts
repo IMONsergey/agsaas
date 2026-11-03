@@ -1,10 +1,10 @@
 import { publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
+import { consumeIntegrationOAuth, completeIntegrationOAuth } from "@api/utils/integration-oauth";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { config } from "@midday/app-store/slack";
 import {
   createSlackWebClient,
-  getSlackInstaller,
   publishAppHome,
 } from "@midday/app-store/slack/server";
 import { bot } from "@midday/bot";
@@ -16,15 +16,15 @@ import { sendWelcomeMessage } from "./messages";
 const app = new OpenAPIHono<Context>();
 
 const paramsSchema = z.object({
-  code: z.string().openapi({
+  code: z.string().min(1).max(8192).optional().openapi({
     param: {
       in: "query",
       name: "code",
-      required: true,
+      required: false,
     },
     description: "OAuth authorization code from Slack",
   }),
-  state: z.string().openapi({
+  state: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/).openapi({
     param: {
       in: "query",
       name: "state",
@@ -32,11 +32,6 @@ const paramsSchema = z.object({
     },
     description: "OAuth state parameter for CSRF protection",
   }),
-});
-
-const metadataSchema = z.object({
-  teamId: z.string(),
-  userId: z.string(),
 });
 
 const slackAuthResponseSchema = z.object({
@@ -119,25 +114,8 @@ app.openapi(
     const query = c.req.valid("query");
     const { code, state } = query;
 
-    // Verify state parameter
-    const verifiedState =
-      await getSlackInstaller().stateStore?.verifyStateParam(new Date(), state);
-
-    if (!verifiedState) {
-      throw new HTTPException(400, {
-        message: "Invalid state parameter",
-      });
-    }
-
-    const parsedMetadata = metadataSchema.safeParse(
-      JSON.parse(verifiedState?.metadata ?? "{}"),
-    );
-
-    if (!parsedMetadata.success) {
-      throw new HTTPException(400, {
-        message: "Invalid metadata",
-      });
-    }
+    const parsedState = await consumeIntegrationOAuth(c, "slack", state);
+    if (!code) return c.redirect(`${parsedState.dashboardUrl}/oauth-callback?status=error&error=access_denied`, 302);
 
     try {
       // Exchange authorization code for access token
@@ -153,6 +131,7 @@ app.openapi(
 
       const response = await fetch("https://slack.com/api/oauth.v2.access", {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
@@ -174,9 +153,10 @@ app.openapi(
       }
 
       // Create app integration in database
-      const createdSlackIntegration = await createApp<"slack">(db, {
-        teamId: parsedMetadata.data.teamId,
-        createdBy: parsedMetadata.data.userId,
+      const createdSlackIntegration = await completeIntegrationOAuth(c, parsedState, async (tx) => {
+      const created = await createApp<"slack">(tx, {
+        teamId: parsedState.teamId,
+        createdBy: parsedState.userId,
         appId: "slack",
         settings: config.settings,
         config: {
@@ -192,15 +172,17 @@ app.openapi(
         },
       });
 
-      await createOrUpdatePlatformIdentity(db, {
+      await createOrUpdatePlatformIdentity(tx, {
         provider: "slack",
-        teamId: parsedMetadata.data.teamId,
-        userId: parsedMetadata.data.userId,
+        teamId: parsedState.teamId,
+        userId: parsedState.userId,
         externalUserId: parsedJson.data.authed_user.id,
         externalTeamId: parsedJson.data.team.id,
         metadata: {
           source: "slack_oauth_install",
         },
+      });
+      return created;
       });
 
       if (!createdSlackIntegration?.config) {
@@ -239,7 +221,7 @@ app.openapi(
         client,
         userId: slackUserId,
         db,
-        teamId: parsedMetadata.data.teamId,
+        teamId: parsedState.teamId,
         slackApp: {
           config: createdSlackIntegration.config,
           settings: createdSlackIntegration.settings,
@@ -253,16 +235,15 @@ app.openapi(
             error: errorMessage,
             stack: error instanceof Error ? error.stack : undefined,
             slackUserId,
-            middayUserId: parsedMetadata.data.userId,
-            teamId: parsedMetadata.data.teamId,
+            middayUserId: parsedState.userId,
+            teamId: parsedState.teamId,
           });
         }
         // Silently handle errors - App Home is non-critical
       });
 
       // Build redirect URL to dashboard
-      const dashboardUrl =
-        process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
+      const dashboardUrl = parsedState.dashboardUrl;
 
       return c.redirect(`${dashboardUrl}/oauth-callback?status=success`, 302);
     } catch (err) {

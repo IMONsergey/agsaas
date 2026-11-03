@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database, TransactionClient } from "../client";
 import {
   claimDCRApplication,
@@ -29,6 +29,10 @@ import {
   users,
   usersOnTeam,
 } from "../schema";
+import {
+  seedTestProfiles,
+  removeTestProfiles,
+} from "./helpers/profile-fixture";
 import {
   closeDatabase,
   getTestDatabase,
@@ -82,7 +86,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
               inboxId: id,
             })),
           );
-          await tx.insert(users).values(
+          await seedTestProfiles(
+            tx,
             userIds.map((id) => ({
               id,
               fullName: "OAuth retention fixture user",
@@ -149,10 +154,43 @@ describe.skipIf(!isTestDatabaseAvailable())(
         }
         await run(f);
       } finally {
-        await db
-          .delete(teams)
-          .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
-        await db.delete(users).where(inArray(users.id, userIds));
+        // Retention ledgers deliberately survive their source rows; remove only
+        // these generated fixture identities after their assertions finish.
+        const fixtureTeams = sql.join(
+          [f.teamId, f.consumerTeamId].map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        const fixtureUsers = sql.join(
+          userIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        try {
+          await db.transaction(async (tx) => {
+            await tx.execute(
+              sql`DELETE FROM public.resource_cleanups WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.security_audit_events WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id IN (${fixtureTeams})`,
+            );
+            await tx
+              .delete(teams)
+              .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
+            await tx.delete(users).where(inArray(users.id, userIds));
+            await removeTestProfiles(tx, userIds);
+          });
+        } catch (error) {
+          // Preserve nonsecret generated identities for exact recovery if an
+          // unexpected cleanup failure interrupts a disposable DB test run.
+          console.error("OAuth retention fixture cleanup failed", {
+            teamIds: [f.teamId, f.consumerTeamId],
+            userIds,
+            applicationIds: [f.applicationId, f.controlApplicationId],
+          });
+          throw error;
+        }
       }
     }
 

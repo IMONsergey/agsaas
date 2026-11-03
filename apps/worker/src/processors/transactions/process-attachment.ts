@@ -1,10 +1,15 @@
-import { updateTransaction } from "@midday/db/queries";
+import {
+  assertTransactionAttachmentScope,
+  updateTransaction,
+} from "@midday/db/queries";
 import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { ProcessTransactionAttachmentPayload } from "../../schemas/transactions";
 import { getDb } from "../../utils/db";
+import { NonRetryableError } from "../../utils/error-classification";
 import { convertHeicToJpeg } from "../../utils/image-processing";
 import { BaseProcessor } from "../base";
 
@@ -15,7 +20,19 @@ import { BaseProcessor } from "../base";
 export class ProcessTransactionAttachmentProcessor extends BaseProcessor<ProcessTransactionAttachmentPayload> {
   async process(job: Job<ProcessTransactionAttachmentPayload>): Promise<void> {
     const { transactionId, mimetype, filePath, teamId } = job.data;
-    const supabase = createClient();
+    const source = requireVaultPathForTeam(filePath, teamId);
+    if (source.pathArray[1] === "exports") {
+      throw new NonRetryableError(
+        "Export archives cannot be processed as transaction attachments",
+        undefined,
+        "validation",
+      );
+    }
+    const db = getDb();
+    await assertTransactionAttachmentScope(db, teamId, [
+      { filePath, transactionId },
+    ]);
+    const supabase = createTeamClient(teamId);
 
     this.logger.info("Processing transaction attachment", {
       transactionId,
@@ -89,7 +106,6 @@ export class ProcessTransactionAttachmentProcessor extends BaseProcessor<Process
         taxType: result.tax_type,
       });
 
-      const db = getDb();
       await updateTransaction(db, {
         id: transactionId,
         teamId,

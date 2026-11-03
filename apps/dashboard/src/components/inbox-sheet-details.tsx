@@ -67,7 +67,7 @@ export function InboxSheetDetails() {
       <div className="mb-4">
         <div className="flex items-start justify-between">
           <div className="flex items-start gap-3">
-            {logoUrl && (
+            {data.website && (
               <div className="relative">
                 <Avatar className="size-9 border">
                   <AvatarImageNext

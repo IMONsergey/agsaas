@@ -25,7 +25,7 @@
     "test:redis": "test -n \"$REDIS_TEST_URL\" && bun test --exit --timeout 30000 packages/workbench/src/core/integration/queue-manager.redis.test.ts && bun test --exit --timeout 30000 apps/worker/src/processors/base.redis.test.ts",
     "test:build-contract": "bun scripts/test-dashboard-build-contract.ts",
     "doctor": "bun scripts/runtime-doctor.ts",
-    "test:operations": "bun test --exit scripts/runtime-doctor.test.ts scripts/runtime-smoke.test.ts scripts/test-dashboard-build-contract.test.ts scripts/smoke-dashboard.test.ts scripts/test-runtime-containers.test.ts scripts/prepare-self-hosted.test.ts scripts/self-hosted-db.test.ts scripts/self-hosted-smoke.test.ts scripts/self-hosted-account-smoke.test.ts scripts/self-hosted-rehearsal.test.ts scripts/rehearsal-acl.test.ts scripts/rehearsal-ingress.test.ts scripts/self-hosted-preview-db.test.ts deploy/self-hosted/config.test.ts",
+    "test:operations": "bun test --exit scripts/runtime-doctor.test.ts scripts/runtime-smoke.test.ts scripts/test-dashboard-build-contract.test.ts scripts/smoke-dashboard.test.ts scripts/test-runtime-containers.test.ts scripts/prepare-self-hosted.test.ts scripts/self-hosted-db.test.ts scripts/self-hosted-smoke.test.ts scripts/self-hosted-account-smoke.test.ts scripts/self-hosted-rehearsal.test.ts scripts/rehearsal-acl.test.ts scripts/rehearsal-ingress.test.ts scripts/self-hosted-preview-db.test.ts scripts/self-hosted-migration-chain.test.ts deploy/self-hosted/config.test.ts",
     "test:runtime": "bun scripts/test-runtime-containers.ts",
     "start:dashboard": "turbo start --filter=@midday/dashboard",
     "start:website": "turbo start --filter=@midday/website",
@@ -37,7 +37,7 @@
     "cli": "bun run packages/cli/bin/midday.ts",
     "jobs:dashboard": "turbo jobs --filter=@midday/jobs",
     "format": "biome format --write .",
-    "lint": "biome check scripts deploy/self-hosted && turbo lint",
+    "lint": "biome check scripts deploy/self-hosted && turbo lint --continue=always",
     "lint:fix": "turbo lint:fix",
     "typecheck": "tsc --project scripts/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 tsc --project packages/workbench/tsconfig.json && NODE_OPTIONS=--max-old-space-size=6144 turbo typecheck --concurrency=1",
     "test:dependencies": "bun scripts/dependency-audit.ts"
@@ -105,6 +105,10 @@
     "langsmith": "0.11.6",
     "undici": "6.29.1",
     "vite": "8.3.5",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "fontkit": "2.0.4"
+  },
+  "patchedDependencies": {
+    "fontkit@2.0.4": "patches/fontkit@2.0.4.patch"
   }
 }

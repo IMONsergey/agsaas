@@ -2,6 +2,7 @@
 
 import { track } from "@midday/events/client";
 import { LogEvents } from "@midday/events/events";
+import countries from "@midday/location/country-flags";
 import { uniqueCurrencies } from "@midday/location/currencies";
 import {
   Form,
@@ -17,7 +18,7 @@ import { useToast } from "@midday/ui/use-toast";
 import { getDefaultFiscalYearStartMonth } from "@midday/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { use, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod/v3";
 import { CountrySelector } from "@/components/country-selector";
 import { SelectCompanyType } from "@/components/select-company-type";
@@ -29,8 +30,19 @@ import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
   name: z.string().min(2, "Company name must be at least 2 characters."),
-  countryCode: z.string(),
-  baseCurrency: z.string(),
+  countryCode: z
+    .string()
+    .refine(
+      (value) =>
+        Object.values(countries).some((country) => country.code === value),
+      "Choose the country where your business is registered.",
+    ),
+  baseCurrency: z
+    .string()
+    .refine(
+      (value) => uniqueCurrencies.includes(value),
+      "Choose your reporting currency.",
+    ),
   fiscalYearStartMonth: z.number().int().min(1).max(12).nullable().optional(),
   companyType: z.enum(
     [
@@ -73,14 +85,10 @@ type Props = {
 };
 
 export function CreateTeamStep({
-  defaultCurrencyPromise,
-  defaultCountryCodePromise,
   onComplete,
   onCountryChange,
   onLoadingChange,
 }: Props) {
-  const currency = use(defaultCurrencyPromise);
-  const countryCode = use(defaultCountryCodePromise);
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -121,9 +129,9 @@ export function CreateTeamStep({
   const form = useZodForm(formSchema, {
     defaultValues: {
       name: "",
-      baseCurrency: currency,
-      countryCode: countryCode ?? "",
-      fiscalYearStartMonth: getDefaultFiscalYearStartMonth(countryCode),
+      baseCurrency: "",
+      countryCode: "",
+      fiscalYearStartMonth: 1,
     },
   });
 
@@ -185,8 +193,9 @@ export function CreateTeamStep({
         transition={{ duration: 0.4, delay: 0.2 }}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        Add company details so amounts, currency, tax, and reporting periods
-        line up correctly across insights, invoices and exports.
+        Choose your business country and reporting currency explicitly. These
+        settings control reports and document defaults. They do not determine
+        local tax compliance or replace your invoice requirements.
       </motion.p>
 
       <motion.div
@@ -249,7 +258,7 @@ export function CreateTeamStep({
             />
 
             <div className="space-y-1.5">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <FormField
                   control={form.control}
                   name="baseCurrency"

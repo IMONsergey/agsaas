@@ -1,0 +1,156 @@
+export const productPages = {
+  invoicing: {
+    title: "Invoices that stay connected to your work",
+    short: "Invoices",
+    lead: "Create invoices from customer records, products and tracked time. Keep draft, issued and paid states visible in your workspace.",
+    points: [
+      "Build reusable templates and preview a document before issuing it.",
+      "Share a customer link or download a PDF.",
+      "Schedule or repeat invoices after checking their recipients and terms.",
+    ],
+    steps: [
+      "Add the customer and invoice details.",
+      "Review currency, tax, dates, line items and payment instructions.",
+      "Issue the document, then track its delivery and payment status.",
+    ],
+    path: "/invoices",
+    note: "Sending email requires configured email delivery. Online payment requires your own payment provider connection.",
+  },
+  transactions: {
+    title: "A clear record of money in and out",
+    short: "Transactions",
+    lead: "Enter transactions manually, import bank statements from CSV and organize records by category, tag and account.",
+    points: [
+      "Start without a bank connection.",
+      "Review the import preview and column mapping before saving.",
+      "Attach supporting files and export records for review.",
+    ],
+    steps: [
+      "Create a manual account or choose an existing account.",
+      "Import a CSV or add a transaction.",
+      "Review amounts, currency, dates, categories and attachments.",
+    ],
+    path: "/transactions",
+    note: "Automatic bank sync is optional. Available institutions depend on your installation's configured provider.",
+  },
+  customers: {
+    title: "Customer details alongside their work",
+    short: "Customers",
+    lead: "Keep contact details, invoices, projects and billing information together.",
+    points: [
+      "Create and update customer records directly.",
+      "Set billing details before issuing invoices.",
+      "Review associated invoices and tracked work.",
+    ],
+    steps: [
+      "Add the customer's name and contact details.",
+      "Review billing address, currency and tax details.",
+      "Create an invoice or project for that customer.",
+    ],
+    path: "/customers",
+    note: "Automatic enrichment is optional. Always review suggested legal and tax details before using them in a document.",
+  },
+  "time-tracking": {
+    title: "Track work and prepare billing",
+    short: "Time tracking",
+    lead: "Use project timers or enter time manually, then review work before including it in an invoice.",
+    points: [
+      "Organize time by customer and project.",
+      "Use timers or dated manual entries.",
+      "Review durations, rates and billable status.",
+    ],
+    steps: [
+      "Create a project and assign a customer.",
+      "Start a timer or enter a completed work session.",
+      "Review the period and prepare an invoice.",
+    ],
+    path: "/tracker",
+    note: "Recorded time is a work log. Invoice totals also depend on rates, taxes, rounding and the selected entries.",
+  },
+  "file-storage": {
+    title: "Documents in the same workspace",
+    short: "Documents",
+    lead: "Upload and organize supporting documents without sending them to another product's storage.",
+    points: [
+      "Keep files associated with your workspace.",
+      "Download originals and connect them to records.",
+      "Use search and metadata to find supporting evidence.",
+    ],
+    steps: [
+      "Upload a supported file to the Vault.",
+      "Review its name and metadata.",
+      "Attach it to the relevant transaction or invoice.",
+    ],
+    path: "/vault",
+    note: "Automatic extraction and semantic classification require configured processing providers. Original-file storage remains available independently.",
+  },
+  inbox: {
+    title: "Collect receipts for review",
+    short: "Inbox",
+    lead: "Upload receipts directly and review them alongside your transactions.",
+    points: [
+      "Use direct upload without an email integration.",
+      "Connect your own configured Gmail or Outlook flow.",
+      "Use a forwarding address only when your installation has its own incoming-mail domain.",
+    ],
+    steps: [
+      "Upload a receipt or connect an available email integration.",
+      "Review the document and suggested information.",
+      "Match the receipt to the correct transaction.",
+    ],
+    path: "/inbox",
+    note: "Email forwarding, messaging bots and automatic extraction are optional capabilities. Their availability is shown in Apps.",
+  },
+  "pre-accounting": {
+    title: "Prepare records for accounting",
+    short: "Exports",
+    lead: "Organize transactions, invoices and supporting files before handing records to your accountant.",
+    points: [
+      "Review the selected period and currency.",
+      "Check the result and any missing-file warnings.",
+      "Keep the exported manifest with the archive.",
+    ],
+    steps: [
+      "Review records and attachments for the chosen period.",
+      "Start the export from the workspace.",
+      "Check completion status before using or sharing the archive.",
+    ],
+    path: "/transactions",
+    note: "This workspace does not replace jurisdiction-specific accounting review or statutory filing.",
+  },
+  insights: {
+    title: "Financial reports with context",
+    short: "Reports",
+    lead: "Review revenue, spending and activity from the records held in your workspace.",
+    points: [
+      "Choose a reporting period and currency.",
+      "Check whether the metric includes paid or issued amounts.",
+      "Review data completeness before using a report.",
+    ],
+    steps: [
+      "Add or import financial records.",
+      "Open Reports and choose the reporting basis.",
+      "Review the data and share only the intended period.",
+    ],
+    path: "/reports",
+    note: "An empty workspace, delayed bank sync and a genuine zero value have different meanings. Check the underlying records and source freshness.",
+  },
+  assistant: {
+    title: "Optional AI assistance",
+    short: "Assistant",
+    lead: "Use configured AI tools to work with your workspace while retaining access to every manual workflow.",
+    points: [
+      "Availability is shown by the current installation.",
+      "Connected tools require the appropriate access.",
+      "Review financial changes and external actions before confirming them.",
+    ],
+    steps: [
+      "Check that AI assistance is configured.",
+      "Ask a specific question about your workspace.",
+      "Review the result and use the manual record view when you need to verify it.",
+    ],
+    path: "/",
+    note: "AI assistance requires an external model provider. Do not assume an action succeeded until its result is confirmed in the workspace.",
+  },
+} as const;
+export type ProductPageKey = keyof typeof productPages;

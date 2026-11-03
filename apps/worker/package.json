@@ -6,7 +6,7 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --exit src/http src/runtime && bun run test:startup && bun run test:error-classification && bun run test:base && bun run test:import-transactions && bun run test:recurring-template && bun run test:invoice-delivery && bun run test:team-invitation && bun run test:schedulers && bun run test:notification-dispatch && bun run test:financial-jobs && bun run test:inbox-provider && bun run test:bank-cleanup",
+    "test": "bun test --exit src/http src/runtime && bun run test:startup && bun run test:error-classification && bun run test:base && bun run test:import-transactions && bun run test:recurring-template && bun run test:invoice-delivery && bun run test:team-invitation && bun run test:schedulers && bun run test:notification-dispatch && bun run test:financial-jobs && bun run test:export-boundaries && bun run test:inbox-provider && bun run test:bank-cleanup && bun run test:native-bank-sync",
     "test:startup": "bun --no-env-file test --exit --timeout 30000 src/processors/teams/payment-issue.test.ts",
     "test:error-classification": "bun --no-env-file test --exit --timeout 30000 src/utils/error-classification.test.ts src/processors/retry-test-connection.test.ts",
     "test:base": "bun --no-env-file test --exit --timeout 30000 src/processors/base.test.ts",
@@ -20,7 +20,9 @@
     "test:notification-dispatch": "bun --no-env-file test --exit --timeout 30000 src/utils/notification-dispatch.test.ts && bun --no-env-file test --exit --timeout 30000 src/utils/upcoming-notification-delivery.test.ts",
     "test:financial-jobs": "bun --no-env-file test --exit --timeout 30000 src/utils/financial-job-dispatch.test.ts",
     "test:inbox-provider": "bun --no-env-file test --exit --timeout 30000 src/utils/inbox-storage-key.test.ts && bun --no-env-file test --exit --timeout 30000 src/processors/inbox/sync-scheduler.test.ts",
-    "test:bank-cleanup": "bun --no-env-file test --exit --timeout 30000 src/utils/bank-connection-cleanup.test.ts"
+    "test:bank-cleanup": "bun --no-env-file test --exit --timeout 30000 src/utils/bank-connection-cleanup.test.ts",
+    "test:native-bank-sync": "bun --no-env-file test --exit src/utils/native-bank-payload.test.ts",
+    "test:export-boundaries": "bun --no-env-file test --exit --timeout 30000 src/utils/export-archive.test.ts && bun --no-env-file test --exit --timeout 30000 src/processors/transactions/attachment-export-access.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "catalog:",

@@ -2,6 +2,10 @@ import { buildSearchQuery } from "@midday/db/utils/search-query";
 import { generateToken } from "@midday/invoice/token";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
+import {
+  invoiceReceivedAmount,
+  invoiceOutstandingAmount,
+} from "../invoice-settlement-sql";
 import { nanoid } from "nanoid";
 import type { Database, DatabaseOrTransaction } from "../client";
 import {
@@ -84,12 +88,18 @@ function customerInvoiceTotals(db: DatabaseOrTransaction, teamId: string) {
       status: invoices.status,
       issueDate: invoices.issueDate,
       currency: reportingCurrency.as("reporting_currency"),
-      amount: sql<number | null>`CASE
-        WHEN ${invoices.currency} ~ '^[A-Z]{3}$' THEN CASE
-          WHEN ${invoices.currency} = ${reportingCurrency} THEN ${invoices.amount}
-          ELSE ${invoices.amount} * ${exchangeRates.rate}
-        END
-      END`.as("converted_amount"),
+      paidAmount: sql<number | null>`CASE WHEN ${invoiceReceivedAmount}=0 THEN 0
+        WHEN ${invoices.currency} ~ '^[A-Z]{3}$' THEN CASE WHEN ${invoices.currency}=${reportingCurrency}
+          THEN ${invoiceReceivedAmount} ELSE ${invoiceReceivedAmount}*${exchangeRates.rate} END END`.as(
+        "received_amount",
+      ),
+      outstandingAmount: sql<
+        number | null
+      >`CASE WHEN ${invoiceOutstandingAmount}=0 THEN 0
+        WHEN ${invoices.currency} ~ '^[A-Z]{3}$' THEN CASE WHEN ${invoices.currency}=${reportingCurrency}
+          THEN ${invoiceOutstandingAmount} ELSE ${invoiceOutstandingAmount}*${exchangeRates.rate} END END`.as(
+        "outstanding_amount",
+      ),
     })
     .from(invoices)
     .innerJoin(teams, eq(teams.id, invoices.teamId))
@@ -111,16 +121,18 @@ function customerInvoiceTotals(db: DatabaseOrTransaction, teamId: string) {
       count: sql<number>`count(*)::int`.as("invoice_count"),
       // Completeness is independent for paid and outstanding totals. A missing
       // FX rate must not be disguised as a zero or a plausible partial total.
-      totalRevenue: sql<number | null>`CASE WHEN count(*) FILTER (
-        WHERE ${invoiceAmounts.status} = 'paid' AND ${invoiceAmounts.amount} IS NULL
-      ) > 0 THEN NULL ELSE round(coalesce(sum(${invoiceAmounts.amount}) FILTER (
-        WHERE ${invoiceAmounts.status} = 'paid'
-      ), 0), 2)::float END`.as("total_revenue"),
-      outstandingAmount: sql<number | null>`CASE WHEN count(*) FILTER (
-        WHERE ${invoiceAmounts.status} IN ('unpaid', 'overdue') AND ${invoiceAmounts.amount} IS NULL
-      ) > 0 THEN NULL ELSE round(coalesce(sum(${invoiceAmounts.amount}) FILTER (
-        WHERE ${invoiceAmounts.status} IN ('unpaid', 'overdue')
-      ), 0), 2)::float END`.as("outstanding_amount"),
+      totalRevenue: sql<
+        number | null
+      >`CASE WHEN count(*) FILTER (WHERE ${invoiceAmounts.paidAmount} IS NULL)>0 THEN NULL
+        ELSE round(coalesce(sum(${invoiceAmounts.paidAmount}),0),2)::float END`.as(
+        "total_revenue",
+      ),
+      outstandingAmount: sql<
+        number | null
+      >`CASE WHEN count(*) FILTER (WHERE ${invoiceAmounts.outstandingAmount} IS NULL)>0 THEN NULL
+        ELSE round(coalesce(sum(${invoiceAmounts.outstandingAmount}),0),2)::float END`.as(
+        "outstanding_amount",
+      ),
       lastInvoiceDate: sql<string | null>`max(${invoiceAmounts.issueDate})`.as(
         "last_invoice_date",
       ),

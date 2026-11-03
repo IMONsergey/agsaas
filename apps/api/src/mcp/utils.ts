@@ -1,6 +1,8 @@
 import { createAdminClient } from "@api/services/supabase";
+import { assertVaultFileReadAccess } from "@api/utils/vault-file-access";
 import { TZDate } from "@date-fns/tz";
 import { download, signedUrl } from "@midday/supabase/storage";
+import { getAppUrl } from "@midday/utils/envs";
 import {
   format,
   getQuarter,
@@ -11,6 +13,7 @@ import {
   startOfYear,
 } from "date-fns";
 import { z } from "zod";
+import type { McpContext } from "./types";
 
 export interface DateContext {
   date: string;
@@ -42,8 +45,7 @@ export function getDateContext(timezone: string | null): DateContext {
   };
 }
 
-export const DASHBOARD_URL =
-  process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
+export const DASHBOARD_URL = getAppUrl();
 
 export const MCP_TEXT_LIMIT = 25_000;
 
@@ -172,12 +174,22 @@ export function getMimeType(filename: string): string {
  * Expires after 1 hour.
  */
 export async function getVaultSignedUrl(
+  ctx: McpContext,
   storagePath: string,
 ): Promise<string | null> {
+  const path = await assertVaultFileReadAccess(
+    ctx.db,
+    {
+      teamId: ctx.teamId,
+      interactive: !!ctx.sessionId,
+      scopes: ctx.scopes,
+    },
+    storagePath,
+  );
   const supabase = await createAdminClient();
   const { data, error } = await signedUrl(supabase, {
     bucket: "vault",
-    path: storagePath,
+    path,
     expireIn: SIGNED_URL_EXPIRY,
   });
 
@@ -190,14 +202,24 @@ export async function getVaultSignedUrl(
  * a base64-encoded MCP EmbeddedResource content item.
  */
 export async function downloadVaultFile(
+  ctx: McpContext,
   storagePath: string,
   uri: string,
   mimeType: string,
 ): Promise<ResourceContent | null> {
+  const path = await assertVaultFileReadAccess(
+    ctx.db,
+    {
+      teamId: ctx.teamId,
+      interactive: !!ctx.sessionId,
+      scopes: ctx.scopes,
+    },
+    storagePath,
+  );
   const supabase = await createAdminClient();
   const { data } = await download(supabase, {
     bucket: "vault",
-    path: storagePath,
+    path,
   });
 
   if (!data) return null;

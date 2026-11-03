@@ -1,4 +1,5 @@
 import pino from "pino";
+import { diagnosticSummary, redactDiagnosticMessage } from "./diagnostics.js";
 
 /**
  * Check if we're in pretty mode
@@ -36,7 +37,10 @@ const baseLogger = pino({
 /**
  * Create a logger adapter that wraps pino to match the existing API
  */
-function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
+export function createLoggerAdapter(
+  pinoLogger: pino.Logger,
+  prefixContext?: string,
+) {
   // Format context with brackets if not already formatted
   const formatContext = (ctx?: string): string => {
     if (!ctx) return "";
@@ -56,9 +60,12 @@ function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.info(data, fullMessage);
+          pinoLogger.info(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
-          pinoLogger.info(fullMessage);
+          pinoLogger.info(redactDiagnosticMessage(fullMessage));
         }
       } catch (_error) {
         // Silently ignore logger stream errors to prevent crashes
@@ -71,9 +78,12 @@ function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.error(data, fullMessage);
+          pinoLogger.error(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
-          pinoLogger.error(fullMessage);
+          pinoLogger.error(redactDiagnosticMessage(fullMessage));
         }
       } catch (_error) {
         // Silently ignore logger stream errors to prevent crashes
@@ -86,9 +96,12 @@ function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.warn(data, fullMessage);
+          pinoLogger.warn(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
-          pinoLogger.warn(fullMessage);
+          pinoLogger.warn(redactDiagnosticMessage(fullMessage));
         }
       } catch (_error) {
         // Silently ignore logger stream errors to prevent crashes
@@ -101,9 +114,12 @@ function createLoggerAdapter(pinoLogger: pino.Logger, prefixContext?: string) {
           ? `${formattedContext} ${message}`
           : message;
         if (data) {
-          pinoLogger.debug(data, fullMessage);
+          pinoLogger.debug(
+            diagnosticSummary(data),
+            redactDiagnosticMessage(fullMessage),
+          );
         } else {
-          pinoLogger.debug(fullMessage);
+          pinoLogger.debug(redactDiagnosticMessage(fullMessage));
         }
       } catch (_error) {
         // Silently ignore logger stream errors to prevent crashes

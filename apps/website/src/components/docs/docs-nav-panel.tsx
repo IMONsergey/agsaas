@@ -25,7 +25,7 @@ export function DocsNavPanel({
   const panelRef = useRef<HTMLDivElement>(null);
   // Only expand the first section by default
   const [expandedSections, setExpandedSections] = useState<string[]>(
-    navigation.length > 0 ? [navigation[0].slug] : [],
+    navigation[0] ? [navigation[0].slug] : [],
   );
 
   // Close on Escape key

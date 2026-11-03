@@ -1,16 +1,19 @@
+import { financialRequestHash } from "@midday/db/financial-job";
 import {
   getInvoiceById,
   isCurrentInvoiceSchedule,
   prepareInvoiceDocument,
+  reserveGeneratedStorage,
   updateInvoice,
 } from "@midday/db/queries";
-import { PdfTemplate, renderToBuffer } from "@midday/invoice";
-import { createClient } from "@midday/supabase/job";
+import { ensureFinancialJobDispatch } from "@midday/db/queries/financial-job-dispatches";
+import { PdfTemplate, renderToBuffer } from "@midday/invoice/server";
+import { reserveQueuedJob } from "@midday/job-client/resource-admission";
+import { createTeamClient } from "@midday/supabase/job";
 import { validateVaultKey } from "@midday/supabase/storage-path";
 import type { Job } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "../../config/job-options";
 import { documentsQueue } from "../../queues/documents";
-import { invoicesQueue } from "../../queues/invoices";
 import type { GenerateInvoicePayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
 import { BaseProcessor } from "../base";
@@ -24,6 +27,8 @@ import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePayload> {
   async process(job: Job<GenerateInvoicePayload>): Promise<void> {
     const { invoiceId, deliveryType, expectedScheduledJobId } = job.data;
+    if (!job.id)
+      throw new Error("Invoice generation requires its queue identity");
     const db = getDb();
 
     this.logger.info("Starting invoice generation", {
@@ -104,7 +109,14 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     });
 
     // Upload to Supabase storage (storage SDK is still needed)
-    const supabase = createClient();
+    await reserveGeneratedStorage(db, {
+      teamId: invoiceData.teamId,
+      path: fullPath,
+      bytes: buffer.length,
+      sourceKind: "invoice",
+      sourceId: invoiceId,
+    });
+    const supabase = createTeamClient(invoiceData.teamId);
     const { error: uploadError } = await supabase.storage
       .from("vault")
       .upload(fullPath, buffer, {
@@ -147,33 +159,50 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
         expectedScheduledJobId,
         deliveryKey: job.data.deliveryKey,
       });
-      await invoicesQueue.add(
-        "send-invoice-email",
-        {
+      await ensureFinancialJobDispatch(db, {
+        teamId: invoiceData.teamId,
+        jobName: "send-invoice-email",
+        source: `invoice/${invoiceId}/delivery/${deliveryKey}`,
+        payload: {
+          teamId: invoiceData.teamId,
           invoiceId,
           filename,
           fullPath,
           deliveryKey,
+          ...(job.data.approvedRecipients
+            ? { approvedRecipients: job.data.approvedRecipients }
+            : {}),
           ...(expectedScheduledJobId === undefined
             ? {}
             : { expectedScheduledJobId }),
         },
-        DEFAULT_JOB_OPTIONS,
-      );
+      });
 
-      this.logger.debug("Queued send-invoice-email job", { invoiceId });
+      this.logger.debug("Persisted send-invoice-email intent", { invoiceId });
     }
 
     // Queue document processing for classification
-    await documentsQueue.add(
+    const documentPayload = {
+      filePath: pathArray,
+      mimetype: "application/pdf",
+      teamId: invoiceData.teamId,
+    };
+    const documentJobId = await reserveQueuedJob(
+      "documents",
+      documentPayload,
+      `invoice-document-${financialRequestHash([invoiceData.teamId, invoiceId, job.id])}`,
       "process-document",
-      {
-        filePath: pathArray,
-        mimetype: "application/pdf",
-        teamId: invoiceData.teamId,
-      },
-      DEFAULT_JOB_OPTIONS,
     );
+    const created = await documentsQueue.add(
+      "process-document",
+      documentPayload,
+      {
+        ...DEFAULT_JOB_OPTIONS,
+        jobId: documentJobId,
+      },
+    );
+    if (created.id !== documentJobId)
+      throw new Error("Invoice document processing was not acknowledged");
 
     this.logger.info("Invoice generation completed", {
       invoiceId,

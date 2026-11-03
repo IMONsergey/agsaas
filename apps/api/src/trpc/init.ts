@@ -3,19 +3,22 @@ import type { Session } from "@api/utils/auth";
 import { verifyAccessToken } from "@api/utils/auth";
 import { getGeoContext } from "@api/utils/geo";
 import { getRequestTrace } from "@api/utils/request-trace";
+import { admitTrpcRequest } from "@api/utils/resource-admission";
 import { safeCompare } from "@api/utils/safe-compare";
+import {
+  requireTeamOwner,
+  TeamOwnerRequiredError,
+} from "@api/utils/team-owner";
 import type { Database } from "@midday/db/client";
 import { db } from "@midday/db/client";
+import { readTeamQuotaError } from "@midday/db/team-quota-error";
 import { createLoggerWithContext } from "@midday/logger";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { initTRPC, TRPCError } from "@trpc/server";
 import type { Context } from "hono";
 import superjson from "superjson";
 import { withPrimaryReadAfterWrite } from "./middleware/primary-read-after-write";
-import {
-  requireTrpcSessionMfa,
-  withTeamPermission,
-} from "./middleware/team-permission";
+import { withTeamPermission } from "./middleware/team-permission";
 
 const DEBUG_PERF = process.env.DEBUG_PERF === "true";
 const perfLogger = createLoggerWithContext("perf:trpc");
@@ -86,6 +89,19 @@ const t = initTRPC.context<TRPCContext>().create({
   transformer: superjson,
 });
 
+const withTeamQuotaErrors = t.middleware(async ({ next }) => {
+  const result = await next();
+  if (!result.ok) {
+    const quota = readTeamQuotaError(result.error);
+    if (quota)
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: quota.message,
+      });
+  }
+  return result;
+});
+
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
 
@@ -121,10 +137,12 @@ const withTeamPermissionMiddleware = t.middleware(async (opts) => {
 });
 
 export const publicProcedure = t.procedure
+  .use(withTeamQuotaErrors)
   .use(withTimingMiddleware)
   .use(withPrimaryDbMiddleware);
 
 export const protectedProcedure = t.procedure
+  .use(withTeamQuotaErrors)
   .use(withTimingMiddleware)
   .use(withTeamPermissionMiddleware)
   .use(withPrimaryDbMiddleware)
@@ -141,6 +159,17 @@ export const protectedProcedure = t.procedure
         session,
       },
     });
+  })
+  .use(async (opts) => {
+    const { session, teamId } = opts.ctx;
+    if (!session) throw new TRPCError({ code: "UNAUTHORIZED" });
+    await admitTrpcRequest(opts.ctx.db, {
+      userId: session.user.id,
+      teamId,
+      path: opts.path,
+      type: opts.type,
+    });
+    return opts.next();
   });
 
 /**
@@ -150,6 +179,7 @@ export const protectedProcedure = t.procedure
  * Regular user sessions are NOT accepted — use protectedProcedure for browser-facing endpoints.
  */
 export const internalProcedure = t.procedure
+  .use(withTeamQuotaErrors)
   .use(withTimingMiddleware)
   .use(withPrimaryDbMiddleware)
   .use(async (opts) => {
@@ -170,6 +200,7 @@ export const internalProcedure = t.procedure
  * (BullMQ workers, etc.).
  */
 export const protectedOrInternalProcedure = t.procedure
+  .use(withTeamQuotaErrors)
   .use(withTimingMiddleware)
   .use(withPrimaryDbMiddleware)
   .use(async (opts) => {
@@ -183,12 +214,35 @@ export const protectedOrInternalProcedure = t.procedure
       throw new TRPCError({ code: "UNAUTHORIZED" });
     }
 
-    await requireTrpcSessionMfa(session);
-
-    return opts.next({
-      ctx: {
-        ...opts.ctx,
-        session,
-      },
+    // Browser requests need the same authoritative membership and MFA checks
+    // as protectedProcedure; only the internal-key branch bypasses membership.
+    return withTeamPermission({
+      ctx: opts.ctx,
+      procedurePath: opts.path,
+      next: opts.next,
     });
+  })
+  .use(async (opts) => {
+    const { session, teamId } = opts.ctx;
+    if (opts.ctx.isInternalRequest) return opts.next();
+    if (!session) throw new TRPCError({ code: "UNAUTHORIZED" });
+    await admitTrpcRequest(opts.ctx.db, {
+      userId: session.user.id,
+      teamId,
+      path: opts.path,
+      type: opts.type,
+    });
+    return opts.next();
   });
+
+/** Administrative mutations require a fresh owner role, not only membership. */
+export const ownerProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+  try {
+    await requireTeamOwner(ctx.db, ctx.teamId, ctx.session.user.id);
+  } catch (error) {
+    if (error instanceof TeamOwnerRequiredError)
+      throw new TRPCError({ code: "FORBIDDEN", message: error.message });
+    throw error;
+  }
+  return next();
+});

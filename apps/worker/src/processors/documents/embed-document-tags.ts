@@ -4,12 +4,12 @@ import {
   upsertDocumentTagEmbeddings,
   upsertDocumentTags,
 } from "@midday/db/queries";
-import { Embed } from "@midday/documents/embed";
 import slugify from "@sindresorhus/slugify";
 import type { Job } from "bullmq";
 import type { EmbedDocumentTagsPayload } from "../../schemas/documents";
 import { getDb } from "../../utils/db";
-import { TIMEOUTS, withTimeout } from "../../utils/timeout";
+import { runDocumentTask } from "../../utils/document-isolation";
+import { TIMEOUTS } from "../../utils/timeout";
 import { BaseProcessor } from "../base";
 
 /**
@@ -26,8 +26,6 @@ export class EmbedDocumentTagsProcessor extends BaseProcessor<EmbedDocumentTagsP
       tagsCount: tags.length,
       teamId,
     });
-
-    const embed = new Embed();
 
     // 1. Generate slugs for all incoming tags
     const tagsWithSlugs = tags.map((tag) => ({
@@ -59,10 +57,9 @@ export class EmbedDocumentTagsProcessor extends BaseProcessor<EmbedDocumentTagsP
         newTagsCount: newTagNames.length,
       });
 
-      const { embeddings, model } = await withTimeout(
-        embed.embedMany(newTagNames),
-        TIMEOUTS.EMBEDDING,
-        `Embedding generation timed out after ${TIMEOUTS.EMBEDDING}ms`,
+      const { embeddings, model } = await runDocumentTask(
+        { kind: "embed-tags", tags: newTagNames },
+        { timeoutMs: TIMEOUTS.EMBEDDING },
       );
 
       if (!embeddings || embeddings.length !== newTagNames.length) {

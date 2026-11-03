@@ -5,7 +5,15 @@ import { useEffect, useRef, useState } from "react";
 import { pdfjs } from "react-pdf";
 import { FilePreviewIcon } from "@/components/file-preview-icon";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Build copies the exact React-PDF dependency, including its license and decoders.
+const pdfAssetBase = `/vendor/pdfjs/${pdfjs.version}/`;
+pdfjs.GlobalWorkerOptions.workerSrc = `${pdfAssetBase}pdf.worker.min.mjs`;
+const pdfOptions = {
+  cMapUrl: `${pdfAssetBase}cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `${pdfAssetBase}standard_fonts/`,
+  wasmUrl: `${pdfAssetBase}wasm/`,
+};
 
 // Module-level thumbnail cache (persists across navigations)
 const thumbnailCache = new Map<string, string>();
@@ -118,7 +126,7 @@ export function PdfThumbnail({ url, cacheKey, width = 60, height }: Props) {
       }
 
       pdfjs
-        .getDocument(urlRef.current)
+        .getDocument({ url: urlRef.current, ...pdfOptions })
         .promise.then(async (pdf) => {
           if (abortRef.current) {
             pdf.destroy();

@@ -1,3 +1,8 @@
+import { hostedPlaidCapability } from "@api/services/plaid-hosted-consent";
+import {
+  BANK_CONSENT_ONBOARDING_READY,
+  BANK_CONSENT_UNAVAILABLE_REASON,
+} from "./bank-consent-policy";
 import {
   getProductEmailConfig,
   isProductEmailTransportAvailable,
@@ -81,9 +86,18 @@ export function getInstanceCapabilities(env: Environment = process.env) {
     );
   return {
     integrations,
+    hostedBanking: hostedPlaidCapability(env),
     banking: capability(
-      bankProvider && has("TRIGGER_SECRET_KEY"),
-      "Bank sync is not configured. You can import transactions from a CSV file.",
+      BANK_CONSENT_ONBOARDING_READY && bankProvider,
+      BANK_CONSENT_UNAVAILABLE_REASON,
+    ),
+    enrichment: capability(
+      has("COMPANY_ENRICH_API_KEY"),
+      "Customer enrichment is not configured for this installation",
+    ),
+    ai: capability(
+      has("OPENAI_API_KEY"),
+      "AI assistance is not configured. All manual workspace tools remain available.",
     ),
     connectors: capability(has("COMPOSIO_API_KEY")),
     email: capability(emailConfigured),
@@ -99,9 +113,6 @@ export function getInstanceCapabilities(env: Environment = process.env) {
         ),
       "Subscriptions are not enabled for this installation",
     ),
-    support: capability(
-      has("PLAIN_API_KEY"),
-      "Support messaging is not configured for this installation",
-    ),
+    support: capability(true),
   };
 }

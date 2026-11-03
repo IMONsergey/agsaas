@@ -2953,7 +2953,9 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
       const fetched = await getReportByLinkId(db, created!.linkId!);
 
       expect(fetched).toBeDefined();
-      expect(fetched!.id).toBe(created!.id);
+      expect(fetched!.linkId).toBe(created!.linkId);
+      expect(fetched).not.toHaveProperty("id");
+      expect(fetched).not.toHaveProperty("teamId");
       expect(fetched!.type).toBe("profit");
       expect(fetched!.teamName).toBe("Test Co USD");
     });

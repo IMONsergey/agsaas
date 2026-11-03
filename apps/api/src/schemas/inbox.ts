@@ -183,6 +183,7 @@ export const deleteInboxSchema = z
 export const deleteInboxManySchema = z
   .array(z.string().uuid())
   .min(1)
+  .max(100)
   .openapi({
     description: "Schema for bulk deleting inbox items by their IDs.",
     example: [
@@ -194,21 +195,32 @@ export const deleteInboxManySchema = z
 export const createInboxItemSchema = z.object({
   filename: z.string(),
   mimetype: z.string(),
-  size: z.number(),
+  size: z
+    .number()
+    .int()
+    .min(1)
+    .max(50 * 1024 * 1024),
   filePath: z.array(z.string()),
 });
 
-export const processAttachmentsSchema = z.array(
-  z.object({
-    mimetype: z.string(),
-    size: z.number(),
-    filePath: z.array(z.string()),
-    referenceId: z.string().optional(),
-    website: z.string().optional(),
-    senderEmail: z.string().email().optional(),
-    inboxAccountId: z.string().uuid().optional(),
-  }),
-);
+export const processAttachmentsSchema = z
+  .array(
+    z.object({
+      mimetype: z.string(),
+      size: z
+        .number()
+        .int()
+        .min(1)
+        .max(50 * 1024 * 1024),
+      filePath: z.array(z.string()),
+      referenceId: z.string().optional(),
+      website: z.string().optional(),
+      senderEmail: z.string().email().optional(),
+      inboxAccountId: z.string().uuid().optional(),
+    }),
+  )
+  .min(1)
+  .max(20);
 
 export const searchInboxSchema = z.object({
   q: z.string().optional(), // Search query (text or amount)
@@ -287,13 +299,21 @@ export const declineMatchSchema = z.object({
 
 export const deleteInboxResponseSchema = z
   .object({
-    id: z.string().openapi({
-      description: "The unique identifier of the deleted inbox item.",
+    id: z.string().uuid().openapi({
+      description: "The unique identifier of the erased inbox item.",
       example: "b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4",
     }),
+    deleted: z.literal(true),
+    status: z.literal("deleted"),
+    cleanupPending: z
+      .boolean()
+      .describe("Whether retained file cleanup is still pending"),
+    cleanupId: z.string().uuid().nullable(),
   })
+  .strict()
   .openapi({
-    description: "Response schema for a successfully deleted inbox item.",
+    description:
+      "The Inbox item was erased. Associated file cleanup may still be pending.",
   });
 
 export const getInboxPreSignedUrlSchema = z.object({
@@ -398,3 +418,11 @@ export const inboxBlocklistItemResponseSchema = z
 export const inboxBlocklistResponseSchema = z.object({
   entries: z.array(inboxBlocklistItemResponseSchema),
 });
+
+/** Physical erasure command result; no former receipt or transaction fields. */
+export const inboxErasureResponseSchema = deleteInboxResponseSchema;
+
+export const inboxUpdateResponseSchema = z.union([
+  inboxItemResponseSchema,
+  inboxErasureResponseSchema,
+]);

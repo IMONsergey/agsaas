@@ -1,7 +1,20 @@
+import { randomUUID } from "node:crypto";
+import {
+  ResourceBudgetExceededError,
+  withHeavyJobAdmission,
+} from "@midday/db/queries/resource-admission";
+import {
+  captureWorkerQueuedJobReservation,
+  queuePayloadTeam,
+  releaseWorkerQueuedJobReservation,
+} from "@midday/job-client/resource-admission";
 import { createLoggerWithContext } from "@midday/logger";
+import { diagnosticSummary } from "@midday/logger/diagnostics";
 import * as Sentry from "@sentry/bun";
 import type { Job } from "bullmq";
+import { DelayedError } from "bullmq";
 import type { ZodSchema } from "zod";
+import { getDb } from "../utils/db";
 import {
   classifyError,
   getMaxRetries,
@@ -10,6 +23,20 @@ import {
   NonRetryableError,
 } from "../utils/error-classification";
 import { extractErrorDetails } from "../utils/error-details";
+
+const admissionOwnerRunId = randomUUID();
+const heavyJobs = new Set([
+  "export-team-data",
+  "export-transactions",
+  "process-export",
+  "import-transactions",
+  "classify-document",
+  "classify-image",
+  "process-attachment",
+  "process-transaction-attachment",
+  "enrich-transactions",
+  "sync-bank-connection",
+]);
 
 /**
  * Base processor class with error handling, retries, and logging
@@ -32,7 +59,7 @@ export abstract class BaseProcessor<TData = unknown> {
   /** A processor handling legacy credential-bearing data can redact telemetry
    * without mutating the retained Redis payload needed for reconciliation. */
   protected getDiagnosticPayload(job: Job<TData>): unknown {
-    return job.data;
+    return diagnosticSummary(job.data);
   }
 
   /**
@@ -57,7 +84,7 @@ export abstract class BaseProcessor<TData = unknown> {
         jobId: job.id,
         jobName: job.name,
         error: error instanceof Error ? error.message : "Unknown error",
-        payload: JSON.stringify(this.getDiagnosticPayload(job)),
+        diagnostics: diagnosticSummary(this.getDiagnosticPayload(job)),
       });
       throw new NonRetryableError(
         `Invalid job payload: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -72,6 +99,9 @@ export abstract class BaseProcessor<TData = unknown> {
    */
   async handle(job: Job<TData>): Promise<unknown> {
     const startTime = Date.now();
+    const admissionTeamId = queuePayloadTeam(job.data);
+    let releaseAdmission = true;
+    let admissionGeneration: string | null = null;
 
     this.logger.info("Processing job", {
       jobId: job.id,
@@ -81,6 +111,17 @@ export abstract class BaseProcessor<TData = unknown> {
     });
 
     try {
+      if (admissionTeamId && job.id) {
+        // Capture before this attempt can finish. A later explicit retry owns
+        // another generation; this worker may only release its original slot.
+        const reservation = await captureWorkerQueuedJobReservation(
+          job.queueName,
+          job.id,
+          admissionTeamId,
+          job.token,
+        );
+        admissionGeneration = reservation?.generation ?? null;
+      }
       // Validate payload if schema is provided (throws on validation error)
       // Store the validated data and update job.data to include any Zod transformations/defaults
       const validatedData = this.validatePayload(job);
@@ -107,7 +148,19 @@ export abstract class BaseProcessor<TData = unknown> {
       }
 
       // Process with the job (now contains validated/transformed data, preserves prototype methods)
-      const result = await this.process(job);
+      const result =
+        admissionTeamId && heavyJobs.has(job.name)
+          ? await withHeavyJobAdmission(
+              getDb(),
+              {
+                teamId: admissionTeamId,
+                userId: (job.data as { userId?: string })?.userId,
+                jobKey: `${job.queueName}:${job.id}`,
+                ownerRunId: admissionOwnerRunId,
+              },
+              () => this.process(job),
+            )
+          : await this.process(job);
 
       const duration = Date.now() - startTime;
 
@@ -160,6 +213,11 @@ export abstract class BaseProcessor<TData = unknown> {
 
       return result;
     } catch (error) {
+      if (error instanceof ResourceBudgetExceededError && job.token) {
+        releaseAdmission = false;
+        await job.moveToDelayed(Date.now() + 10_000, job.token);
+        throw new DelayedError();
+      }
       const duration = Date.now() - startTime;
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
@@ -172,6 +230,7 @@ export abstract class BaseProcessor<TData = unknown> {
       const shouldRetry = classified.retryable && !isNonRetryable;
       const remainingAttempts =
         (job.opts.attempts ?? 3) - (job.attemptsMade + 1);
+      if (shouldRetry && remainingAttempts > 0) releaseAdmission = false;
 
       this.logger.error("Job failed", {
         jobId: job.id,
@@ -207,7 +266,7 @@ export abstract class BaseProcessor<TData = unknown> {
             maxAttempts: job.opts.attempts,
             remainingAttempts,
             duration: `${duration}ms`,
-            payload: JSON.stringify(this.getDiagnosticPayload(job)),
+            diagnostics: diagnosticSummary(this.getDiagnosticPayload(job)),
           },
         });
       }
@@ -228,6 +287,25 @@ export abstract class BaseProcessor<TData = unknown> {
 
       // Re-throw original error for retryable cases
       throw error;
+    } finally {
+      if (
+        releaseAdmission &&
+        admissionTeamId &&
+        job.id &&
+        admissionGeneration
+      ) {
+        try {
+          await releaseWorkerQueuedJobReservation(
+            job.queueName,
+            job.id,
+            admissionTeamId,
+            admissionGeneration,
+            job.token,
+          );
+        } catch {
+          this.logger.warn("Job admission cleanup deferred", { jobId: job.id });
+        }
+      }
     }
   }
 

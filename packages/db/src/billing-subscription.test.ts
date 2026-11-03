@@ -130,3 +130,61 @@ describe("SDK-verified billing event boundary", () => {
     }
   });
 });
+
+describe("complete subscription snapshots", () => {
+  for (const type of ["subscription.updated", "subscription.uncanceled"]) {
+    test(`${type} carries the current own plan, entitlement and cancellation flag`, () => {
+      const value = event();
+      expect(
+        parseBillingSubscriptionEvent({ ...value, type }, products),
+      ).toMatchObject({
+        action: "active",
+        cancelAtPeriodEnd: false,
+        subscriptionStatus: "active",
+      });
+    });
+  }
+  test("updated terminal/incomplete states cannot retain a paid entitlement", () => {
+    for (const status of [
+      "canceled",
+      "unpaid",
+      "incomplete",
+      "incomplete_expired",
+    ]) {
+      const value = event();
+      expect(
+        parseBillingSubscriptionEvent(
+          {
+            ...value,
+            type: "subscription.updated",
+            data: { ...value.data, status },
+          },
+          products,
+        ),
+      ).toMatchObject({ action: "revoked", subscriptionStatus: null });
+    }
+  });
+  test("contradictory uncancel and unknown updated status fail closed", () => {
+    const value = event();
+    expect(() =>
+      parseBillingSubscriptionEvent(
+        {
+          ...value,
+          type: "subscription.uncanceled",
+          data: { ...value.data, cancelAtPeriodEnd: true },
+        },
+        products,
+      ),
+    ).toThrow();
+    expect(() =>
+      parseBillingSubscriptionEvent(
+        {
+          ...value,
+          type: "subscription.updated",
+          data: { ...value.data, status: "future_unknown" },
+        },
+        products,
+      ),
+    ).toThrow();
+  });
+});

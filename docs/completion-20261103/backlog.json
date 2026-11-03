@@ -1,0 +1,542 @@
+[
+  {
+    "id": "INF-01",
+    "title": "Регулярный host backup не включает актуальные данные AGSaaS",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-02",
+    "title": "Не подтверждено полное восстановление AGSaaS после потери основного узла",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-03",
+    "title": "Нужны финальные собственные адреса и согласованный ingress",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-04",
+    "title": "Старый Vercel кабинет возвращает HTTP 500 на /login",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-05",
+    "title": "Auth SMTP, product email и самостоятельное recovery не введены в эксплуатацию",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-06",
+    "title": "SaaS billing и оплата счетов требуют отдельных собственных провайдерских контуров",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-08",
+    "title": "Не предъявлен проверенный контур продуктовых сигналов и реакции на сбой",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-09",
+    "title": "Реальное renewal и reload сертификата еще не принято независимым receipt",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-10",
+    "title": "Базовые healthchecks не заменяют проверку рабочего пользовательского пути",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-11",
+    "title": "OCI revision labels API/worker не соответствуют актуальному release",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-12",
+    "title": "Stage и preview работают совместно на общем узле",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-13",
+    "title": "Последняя внешняя копия хоста не выполнена из-за лимита емкости",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-14",
+    "title": "Нужна приемка полного upgrade/rollback контракта приложения и данных",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-15",
+    "title": "Нужна отдельная полностью подготовленная среда проверки актуального runtime",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-16",
+    "title": "Marketing website остается на Vercel",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-17",
+    "title": "Dashboard /login не отдает CSP и HSTS в проверенном ответе",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-18",
+    "title": "Нагрузочные пределы и деградация продукта не измерены",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-19",
+    "title": "Нужно зафиксировать поддерживаемые функции и внешние договорные зависимости",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "INF-20",
+    "title": "Нужна приемка полного жизненного цикла секретов и ключей восстановления",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-01",
+    "title": "Проверять tenant ownership всех worker file references",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-02",
+    "title": "Закрыть MFA обход direct Data API и Realtime",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-03",
+    "title": "Исключить provider tokens из apps.get",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-04",
+    "title": "Связать provider session/requisition с caller team",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-05",
+    "title": "Перевести generic OAuth state на одноразовые SQL intents",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-06",
+    "title": "Применять scopes к chat uploads и внешним tools",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-07",
+    "title": "Добавить server-side подтверждение опасных AI действий",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-08",
+    "title": "Убрать hardcode Midday из inbox address helper и recipient schema",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-09",
+    "title": "Воспроизвести и проверить Storage→documents ingestion",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-10",
+    "title": "Сделать ручной issue/send invoice транзакционным SQL intent",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-11",
+    "title": "Устранить потерю job при invoice reschedule",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-12",
+    "title": "Исполнять тарифные лимиты на backend",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-13",
+    "title": "Завершить собственное выполнение banking и onboarding jobs",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-14",
+    "title": "Хранить durable provider revoke intent при disconnect",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-15",
+    "title": "Сделать удаление tenant/user/files полным recoverable workflow",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-16",
+    "title": "Enforce owner/member policy на настройках и ключах",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-17",
+    "title": "Исключить перезапись экспортов за одну минуту",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-18",
+    "title": "Хранить receipts под уникальными canonical object IDs",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-19",
+    "title": "Ограничить память, объем и concurrency тяжелых пользовательских операций",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-20",
+    "title": "Не выдавать partial archive за complete export",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-21",
+    "title": "Определить полный versioned export contract",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-22",
+    "title": "Нейтрализовать spreadsheet formulas в CSV text fields",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-23",
+    "title": "Согласовать snapshot обещание shared charts с реализацией",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-24",
+    "title": "Сохранять gross/net при sharing revenue/profit",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-25",
+    "title": "Согласовать expiry metadata и добавить link lifecycle",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-26",
+    "title": "Исправить multiplication duration в Most active client",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-27",
+    "title": "Исключить raw input/job/financial data из diagnostics",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-28",
+    "title": "Сделать enrichment cancel реальной отменой и восстанавливать pending",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-29",
+    "title": "Не считать Promise.race таймаут отменой операции",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-30",
+    "title": "Fail closed при отсутствии собственных backend origins",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-31A",
+    "title": "Принять и реализовать полный payment/refund ledger contract",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-31B",
+    "title": "Завершить Polar event matrix и reconciliation",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-31C",
+    "title": "Принять реальные Gmail/Outlook OAuth на собственной установке",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-32",
+    "title": "Добавить durable audit events для ключей и integrations",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "CODE-33",
+    "title": "Добавить durable event/email fence и validation legacy onboarding",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-01",
+    "title": "Привязать публичную воронку и идентичность к AGSaaS",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-02",
+    "title": "Восстановить собственную ценовую страницу и убрать чужой сценарий закрытия",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-03",
+    "title": "Подготовить документы собственного оператора и фактического сервиса",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-04",
+    "title": "Согласовать Download с поддерживаемым desktop-продуктом AGSaaS",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-05",
+    "title": "Привести инструкции и подключение интеграций к реально поддерживаемому AGSaaS",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-06",
+    "title": "Проверить и довести support до подтвержденной доставки",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-07",
+    "title": "Показывать фактический статус собственных компонентов",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-08",
+    "title": "Подтвердить публичные обещания и право использования материалов",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-09",
+    "title": "Заменить макет банков достоверным каталогом и рабочими фильтрами",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-10",
+    "title": "Завершить About согласно публичному scope продукта",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-11",
+    "title": "Добавить полноценный not-found экран",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-12",
+    "title": "Согласовать SEO и preview indexing с идентичностью AGSaaS",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-13",
+    "title": "Определить и согласованно реализовать публичный маршрут Insights",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "WEB-14",
+    "title": "Устранить повтор brand suffix в title сравнений",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "LIC-01",
+    "title": "Определить применимую лицензионную модель AGSaaS",
+    "priority": "P0",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "LIC-02",
+    "title": "Реализовать и принять source offer и notices для выбранной модели",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-01",
+    "title": "Завершить собственную идентичность кабинета и служебных экранов",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-02",
+    "title": "Показывать действия в соответствии с готовностью экземпляра",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-03",
+    "title": "Различать нулевое значение, отсутствие подключения и устаревшие данные",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-04",
+    "title": "Дать прямой путь к ручному вводу и импорту в пустой команде",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-05",
+    "title": "Исправить неоднозначное отображение locale как страны",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-06",
+    "title": "Назвать icon controls и принять клавиатурную навигацию",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-07",
+    "title": "Устранить горизонтальное расширение страницы категорий",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-08",
+    "title": "Убрать перекрытие финансовых карточек рекламным блоком",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-09",
+    "title": "Согласовать названия выручки и округление времени между экранами",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-10",
+    "title": "Принять полный пользовательский lifecycle сессий и восстановления",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-11",
+    "title": "Согласовать Install и смысл native/AI интеграций",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "UI-12",
+    "title": "Принять пользовательские ошибки, уведомления и помощь во всех состояниях",
+    "priority": "P2",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-01",
+    "title": "Создать воспроизводимую приемку на отдельных синтетических командах",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-02",
+    "title": "Закрыть непройденные состояния всех маршрутов и диалогов",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-03",
+    "title": "Принять сквозные финансовые расчеты на пограничных данных",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-04",
+    "title": "Принять поддерживаемые браузеры, темы и реальные мобильные устройства",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-05",
+    "title": "Привязать свежие security и acceptance gates к точным release images",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "QA-06",
+    "title": "Принять загрузки, parsers и публичные документы на вредоносном вводе",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "PROD-01",
+    "title": "Зафиксировать рынки, языки, валюты и документальные правила первого релиза",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  },
+  {
+    "id": "PROD-02",
+    "title": "Дать оператору управляемое восстановление зависших и неоднозначных операций",
+    "priority": "P1",
+    "status": "implementation-in-progress"
+  }
+]

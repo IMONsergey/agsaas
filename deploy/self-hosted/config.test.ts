@@ -270,12 +270,37 @@ describe("application deployment wiring", () => {
     }
   });
 
+  test("dashboard source offer uses the same exact revision at build and runtime", () => {
+    const args = service(apps, "dashboard").build?.args;
+    const values = env(apps, "dashboard");
+    required(args?.NEXT_PUBLIC_RELEASE_SHA, "AGSAAS_RELEASE");
+    expect(args?.NEXT_PUBLIC_RELEASE_SHA).toBe(args?.GIT_COMMIT_SHA);
+    expect(values.GIT_COMMIT_SHA).toBe(args?.GIT_COMMIT_SHA);
+    expect(values.NEXT_PUBLIC_RELEASE_SHA).toBe(args?.NEXT_PUBLIC_RELEASE_SHA);
+    const dockerfile = read("../../apps/dashboard/Dockerfile");
+    expect(dockerfile).toContain("ARG NEXT_PUBLIC_RELEASE_SHA");
+    expect(dockerfile).toContain(
+      "ENV NEXT_PUBLIC_RELEASE_SHA=$NEXT_PUBLIC_RELEASE_SHA",
+    );
+    const verification = dockerfile.indexOf(
+      "node apps/dashboard/scripts/verify-release-source.mjs &&",
+    );
+    expect(verification).toBeGreaterThan(
+      dockerfile.indexOf("export GIT_COMMIT_SHA"),
+    );
+    expect(verification).toBeLessThan(
+      dockerfile.indexOf("bunx turbo run build"),
+    );
+  });
+
   test("dashboard build receives public configuration, not provider/server Supabase secrets", () => {
     const args = service(apps, "dashboard").build?.args;
     expect(args).toBeDefined();
     expect(Object.keys(args ?? {}).sort()).toEqual([
       "GIT_COMMIT_SHA",
       "NEXT_PUBLIC_API_URL",
+      "NEXT_PUBLIC_AUTH_COOKIE_NAME",
+      "NEXT_PUBLIC_RELEASE_SHA",
       "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
       "NEXT_PUBLIC_SUPABASE_URL",
       "NEXT_PUBLIC_URL",
@@ -288,6 +313,12 @@ describe("application deployment wiring", () => {
     );
     required(args?.NEXT_PUBLIC_URL, "AGSAAS_DASHBOARD_URL");
     required(args?.NEXT_PUBLIC_API_URL, "AGSAAS_API_URL");
+    expect(args?.NEXT_PUBLIC_AUTH_COOKIE_NAME).toMatch(
+      /^\$\{NEXT_PUBLIC_AUTH_COOKIE_NAME:-\}$/,
+    );
+    expect(args?.NEXT_PUBLIC_AUTH_COOKIE_NAME).toBe(
+      env(apps, "dashboard").NEXT_PUBLIC_AUTH_COOKIE_NAME,
+    );
     required(
       args?.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY,
       "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY",

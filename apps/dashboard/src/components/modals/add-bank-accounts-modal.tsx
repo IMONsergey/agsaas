@@ -72,10 +72,6 @@ function isExistingAccount(
 export function AddBankAccountsModal({
   connectionId,
   provider,
-  accessToken,
-  referenceId,
-  enrollmentId,
-  institutionId,
   existingAccounts,
   isOpen,
   onOpenChange,
@@ -87,8 +83,6 @@ export function AddBankAccountsModal({
   const t = useI18n();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const id = provider === "teller" ? enrollmentId : referenceId;
-
   const {
     data: providerData,
     isLoading,
@@ -96,9 +90,7 @@ export function AddBankAccountsModal({
   } = useQuery({
     ...trpc.banking.getProviderAccounts.queryOptions({
       provider,
-      id: id ?? undefined,
-      accessToken: accessToken ?? undefined,
-      institutionId: institutionId ?? undefined,
+      connectionId,
     }),
     enabled: isOpen,
     retry: false,

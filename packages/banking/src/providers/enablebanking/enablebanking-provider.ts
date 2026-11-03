@@ -23,8 +23,8 @@ import {
 export class EnableBankingProvider implements Provider {
   #api: EnableBankingApi;
 
-  constructor() {
-    this.#api = new EnableBankingApi();
+  constructor(signal?: AbortSignal) {
+    this.#api = new EnableBankingApi(signal);
   }
 
   async getHealthCheck() {

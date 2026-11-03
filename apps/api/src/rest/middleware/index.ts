@@ -1,3 +1,4 @@
+import { withResourceAdmission } from "@api/utils/resource-admission";
 import type { MiddlewareHandler } from "hono";
 import { rateLimiter } from "hono-rate-limiter";
 import { withAuth } from "./auth";
@@ -23,6 +24,7 @@ export const protectedMiddleware: MiddlewareHandler[] = [
   withClientIp,
   withDatabase,
   withAuth,
+  withResourceAdmission,
   rateLimiter({
     windowMs: 10 * 60 * 1000, // 10 minutes
     limit: Number(process.env.API_RATE_LIMIT) || 1000,
@@ -39,6 +41,7 @@ export const fileMiddleware: MiddlewareHandler[] = [
   withClientIp,
   withDatabase,
   withAuth,
+  withResourceAdmission,
 ];
 
 export { withRequiredScope } from "./scope";

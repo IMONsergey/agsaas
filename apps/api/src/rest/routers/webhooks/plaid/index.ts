@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Context } from "@api/rest/types";
 import { isTeamEligibleForSync } from "@api/utils/check-team-eligibility";
 import { validatePlaidWebhook } from "@api/utils/plaid";
@@ -7,9 +8,8 @@ import {
   getBankConnectionByReferenceId,
   updateBankConnectionStatus,
 } from "@midday/db/queries";
-import type { SyncConnectionPayload } from "@midday/jobs/schema";
+import { requestBankSync } from "@midday/db/queries/bank-sync";
 import { logger } from "@midday/logger";
-import { tasks } from "@trigger.dev/sdk";
 import { isAfter, subDays } from "date-fns";
 import { HTTPException } from "hono/http-exception";
 
@@ -44,6 +44,14 @@ const webhookSchema = z.object({
   consent_expiration_time: z.string().optional(),
   account_id: z.string().optional(),
   new_webhook_url: z.string().optional(),
+});
+
+const hostedLinkNotification = z.object({
+  webhook_type: z.literal("LINK"),
+  webhook_code: z.enum(["ITEM_ADD_RESULT", "EVENTS", "SESSION_FINISHED"]),
+  link_token: z.string().min(1).max(4096),
+  link_session_id: z.string().min(1).max(256),
+  environment: z.enum(["sandbox", "production"]),
 });
 
 const webhookResponseSchema = z.object({
@@ -95,6 +103,13 @@ app.openapi(
 
     const body = JSON.parse(rawBody);
 
+    // The signature is already verified. Acknowledge Hosted Link delivery
+    // without logging or accepting its credentials. The initiating owner must
+    // confirm the retained exact Link token through our server-side proof flow.
+    if (hostedLinkNotification.safeParse(body).success) {
+      return c.json({ success: true });
+    }
+
     const result = webhookSchema.safeParse(body);
 
     if (!result.success) {
@@ -111,6 +126,7 @@ app.openapi(
 
     const connectionData = await getBankConnectionByReferenceId(db, {
       referenceId: result.data.item_id,
+      provider: "plaid",
     });
 
     if (!connectionData) {
@@ -133,6 +149,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "disconnected",
           });
 
@@ -149,6 +167,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "disconnected",
           });
 
@@ -162,6 +182,8 @@ app.openapi(
 
           await updateBankConnectionStatus(db, {
             id: connectionData.id,
+            expectedReferenceId: result.data.item_id,
+            provider: "plaid",
             status: "connected",
           });
 
@@ -207,10 +229,15 @@ app.openapi(
             manualSync,
           });
 
-          await tasks.trigger("sync-connection", {
+          await requestBankSync(db, {
             connectionId: connectionData.id,
-            manualSync,
-          } satisfies SyncConnectionPayload);
+            teamId: connectionData.team.id,
+            fullHistory: manualSync,
+            eventKey: createHash("sha256")
+              .update("plaid\0")
+              .update(rawBody)
+              .digest("hex"),
+          });
 
           break;
         }

@@ -1,6 +1,7 @@
 import { TZDate } from "@date-fns/tz";
 import { Text, View } from "@react-pdf/renderer";
 import { format } from "date-fns";
+import { OWNED_INVOICE_FONT_FAMILY } from "../../../utils/owned-fonts";
 
 type Props = {
   paidAt?: string | null;
@@ -39,7 +40,7 @@ export function PaidWatermark({
             style={{
               fontSize: 28,
               fontWeight: 700,
-              fontFamily: "Inter",
+              fontFamily: OWNED_INVOICE_FONT_FAMILY,
               color: "#DC2626",
               letterSpacing: 4,
             }}

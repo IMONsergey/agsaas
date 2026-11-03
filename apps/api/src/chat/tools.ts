@@ -5,6 +5,7 @@ import { createMcpServer } from "@api/mcp/server";
 import type { McpContext } from "@api/mcp/types";
 import { expandScopes } from "@api/utils/scopes";
 import { logger } from "@midday/logger";
+import { getApiUrl } from "@midday/utils/envs";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { PrepareStepFunction, Tool } from "ai";
 import type { ToolIndex } from "toolpick";
@@ -94,6 +95,7 @@ export function getToolDefinitions(): ToolDefinitions {
 export function buildPrepareStep<T extends Record<string, Tool>>(options: {
   maxTools: number;
   alwaysActive?: string[];
+  allowedTools?: readonly string[];
 }): PrepareStepFunction<T> {
   if (!cachedIndex) {
     throw new Error("Tool index not bootstrapped — call ensureToolIndex first");
@@ -110,6 +112,12 @@ export function buildPrepareStep<T extends Record<string, Tool>>(options: {
           step.activeTools.push(name);
         }
       }
+    }
+    if (step?.activeTools && options.allowedTools) {
+      const allowed = new Set(options.allowedTools);
+      step.activeTools = step.activeTools.filter(
+        (name) => typeof name === "string" && allowed.has(name),
+      );
     }
     return step;
   }) as PrepareStepFunction<T>;
@@ -137,7 +145,7 @@ export function warmToolIndex(): void {
     userId: "warmup",
     userEmail: null,
     scopes: expandScopes(["apis.all"]) as McpContext["scopes"],
-    apiUrl: process.env.MIDDAY_API_URL ?? "https://api.midday.ai",
+    apiUrl: getApiUrl(),
     timezone: "UTC",
     locale: "en",
     countryCode: null,

@@ -1,0 +1,80 @@
+diff --git a/src/TTFFont.js b/src/TTFFont.js
+--- a/src/TTFFont.js
++++ b/src/TTFFont.js
+@@ -407,6 +407,12 @@
+    * @return {Glyph}
+    */
+   getGlyph(glyph, characters = []) {
++    const cached = this._glyphs[glyph];
++    if (cached && cached.codePoints.length === 0 && characters.length > 0) {
++      // Composite subsetting can cache a glyph without source characters.
++      // Replace the entry without mutating glyphs held by another layout.
++      delete this._glyphs[glyph];
++    }
+     if (!this._glyphs[glyph]) {
+       if (this.directory.tables.sbix) {
+         this._glyphs[glyph] = new SBIXGlyph(glyph, characters, this);
+diff --git a/dist/module.mjs b/dist/module.mjs
+--- a/dist/module.mjs
++++ b/dist/module.mjs
+@@ -12689,6 +12689,12 @@
+    * @param {number[]} characters
+    * @return {Glyph}
+    */ getGlyph(glyph, characters = []) {
++        const cached = this._glyphs[glyph];
++        if (cached && cached.codePoints.length === 0 && characters.length > 0) {
++          // Composite subsetting can cache a glyph without source characters.
++          // Replace the entry without mutating glyphs held by another layout.
++          delete this._glyphs[glyph];
++        }
+         if (!this._glyphs[glyph]) {
+             if (this.directory.tables.sbix) this._glyphs[glyph] = new (0, $25d8f049c222084c$export$2e2bcd8739ae039)(glyph, characters, this);
+             else if (this.directory.tables.COLR && this.directory.tables.CPAL) this._glyphs[glyph] = new (0, $0d411f0165859681$export$2e2bcd8739ae039)(glyph, characters, this);
+diff --git a/dist/main.cjs b/dist/main.cjs
+--- a/dist/main.cjs
++++ b/dist/main.cjs
+@@ -12706,6 +12706,12 @@
+    * @param {number[]} characters
+    * @return {Glyph}
+    */ getGlyph(glyph, characters = []) {
++        const cached = this._glyphs[glyph];
++        if (cached && cached.codePoints.length === 0 && characters.length > 0) {
++          // Composite subsetting can cache a glyph without source characters.
++          // Replace the entry without mutating glyphs held by another layout.
++          delete this._glyphs[glyph];
++        }
+         if (!this._glyphs[glyph]) {
+             if (this.directory.tables.sbix) this._glyphs[glyph] = new (0, $55855d6d316b015e$export$2e2bcd8739ae039)(glyph, characters, this);
+             else if (this.directory.tables.COLR && this.directory.tables.CPAL) this._glyphs[glyph] = new (0, $42d9dbd2de9ee2d8$export$2e2bcd8739ae039)(glyph, characters, this);
+diff --git a/dist/browser-module.mjs b/dist/browser-module.mjs
+--- a/dist/browser-module.mjs
++++ b/dist/browser-module.mjs
+@@ -12668,6 +12668,12 @@
+    * @param {number[]} characters
+    * @return {Glyph}
+    */ getGlyph(glyph, characters = []) {
++        const cached = this._glyphs[glyph];
++        if (cached && cached.codePoints.length === 0 && characters.length > 0) {
++          // Composite subsetting can cache a glyph without source characters.
++          // Replace the entry without mutating glyphs held by another layout.
++          delete this._glyphs[glyph];
++        }
+         if (!this._glyphs[glyph]) {
+             if (this.directory.tables.sbix) this._glyphs[glyph] = new (0, $25d8f049c222084c$export$2e2bcd8739ae039)(glyph, characters, this);
+             else if (this.directory.tables.COLR && this.directory.tables.CPAL) this._glyphs[glyph] = new (0, $0d411f0165859681$export$2e2bcd8739ae039)(glyph, characters, this);
+diff --git a/dist/browser.cjs b/dist/browser.cjs
+--- a/dist/browser.cjs
++++ b/dist/browser.cjs
+@@ -12685,6 +12685,12 @@
+    * @param {number[]} characters
+    * @return {Glyph}
+    */ getGlyph(glyph, characters = []) {
++        const cached = this._glyphs[glyph];
++        if (cached && cached.codePoints.length === 0 && characters.length > 0) {
++          // Composite subsetting can cache a glyph without source characters.
++          // Replace the entry without mutating glyphs held by another layout.
++          delete this._glyphs[glyph];
++        }
+         if (!this._glyphs[glyph]) {
+             if (this.directory.tables.sbix) this._glyphs[glyph] = new (0, $55855d6d316b015e$export$2e2bcd8739ae039)(glyph, characters, this);
+             else if (this.directory.tables.COLR && this.directory.tables.CPAL) this._glyphs[glyph] = new (0, $42d9dbd2de9ee2d8$export$2e2bcd8739ae039)(glyph, characters, this);

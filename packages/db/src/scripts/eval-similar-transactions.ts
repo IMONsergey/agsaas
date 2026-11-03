@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { getDatabaseConnectionConfig } from "../connection-config";
 import { calculateNameScore } from "../utils/transaction-matching";
 
 const MIN_SIMILARITY_THRESHOLD = 0.6;
@@ -371,12 +372,8 @@ async function main() {
   }
 
   const pool = new Pool({
-    connectionString: dbUrl,
-    ssl:
-      process.env.NODE_ENV === "development"
-        ? false
-        : { rejectUnauthorized: false },
     max: 2,
+    ...getDatabaseConnectionConfig(dbUrl),
   });
 
   try {

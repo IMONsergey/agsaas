@@ -9,6 +9,10 @@ import {
   requireTeamOwner,
 } from "../utils/team-membership";
 import { retainTeamBankConnectionCleanups } from "./bank-connection-cleanups";
+import {
+  retainTeamResourceCleanups,
+  retainUserResourceCleanups,
+} from "./resource-cleanups";
 
 export const getUserById = async (
   db: Database,
@@ -175,8 +179,10 @@ export const deleteUser = async (
       }
     }
 
+    await retainUserResourceCleanups(tx, id);
     for (const teamId of soloTeams) {
       await retainTeamBankConnectionCleanups(tx, teamId);
+      await retainTeamResourceCleanups(tx, teamId, id);
       await tx.delete(teams).where(eq(teams.id, teamId));
     }
     await tx.delete(usersOnTeam).where(eq(usersOnTeam.userId, id));
@@ -195,5 +201,5 @@ export const deleteUser = async (
   // Auth cascades the profile on the matched Supabase stack. This idempotent
   // cleanup also supports older deployments without that foreign key.
   await db.delete(users).where(eq(users.id, id));
-  return { id };
+  return { id, cleanupPending: true };
 };

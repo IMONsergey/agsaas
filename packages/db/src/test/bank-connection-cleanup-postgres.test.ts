@@ -22,6 +22,10 @@ import {
   usersOnTeam,
 } from "../schema";
 import {
+  seedTestProfiles,
+  removeTestProfiles,
+} from "./helpers/profile-fixture";
+import {
   closeDatabase,
   getTestDatabase,
   isTestDatabaseAvailable,
@@ -80,7 +84,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
               name: "Bank cleanup fixture",
             })),
           );
-          await tx.insert(users).values(
+          await seedTestProfiles(
+            tx,
             userIds.map((id) => ({
               id,
               email: `${id}@example.test`,
@@ -112,11 +117,31 @@ describe.skipIf(!isTestDatabaseAvailable())(
         });
         await run(f);
       } finally {
+        // Retention ledgers deliberately survive their source rows; remove only
+        // these generated fixture identities after their assertions finish.
+        const fixtureTeams = sql.join(
+          teamIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        const fixtureUsers = sql.join(
+          userIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        );
+        await db.execute(
+          sql`DELETE FROM public.resource_cleanups WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+        );
+        await db.execute(
+          sql`DELETE FROM public.security_audit_events WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+        );
+        await db.execute(
+          sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id IN (${fixtureTeams})`,
+        );
         await db
           .delete(bankConnectionCleanups)
           .where(inArray(bankConnectionCleanups.teamId, teamIds));
         await db.delete(teams).where(inArray(teams.id, teamIds));
         await db.delete(users).where(inArray(users.id, userIds));
+        await removeTestProfiles(db, userIds);
       }
     }
     async function pending(f: {
@@ -276,7 +301,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
             }),
           ).rejects.toThrow("retained securely");
           await expect(deleteUser(db, f.user, auth)).rejects.toThrow(
-            "retained securely",
+            "MIDDAY_ENCRYPTION_KEY environment variable is not set",
           );
           expect(auth).not.toHaveBeenCalled();
           expect(
@@ -288,6 +313,19 @@ describe.skipIf(!isTestDatabaseAvailable())(
           expect(await listBankConnectionCleanupStatus(db, f.own)).toHaveLength(
             0,
           );
+          expect(
+            (
+              await db.execute(
+                sql`SELECT id FROM public.resource_cleanups WHERE actor_user_id = ${f.user}::uuid`,
+              )
+            ).rows,
+          ).toHaveLength(0);
+          expect(
+            await db
+              .select()
+              .from(usersOnTeam)
+              .where(eq(usersOnTeam.userId, f.user)),
+          ).toHaveLength(2);
           const [profile] = await db
             .select()
             .from(users)
@@ -334,11 +372,22 @@ describe.skipIf(!isTestDatabaseAvailable())(
           0,
         );
         const result = await deleteTeam(db, { teamId: f.own, userId: f.user });
-        expect(result?.cleanupPending).toBe(1);
+        expect(result?.cleanupPending).toBe(3);
         expect(
           await db.select().from(teams).where(eq(teams.id, f.own)),
         ).toHaveLength(0);
         const status = await listBankConnectionCleanupStatus(db, f.own);
+        expect(status).toHaveLength(1);
+        const retained = await db.execute<{ kind: string; status: string }>(
+          sql`SELECT kind, status FROM public.resource_cleanups WHERE team_id = ${f.own}::uuid ORDER BY kind`,
+        );
+        expect(retained.rows).toEqual([
+          { kind: "retention", status: "manual_required" },
+          { kind: "storage-team", status: "pending" },
+        ]);
+        expect(result?.cleanupPending).toBe(
+          status.length + retained.rows.length,
+        );
         const row = await getBankConnectionCleanup(db, status[0]!.id);
         expect(openBankConnectionCleanup(row!).accessToken).toBe(secret);
         expect(

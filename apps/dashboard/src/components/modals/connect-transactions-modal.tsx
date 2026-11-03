@@ -8,12 +8,15 @@ import {
   DialogTitle,
 } from "@midday/ui/dialog";
 import { useConnectParams } from "@/hooks/use-connect-params";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 import { useTeamQuery } from "@/hooks/use-team";
 import { BankSearchContent } from "../bank-search-content";
+import { HostedBankConsents } from "../hosted-bank-consents";
 
 export function ConnectTransactionsModal() {
   const { step, setParams } = useConnectParams();
   const { data: team } = useTeamQuery();
+  const { data: capabilities } = useInstanceCapabilities();
 
   const isOpen = step === "connect";
 
@@ -34,8 +37,8 @@ export function ConnectTransactionsModal() {
             <DialogTitle>Connect bank account</DialogTitle>
 
             <DialogDescription>
-              We work with a variety of banking providers to support as many
-              banks as possible. If you can't find yours,{" "}
+              Connect using the providers configured for this installation, or
+              use{" "}
               <button
                 type="button"
                 className="underline"
@@ -43,14 +46,22 @@ export function ConnectTransactionsModal() {
               >
                 manual import
               </button>{" "}
-              is available as an alternative.
+              to add a statement.
             </DialogDescription>
 
             <div className="pt-4">
-              <BankSearchContent
+              <HostedBankConsents
                 enabled={isOpen}
+                showUnavailable
                 defaultCountryCode={team?.countryCode ?? ""}
+                onVerified={handleOnClose}
               />
+              {capabilities?.banking.enabled && (
+                <BankSearchContent
+                  enabled={isOpen}
+                  defaultCountryCode={team?.countryCode ?? ""}
+                />
+              )}
             </div>
           </DialogHeader>
         </div>

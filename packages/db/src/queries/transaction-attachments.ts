@@ -1,3 +1,4 @@
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Database, DatabaseOrTransaction } from "../client";
 import {
@@ -32,6 +33,9 @@ export async function createAttachments(
   params: CreateAttachmentsParams,
 ) {
   const { attachments, teamId, userId } = params;
+  // Validate the whole batch before opening a transaction or writing activity.
+  for (const attachment of attachments)
+    requireVaultPathForTeam(attachment.path, teamId);
 
   return db.transaction(async (tx) => {
     await assertTeamOwnership(
@@ -279,4 +283,23 @@ export async function deleteAttachment(
         ),
       );
   });
+}
+
+/** Validate queued extraction references before Storage or AI is invoked. */
+export async function assertTransactionAttachmentScope(
+  db: DatabaseOrTransaction,
+  teamId: string,
+  attachments: readonly {
+    filePath: readonly string[];
+    transactionId?: string;
+  }[],
+) {
+  for (const attachment of attachments)
+    requireVaultPathForTeam(attachment.filePath, teamId);
+  await assertTeamOwnership(
+    db,
+    teamId,
+    "transactions",
+    attachments.map((item) => item.transactionId),
+  );
 }

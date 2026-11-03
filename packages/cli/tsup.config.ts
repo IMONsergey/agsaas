@@ -7,6 +7,7 @@ export default defineConfig({
   outDir: "dist/bin",
   clean: true,
   splitting: false,
+  noExternal: [/^@midday\/utils(?:\/|$)/],
   sourcemap: true,
   banner: {
     js: "#!/usr/bin/env node",

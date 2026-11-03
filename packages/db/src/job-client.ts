@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import type { Database } from "./client";
+import { getDatabaseConnectionConfig } from "./connection-config";
 import { runtimeSchema as schema } from "./runtime-schema";
 
 const isDevelopment = process.env.NODE_ENV === "development";
@@ -13,12 +14,12 @@ const isDevelopment = process.env.NODE_ENV === "development";
  */
 export const createJobDb = () => {
   const jobPool = new Pool({
-    connectionString: process.env.DATABASE_PRIMARY_POOLER_URL!,
     max: 1,
     idleTimeoutMillis: isDevelopment ? 5000 : 60000,
     connectionTimeoutMillis: 15000,
     maxUses: 0,
     allowExitOnIdle: true,
+    ...getDatabaseConnectionConfig(process.env.DATABASE_PRIMARY_POOLER_URL),
   });
 
   const db = drizzle(jobPool, {

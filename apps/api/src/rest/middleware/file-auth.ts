@@ -1,4 +1,5 @@
 import { requireFileAccess } from "@api/utils/file-access";
+import { assertVaultFileReadAccess } from "@api/utils/vault-file-access";
 import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { normalizeAndValidatePath } from "../routers/files/utils";
@@ -26,6 +27,8 @@ export const withFileAuth: MiddlewareHandler = async (c, next) => {
       message: "No permission to access this file.",
     });
   }
+
+  await assertVaultFileReadAccess(c.get("db"), access, pathArray.join("/"));
 
   // Set teamId in context for downstream handlers
   c.set("teamId", pathTeamId);

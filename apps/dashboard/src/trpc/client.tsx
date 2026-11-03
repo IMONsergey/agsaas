@@ -23,7 +23,8 @@ function getCookie(name: string): string | null {
   return null;
 }
 
-export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();
+export const { TRPCProvider, useTRPC, useTRPCClient } =
+  createTRPCContext<AppRouter>();
 
 let browserQueryClient: QueryClient;
 

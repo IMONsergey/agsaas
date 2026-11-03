@@ -1,5 +1,11 @@
 import { createLoggerWithContext } from "@midday/logger";
 import { getQueue } from "./queues";
+import {
+  captureQueuedJobReservation,
+  queuePayloadTeam,
+  releaseQueuedJob,
+  reserveQueuedJob,
+} from "./resource-admission";
 import type { JobStatus, JobStatusResponse, JobTriggerResponse } from "./types";
 import { decodeJobId, encodeJobId } from "./utils";
 
@@ -45,9 +51,15 @@ export async function triggerJob(
   const enqueueStartTime = Date.now();
 
   try {
+    const admittedId = await reserveQueuedJob(
+      queueName,
+      payload,
+      options?.jobId,
+      jobName,
+    );
     const job = await queue.add(jobName, payload, {
       delay: options?.delay,
-      jobId: options?.jobId,
+      jobId: admittedId,
       ...(options?.attempts != null && { attempts: options.attempts }),
     });
 
@@ -56,6 +68,23 @@ export async function triggerJob(
         `Failed to create job: ${jobName} in queue: ${queueName}`,
       );
     }
+
+    const admissionTeamId = queuePayloadTeam(payload);
+    const reservation = admissionTeamId
+      ? await captureQueuedJobReservation(queueName, job.id, admissionTeamId)
+      : null;
+    const knownState = await job.getState();
+    if (
+      admissionTeamId &&
+      reservation &&
+      ["completed", "failed"].includes(knownState)
+    )
+      await releaseQueuedJob(
+        queueName,
+        job.id,
+        admissionTeamId,
+        reservation.generation,
+      );
 
     const enqueueDuration = Date.now() - enqueueStartTime;
     const compositeId = encodeJobId(queueName, job.id);
@@ -104,8 +133,14 @@ export async function triggerJobAndWait(
   const timeout = options?.timeout ?? 60000; // Default 60 seconds
 
   try {
+    const admittedId = await reserveQueuedJob(
+      queueName,
+      payload,
+      options?.jobId,
+      jobName,
+    );
     const job = await queue.add(jobName, payload, {
-      jobId: options?.jobId,
+      jobId: admittedId,
     });
 
     if (!job?.id) {
@@ -114,6 +149,10 @@ export async function triggerJobAndWait(
       );
     }
 
+    const admissionTeamId = queuePayloadTeam(payload);
+    const reservation = admissionTeamId
+      ? await captureQueuedJobReservation(queueName, job.id, admissionTeamId)
+      : null;
     const compositeId = encodeJobId(queueName, job.id);
     const enqueueDuration = Date.now() - enqueueStartTime;
     logger.info("Enqueued job (waiting for completion)", {
@@ -152,6 +191,13 @@ export async function triggerJobAndWait(
       }
 
       if (jobState === "failed") {
+        if (admissionTeamId && reservation)
+          await releaseQueuedJob(
+            queueName,
+            job.id,
+            admissionTeamId,
+            reservation.generation,
+          );
         const failedReason = job.failedReason || "Unknown error";
         throw new Error(`Job failed: ${failedReason}`);
       }
@@ -188,6 +234,13 @@ export async function triggerJobAndWait(
     // The original job object doesn't automatically sync after completion
     const completedJob = await queue.getJob(job.id);
     const result = completedJob?.returnvalue;
+    if (admissionTeamId && reservation)
+      await releaseQueuedJob(
+        queueName,
+        job.id,
+        admissionTeamId,
+        reservation.generation,
+      );
 
     logger.info("Job completed successfully", {
       jobName,
@@ -228,6 +281,8 @@ export async function getJobStatus(
   compositeJobId: string,
   options?: {
     teamId?: string;
+    /** Restrict scoped tool polling before reading progress or return values. */
+    allowedJobNames?: readonly string[];
   },
 ): Promise<JobStatusResponse> {
   const { queueName, jobId } = decodeJobId(compositeJobId);
@@ -271,6 +326,10 @@ export async function getJobStatus(
       });
       throw new Error("Job not found or access denied");
     }
+  }
+
+  if (options?.allowedJobNames && !options.allowedJobNames.includes(job.name)) {
+    throw new Error("Job not found or access denied");
   }
 
   const state = await job.getState();

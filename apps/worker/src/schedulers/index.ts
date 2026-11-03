@@ -2,6 +2,8 @@ import type {
   DynamicSchedulerTemplate,
   StaticSchedulerConfig,
 } from "../types/scheduler-config";
+import { customersStaticSchedulers } from "./customers.config";
+import { documentsStaticSchedulers } from "./documents.config";
 import {
   inboxDynamicSchedulerTemplates,
   inboxStaticSchedulers,
@@ -18,6 +20,8 @@ import { teamsStaticSchedulers } from "./teams.config";
  * Add new static scheduler configs here to automatically register them
  */
 export const staticSchedulerConfigs: StaticSchedulerConfig[] = [
+  ...documentsStaticSchedulers,
+  ...customersStaticSchedulers,
   ...teamsStaticSchedulers,
   ...inboxStaticSchedulers,
   ...institutionsStaticSchedulers,

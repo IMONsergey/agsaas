@@ -402,10 +402,18 @@ export const getBankAccountDetails = async (
 
 export const getBankConnectionByEnrollmentId = async (
   db: Database,
-  params: { enrollmentId: string },
+  params: {
+    enrollmentId: string;
+    provider?: CreateBankConnectionPayload["provider"];
+  },
 ) => {
   return db.query.bankConnections.findFirst({
-    where: eq(bankConnections.enrollmentId, params.enrollmentId),
+    where: and(
+      eq(bankConnections.enrollmentId, params.enrollmentId),
+      params.provider
+        ? eq(bankConnections.provider, params.provider)
+        : undefined,
+    ),
     columns: {
       id: true,
       createdAt: true,
@@ -424,10 +432,18 @@ export const getBankConnectionByEnrollmentId = async (
 
 export const getBankConnectionByReferenceId = async (
   db: Database,
-  params: { referenceId: string },
+  params: {
+    referenceId: string;
+    provider?: CreateBankConnectionPayload["provider"];
+  },
 ) => {
   return db.query.bankConnections.findFirst({
-    where: eq(bankConnections.referenceId, params.referenceId),
+    where: and(
+      eq(bankConnections.referenceId, params.referenceId),
+      params.provider
+        ? eq(bankConnections.provider, params.provider)
+        : undefined,
+    ),
     columns: {
       id: true,
       createdAt: true,
@@ -446,12 +462,31 @@ export const getBankConnectionByReferenceId = async (
 
 export const updateBankConnectionStatus = async (
   db: Database,
-  params: { id: string; status: "connected" | "disconnected" | "unknown" },
+  params: {
+    id: string;
+    status: "connected" | "disconnected" | "unknown";
+    provider?: CreateBankConnectionPayload["provider"];
+    expectedReferenceId?: string;
+    expectedEnrollmentId?: string;
+  },
 ) => {
   const [result] = await db
     .update(bankConnections)
     .set({ status: params.status })
-    .where(eq(bankConnections.id, params.id))
+    .where(
+      and(
+        eq(bankConnections.id, params.id),
+        params.provider
+          ? eq(bankConnections.provider, params.provider)
+          : undefined,
+        params.expectedReferenceId
+          ? eq(bankConnections.referenceId, params.expectedReferenceId)
+          : undefined,
+        params.expectedEnrollmentId
+          ? eq(bankConnections.enrollmentId, params.expectedEnrollmentId)
+          : undefined,
+      ),
+    )
     .returning({ id: bankConnections.id });
 
   return result;

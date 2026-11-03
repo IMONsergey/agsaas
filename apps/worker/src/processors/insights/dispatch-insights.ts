@@ -4,6 +4,7 @@ import {
   getPreviousCompletePeriod,
   type PeriodType,
 } from "@midday/insights";
+import { reserveQueuedJob } from "@midday/job-client/resource-admission";
 import type { Job } from "bullmq";
 import { insightsQueue } from "../../queues/insights";
 import { getDb } from "../../utils/db";
@@ -168,18 +169,25 @@ export class DispatchInsightsProcessor extends BaseProcessor<DispatchInsightsPay
         const jobDelay = dispatched * STAGGER_DELAY_MS;
 
         try {
-          await insightsQueue.add(
+          const payload = {
+            teamId: team.id,
+            periodType,
+            periodYear: period.periodYear,
+            periodNumber: period.periodNumber,
+            currency: team.baseCurrency ?? "USD",
+            locale: team.ownerLocale,
+          };
+          const jobId = await reserveQueuedJob(
+            "insights",
+            payload,
+            `insights-${team.id}-${periodType}-${period.periodYear}-${period.periodNumber}`,
             "generate-team-insights",
+          );
+          const created = await insightsQueue.add(
+            "generate-team-insights",
+            payload,
             {
-              teamId: team.id,
-              periodType,
-              periodYear: period.periodYear,
-              periodNumber: period.periodNumber,
-              currency: team.baseCurrency ?? "USD",
-              locale: team.ownerLocale,
-            },
-            {
-              jobId: `insights-${team.id}-${periodType}-${period.periodYear}-${period.periodNumber}`,
+              jobId,
               delay: jobDelay,
               attempts: 3,
               backoff: {
@@ -188,6 +196,9 @@ export class DispatchInsightsProcessor extends BaseProcessor<DispatchInsightsPay
               },
             },
           );
+
+          if (created.id !== jobId)
+            throw new Error("Insight generation was not acknowledged");
 
           dispatched++;
 

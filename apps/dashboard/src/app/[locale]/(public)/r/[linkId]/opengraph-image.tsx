@@ -1,14 +1,13 @@
-import { isValidLogoUrl } from "@midday/invoice";
 import { format, parseISO } from "date-fns";
 import { notFound } from "next/navigation";
-import { ImageResponse } from "next/og";
 import { getChartDisplayName } from "@/components/metrics/utils/chart-types";
 import { getQueryClient, trpc } from "@/trpc/server";
+import { ownOgImageResponse } from "@/utils/own-og-image";
+import { loadPublicOgLogo } from "@/utils/public-og-logo.server";
 
 export const contentType = "image/png";
 
 // Cache the OG image for 1 hour (3600 seconds)
-export const revalidate = 3600;
 
 type Props = {
   params: Promise<{ linkId: string }>;
@@ -32,14 +31,6 @@ export default async function Image({ params }: Props) {
     notFound();
   }
 
-  const hedvigSerifFont = fetch(
-    "https://cdn.midday.ai/fonts/HedvigSerif/HedvigLettersSerif-Regular.ttf?c=1",
-  ).then((res) => res.arrayBuffer());
-
-  const hedvigSansFont = fetch(
-    "https://cdn.midday.ai/fonts/HedvigSans/HedvigLettersSans-Regular.ttf",
-  ).then((res) => res.arrayBuffer());
-
   const chartName = getChartDisplayName(report.type as any);
   const fromDate = parseISO(report.from!);
   const toDate = parseISO(report.to!);
@@ -49,10 +40,10 @@ export default async function Image({ params }: Props) {
   )}`;
 
   const teamName = report.teamName || "Company";
-  const logoUrl = report.teamLogoUrl;
-  const isValidLogo = logoUrl ? await isValidLogoUrl(logoUrl) : false;
+  const logoUrl = await loadPublicOgLogo(report.teamLogoUrl);
+  const isValidLogo = Boolean(logoUrl);
 
-  return new ImageResponse(
+  return ownOgImageResponse(
     <ReportOgTemplate
       teamName={teamName}
       chartName={chartName}
@@ -63,20 +54,6 @@ export default async function Image({ params }: Props) {
     {
       width: 1200,
       height: 630,
-      fonts: [
-        {
-          name: "hedvig-sans",
-          data: await hedvigSansFont,
-          style: "normal",
-          weight: 400,
-        },
-        {
-          name: "hedvig-serif",
-          data: await hedvigSerifFont,
-          style: "normal",
-          weight: 400,
-        },
-      ],
     },
   );
 }
@@ -95,7 +72,10 @@ function ReportOgTemplate({
   isValidLogo: boolean;
 }) {
   return (
-    <div tw="h-full w-full flex flex-col bg-[#0C0C0C] font-sans p-16 py-8">
+    <div
+      tw="h-full w-full flex flex-col bg-[#0C0C0C] p-16 py-8"
+      style={{ fontFamily: "Liberation Sans" }}
+    >
       {/* Header */}
       <div tw="flex mb-12 items-center justify-between w-full">
         {/* Logo/Avatar */}
@@ -117,7 +97,7 @@ function ReportOgTemplate({
         {/* Report Type */}
         <h1
           tw="text-[80px] text-white mb-6 text-center"
-          style={{ fontFamily: "hedvig-serif" }}
+          style={{ fontFamily: "Liberation Sans" }}
         >
           {chartName}
         </h1>
@@ -125,7 +105,7 @@ function ReportOgTemplate({
         {/* Company Name */}
         <h2
           tw="text-[36px] text-white mb-8 text-center"
-          style={{ fontFamily: "hedvig-sans" }}
+          style={{ fontFamily: "Liberation Sans" }}
         >
           {teamName}
         </h2>
@@ -133,7 +113,7 @@ function ReportOgTemplate({
         {/* Date Range */}
         <p
           tw="text-[28px] text-[#858585] text-center"
-          style={{ fontFamily: "hedvig-sans" }}
+          style={{ fontFamily: "Liberation Sans" }}
         >
           {dateRangeDisplay}
         </p>
@@ -141,3 +121,6 @@ function ReportOgTemplate({
     </div>
   );
 }
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;

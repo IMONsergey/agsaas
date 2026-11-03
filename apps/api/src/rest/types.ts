@@ -12,6 +12,7 @@ export type Context = {
     teamId: string;
     clientIp?: string;
     scopes?: Scope[];
+    authType?: "session" | "api-key" | "oauth";
     user?: User;
   };
 };

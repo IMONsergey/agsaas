@@ -1,3 +1,4 @@
+import { requireVerifiedBankConsent } from "@api/utils/bank-consent";
 import {
   addProviderAccountsSchema,
   createBankConnectionSchema,
@@ -5,7 +6,7 @@ import {
   getBankConnectionsSchema,
   reconnectBankConnectionSchema,
 } from "@api/schemas/bank-connections";
-import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { createTRPCRouter, ownerProcedure, protectedProcedure } from "@api/trpc/init";
 import { withTeamMembershipErrors } from "@api/utils/team-membership";
 
 import {
@@ -27,15 +28,18 @@ export const bankConnectionsRouter = createTRPCRouter({
   get: protectedProcedure
     .input(getBankConnectionsSchema)
     .query(async ({ ctx: { db, teamId }, input }) => {
-      return getBankConnections(db, {
+      const connections = await getBankConnections(db, {
         teamId: teamId!,
         enabled: input?.enabled,
       });
+      // Preserve the deprecated field shape while keeping provider secrets server-side.
+      return connections.map((connection) => ({ ...connection, accessToken: null }));
     }),
 
-  create: protectedProcedure
+  create: ownerProcedure
     .input(createBankConnectionSchema)
     .mutation(async ({ input, ctx: { db, teamId, session } }) => {
+      requireVerifiedBankConsent();
       const data = await createBankConnection(db, {
         ...input,
         teamId: teamId!,
@@ -81,9 +85,10 @@ export const bankConnectionsRouter = createTRPCRouter({
       };
     }),
 
-  addAccounts: protectedProcedure
+  addAccounts: ownerProcedure
     .input(addProviderAccountsSchema)
     .mutation(async ({ input, ctx: { db, teamId, session } }) => {
+      requireVerifiedBankConsent();
       const result = await addProviderAccounts(db, {
         connectionId: input.connectionId,
         teamId: teamId!,
@@ -94,9 +99,10 @@ export const bankConnectionsRouter = createTRPCRouter({
       return result;
     }),
 
-  reconnect: protectedProcedure
+  reconnect: ownerProcedure
     .input(reconnectBankConnectionSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
+      requireVerifiedBankConsent();
       const result = await reconnectBankConnection(db, {
         referenceId: input.referenceId,
         newReferenceId: input.newReferenceId,

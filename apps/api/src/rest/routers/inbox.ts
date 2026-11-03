@@ -8,10 +8,15 @@ import {
   inboxItemResponseSchema,
   inboxPreSignedUrlResponseSchema,
   inboxResponseSchema,
+  inboxUpdateResponseSchema,
   updateInboxSchema,
 } from "@api/schemas/inbox";
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
+import {
+  assertVaultFileReadAccess,
+  vaultReadPrincipalFromRequest,
+} from "@api/utils/vault-file-access";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   deleteInbox,
@@ -19,6 +24,7 @@ import {
   getInboxById,
   updateInbox,
 } from "@midday/db/queries";
+import { InboxItemNotFoundError } from "@midday/db/queries/inbox-deletion-receipts";
 import { signedUrl } from "@midday/supabase/storage";
 import { HTTPException } from "hono/http-exception";
 import { withRequiredScope } from "../middleware";
@@ -183,11 +189,15 @@ app.openapi(
       return c.json({ error: "Attachment file path not available" }, 400);
     }
 
-    // Create admin supabase client
+    const filePath = await assertVaultFileReadAccess(
+      db,
+      vaultReadPrincipalFromRequest(c),
+      inboxItem.filePath.join("/"),
+    );
+    // Create admin supabase client only after file authority is verified.
     const supabase = await createAdminClient();
 
     // Generate the pre-signed URL with 60-second expiration
-    const filePath = inboxItem.filePath.join("/");
     const expireIn = 60; // 60 seconds
 
     const { data, error } = await signedUrl(supabase, {
@@ -252,11 +262,25 @@ app.openapi(
     let result: Awaited<ReturnType<typeof deleteInbox>>;
     try {
       result = await deleteInbox(db, { id, teamId });
-    } catch {
-      throw new HTTPException(404, { message: "Inbox item not found" });
+    } catch (error) {
+      if (error instanceof InboxItemNotFoundError) {
+        throw new HTTPException(404, { message: "Inbox item not found" });
+      }
+      throw error;
     }
 
-    return c.json(validateResponse(result, deleteInboxResponseSchema));
+    return c.json(
+      validateResponse(
+        {
+          id: result.id,
+          deleted: true,
+          status: "deleted",
+          cleanupPending: result.cleanupPending,
+          cleanupId: result.cleanupId,
+        },
+        deleteInboxResponseSchema,
+      ),
+    );
   },
 );
 
@@ -268,7 +292,7 @@ app.openapi(
     operationId: "updateInboxItem",
     "x-speakeasy-name-override": "update",
     description:
-      "Update fields of an inbox item by its unique identifier for the authenticated team.",
+      "Update fields of an inbox item. Setting status to deleted permanently erases the item and returns a deletion command result.",
     tags: ["Inbox"],
     request: {
       params: updateInboxSchema.pick({ id: true }),
@@ -284,10 +308,10 @@ app.openapi(
     responses: {
       200: {
         description:
-          "Update fields of an inbox item by its unique identifier for the authenticated team.",
+          "Update fields of an inbox item. Setting status to deleted permanently erases the item and returns a deletion command result.",
         content: {
           "application/json": {
-            schema: inboxItemResponseSchema,
+            schema: inboxUpdateResponseSchema,
           },
         },
       },
@@ -300,9 +324,19 @@ app.openapi(
     const id = c.req.valid("param").id;
     const body = c.req.valid("json");
 
-    const result = await updateInbox(db, { ...body, id, teamId });
+    let result: Awaited<ReturnType<typeof updateInbox>>;
+    try {
+      result = await updateInbox(db, { ...body, id, teamId });
+    } catch (error) {
+      if (error instanceof InboxItemNotFoundError) {
+        throw new HTTPException(404, { message: "Inbox item not found" });
+      }
+      throw error;
+    }
+    if (!result)
+      throw new HTTPException(404, { message: "Inbox item not found" });
 
-    return c.json(validateResponse(result, inboxItemResponseSchema));
+    return c.json(validateResponse(result, inboxUpdateResponseSchema));
   },
 );
 

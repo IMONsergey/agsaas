@@ -14,7 +14,7 @@ import { Icons } from "@midday/ui/icons";
 import { Label } from "@midday/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@midday/ui/popover";
 import { SubmitButton } from "@midday/ui/submit-button";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 import { useState } from "react";
@@ -34,6 +34,7 @@ interface ShareMetricModalProps {
   from: string;
   to: string;
   currency?: string;
+  revenueType?: "net" | "gross";
 }
 
 export function ShareMetricModal({
@@ -43,6 +44,7 @@ export function ShareMetricModal({
   from,
   to,
   currency,
+  revenueType = "net",
 }: ShareMetricModalProps) {
   const { data: user } = useUserQuery();
   const trpc = useTRPC();
@@ -50,8 +52,28 @@ export function ShareMetricModal({
     addDays(new Date(), 30),
   );
 
+  const [page, setPage] = useState(0);
+  const sharedReports = useQuery({
+    ...trpc.reports.listShared.queryOptions({
+      type,
+      pageSize: 10,
+      offset: page * 10,
+    }),
+    enabled: isOpen,
+  });
+  const revokeReport = useMutation(
+    trpc.reports.revoke.mutationOptions({
+      onSuccess: () => {
+        void sharedReports.refetch();
+      },
+    }),
+  );
   const createReportMutation = useMutation(
-    trpc.reports.create.mutationOptions(),
+    trpc.reports.create.mutationOptions({
+      onSuccess: () => {
+        void sharedReports.refetch();
+      },
+    }),
   );
 
   const handleOpenChange = (open: boolean) => {
@@ -69,6 +91,7 @@ export function ShareMetricModal({
       from,
       to,
       currency,
+      revenueType,
       expireAt: expireAt?.toISOString(),
     });
   };
@@ -100,13 +123,14 @@ export function ShareMetricModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-[455px]">
+      <DialogContent className="max-w-[455px] max-h-[85vh] overflow-y-auto">
         <div className="p-4 space-y-4">
           <DialogHeader>
             <DialogTitle>Share metric</DialogTitle>
             <DialogDescription>
-              Create a public link you can share, the chart is a snapshot in
-              time.
+              Create a public snapshot with the selected dates, currency and{" "}
+              {revenueType} calculation. Later data changes will not change this
+              snapshot.
             </DialogDescription>
           </DialogHeader>
 
@@ -154,7 +178,8 @@ export function ShareMetricModal({
           {createReportMutation.error && (
             <div className="space-y-4">
               <div className="text-sm text-destructive">
-                Failed to create share link. Please try again.
+                {createReportMutation.error.message ||
+                  "Failed to create share link. Please try again."}
               </div>
               <DialogFooter>
                 <Button
@@ -202,6 +227,83 @@ export function ShareMetricModal({
               </div>
             </div>
           )}
+          <section
+            className="border-t pt-4 space-y-3"
+            aria-label="Shared report links"
+          >
+            <h3 className="text-sm font-medium">Manage shared links</h3>
+            {sharedReports.isLoading && (
+              <p className="text-xs text-muted-foreground">Loading links...</p>
+            )}
+            {sharedReports.error && (
+              <p className="text-xs text-destructive">
+                Unable to load shared links.
+              </p>
+            )}
+            {revokeReport.error && (
+              <p className="text-xs text-destructive">
+                {revokeReport.error.message}
+              </p>
+            )}
+            {sharedReports.data?.data.map((link) => (
+              <div
+                key={link.id}
+                className="flex items-start justify-between gap-3 text-xs"
+              >
+                <div className="min-w-0 space-y-1">
+                  <p>
+                    {format(new Date(link.createdAt), "PPP")} /{" "}
+                    {link.revenueType}
+                  </p>
+                  <p className="text-muted-foreground">
+                    {link.revokedAt
+                      ? "Revoked"
+                      : link.expireAt && new Date(link.expireAt) <= new Date()
+                        ? "Expired"
+                        : link.mode === "live"
+                          ? "Live link (legacy)"
+                          : "Snapshot"}
+                  </p>
+                  {!link.revokedAt && (
+                    <OpenURL href={`${getUrl()}/r/${link.linkId}`}>
+                      Open link
+                    </OpenURL>
+                  )}
+                </div>
+                {!link.revokedAt && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={revokeReport.isPending}
+                    onClick={() => revokeReport.mutate({ id: link.id })}
+                  >
+                    Revoke
+                  </Button>
+                )}
+              </div>
+            ))}
+            {sharedReports.data?.data.length === 0 && (
+              <p className="text-xs text-muted-foreground">No shared links.</p>
+            )}
+            <div className="flex justify-between">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={page === 0}
+                onClick={() => setPage((value) => value - 1)}
+              >
+                Previous
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!sharedReports.data?.hasNextPage}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </section>
         </div>
       </DialogContent>
     </Dialog>

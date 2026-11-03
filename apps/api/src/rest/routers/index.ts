@@ -3,6 +3,7 @@ import { protectedMiddleware } from "../middleware";
 import { appsRouter } from "./apps";
 import { bankAccountsRouter } from "./bank-accounts";
 import { chatRouter } from "./chat";
+import { chatApprovalsRouter } from "./chat-approvals";
 import { connectorsCatalogRouter } from "./connectors-catalog";
 import { customersRouter } from "./customers";
 import { desktopRouter } from "./desktop";
@@ -17,6 +18,7 @@ import { notificationsRouter } from "./notifications";
 import oauthRouter from "./oauth";
 import { reportsRouter } from "./reports";
 import { searchRouter } from "./search";
+import { supportIngestRouter } from "./support";
 import { tagsRouter } from "./tags";
 import { teamsRouter } from "./teams";
 import { trackerEntriesRouter } from "./tracker-entries";
@@ -29,6 +31,7 @@ import { webhookRouter } from "./webhooks";
 const routers = new OpenAPIHono();
 
 // Mount public routes first (these handle their own auth or are fully public)
+routers.route("/support", supportIngestRouter);
 routers.route("/oauth", oauthRouter);
 routers.route("/webhook", webhookRouter);
 routers.route("/files", filesRouter);
@@ -57,6 +60,7 @@ routers.route("/search", searchRouter);
 routers.route("/reports", reportsRouter);
 routers.route("/tracker-projects", trackerProjectsRouter);
 routers.route("/tracker-entries", trackerEntriesRouter);
+routers.route("/chat/approvals", chatApprovalsRouter);
 routers.route("/chat", chatRouter);
 
 export { routers };

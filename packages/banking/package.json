@@ -8,7 +8,8 @@
     "test": "bun test",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:native-banking": "bun --no-env-file test --exit src/utils/retry-signal.test.ts src/utils/own-webhook-url.test.ts"
   },
   "exports": {
     ".": "./src/index.ts",

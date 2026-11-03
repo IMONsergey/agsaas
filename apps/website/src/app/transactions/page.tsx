@@ -1,24 +1,11 @@
-import { Transactions } from "@/components/transactions";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Business Transaction Tracking & Bank Sync",
+  title: "Transactions",
   description:
-    "Track all your business expenses in one place. Automatically sync and categorize transactions from your bank accounts. Built for small business owners.",
+    "Enter transactions manually, import bank statements from CSV and organize records by category, tag and account.",
   path: "/transactions",
-  og: {
-    title: "Transactions",
-    description: "Every expense, automatically synced and sorted",
-  },
-  keywords: [
-    "expense tracking",
-    "business expenses",
-    "transaction management",
-    "expense categorization",
-    "small business accounting",
-  ],
 });
-
 export default function Page() {
-  return <Transactions />;
+  return <ProductPage page="transactions" />;
 }

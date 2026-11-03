@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseEnvironment } from "./prepare-self-hosted.mts";
+import { provisioningSql, verificationSql } from "./self-hosted-db.mts";
 import {
-  baselineHistorySql,
-  provisioningSql,
-  verificationSql,
-} from "./self-hosted-db.mts";
-import { upgradeStatements } from "./self-hosted-rehearsal.mts";
+  BASELINE_NAME,
+  freshInstallSql,
+  type MigrationHistory,
+  migrationChain,
+  pendingMigrations,
+  upgradeHistorySql,
+} from "./self-hosted-migration-chain.mts";
 
 // This is a separate, explicitly authorized installation. The private-stage and
 // restored-rehearsal helpers retain their original fixed deployment guards.
@@ -281,11 +284,20 @@ export function runPreviewDatabase(mode: string): Record<string, unknown> {
     "Use bootstrap or upgrade only",
   );
   const { id, password, commit } = guard();
-  const baselineName = "20261031154237_application_baseline.sql";
+  const baselineName = BASELINE_NAME;
   const baseline = readTracked(
     `packages/db/self-hosted/supabase/migrations/${baselineName}`,
   );
   const digest = createHash("sha256").update(baseline).digest("hex");
+  const directory = "packages/db/self-hosted/upgrades/supabase/migrations";
+  const upgrades = migrationChain(
+    readdirSync(`${PREVIEW.source}/${directory}`)
+      .filter((name) => name.endsWith(".sql"))
+      .map((filename) => ({
+        filename,
+        sql: readTracked(`${directory}/${filename}`),
+      })),
+  );
   if (mode === "bootstrap") {
     const empty = psql(
       id,
@@ -299,17 +311,20 @@ export function runPreviewDatabase(mode: string): Record<string, unknown> {
     const verifier = readTracked("packages/db/self-hosted/verify.sql");
     // Verify role provisioning and the exact baseline inside a rolled-back transaction.
     psql(id, verificationSql(`${provision}\n${baseline}`, verifier));
-    // Role, application DDL and CLI history then commit as one operation.
-    psql(
-      id,
-      `${provision}\n${baseline}\n${baselineHistorySql(baseline, baselineName, commit)}`,
-      true,
-    );
+    // Rehearse and then commit the complete ordered chain in one transaction.
+    // Failure of even the last upgrade leaves no baseline-only installation.
+    const installation = freshInstallSql(provision, baseline, commit, upgrades);
+    psql(id, `BEGIN;\n${installation}\nROLLBACK;`);
+    psql(id, installation, true);
     return {
       mode,
       project: PREVIEW.project,
       commit,
       baselineSha256: digest,
+      applied: upgrades.map((m) => ({
+        filename: m.filename,
+        sha256: m.sha256,
+      })),
       verifiedWithRollback: true,
       atomic: true,
     };
@@ -324,54 +339,10 @@ export function runPreviewDatabase(mode: string): Record<string, unknown> {
       id,
       "SELECT coalesce(json_agg(json_build_object('version',version,'name',name,'statements',statements) ORDER BY version),'[]'::json) FROM supabase_migrations.schema_migrations;\n",
     ),
-  ) as { version: string; name: string; statements: string[] }[];
-  const directory = "packages/db/self-hosted/upgrades/supabase/migrations";
-  const files = readdirSync(`${PREVIEW.source}/${directory}`)
-    .filter((n) => n.endsWith(".sql"))
-    .sort();
-  const upgrades = files.map((filename) => {
-    const match = /^(\d{14})_([a-z0-9_]+)\.sql$/.exec(filename);
-    assert(match, "Unexpected preview migration filename");
-    const sql = readTracked(`${directory}/${filename}`);
-    return {
-      filename,
-      version: match[1]!,
-      name: match[2]!,
-      sql,
-      statements: upgradeStatements(sql),
-    };
-  });
-  assert(
-    history[0]?.version === "20261031154237" &&
-      history[0]?.name === "application_baseline",
-    "Unexpected preview baseline history",
-  );
-  for (const entry of history.slice(1)) {
-    const source = upgrades.find((u) => u.version === entry.version);
-    assert(
-      source &&
-        entry.name === source.name &&
-        JSON.stringify(entry.statements) === JSON.stringify(source.statements),
-      "Preview migration history differs from reviewed source",
-    );
-  }
-  const pending = upgrades.filter(
-    (u) => !history.some((h) => h.version === u.version),
-  );
-  assert(
-    pending.every((u) => u.version > history.at(-1)!.version),
-    "Refusing out-of-order preview migration",
-  );
+  ) as MigrationHistory[];
+  const pending = pendingMigrations(history, upgrades);
   for (const migration of pending) {
-    const encoded = migration.statements.map(
-      (statement) =>
-        `convert_from(decode('${Buffer.from(statement).toString("base64")}','base64'),'UTF8')`,
-    );
-    psql(
-      id,
-      `${migration.sql}\nINSERT INTO supabase_migrations.schema_migrations(version,name,statements) VALUES ('${migration.version}','${migration.name}',ARRAY[${encoded.join(",")}]);`,
-      true,
-    );
+    psql(id, `${migration.sql}\n${upgradeHistorySql(migration)}`, true);
   }
   return {
     mode,

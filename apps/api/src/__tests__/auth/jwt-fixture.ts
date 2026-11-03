@@ -1,4 +1,4 @@
-import { afterAll, mock } from "bun:test";
+import { afterAll, beforeEach, mock } from "bun:test";
 import * as jose from "jose";
 
 // No auth provider or configured credentials are used by these tests.
@@ -10,6 +10,14 @@ process.env.SUPABASE_URL = "https://local-auth.example.test";
 process.env.SUPABASE_JWT_SECRET = localSecret;
 
 export const actorId = "11111111-1111-4111-8111-111111111111";
+export const sessionId="44444444-4444-4444-8444-444444444444";
+export const sessionState={active:true,unavailable:false};
+export const checkSession=mock(async(_db:unknown,_userId:string,_sessionId:string)=>{
+  if(sessionState.unavailable)throw new Error("Auth session check unavailable");
+  return sessionState.active;
+});
+mock.module("@api/utils/auth-session",()=>({isSessionActive:checkSession}));
+beforeEach(()=>{sessionState.active=true;sessionState.unavailable=false;checkSession.mockClear();});
 export const actorEmail = "actor@example.test";
 export const inviteeEmail = "invitee@example.test";
 
@@ -44,6 +52,7 @@ export async function signAccessToken(
 
   return new jose.SignJWT({
     sub: actorId,
+    session_id: sessionId,
     email: actorEmail,
     aud: "authenticated",
     iss: issuer,

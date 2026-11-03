@@ -8,7 +8,7 @@ export default function Verify() {
   return (
     <div>
       <div className="absolute left-4 top-4">
-        <Link href="https://midday.ai">
+        <Link href="/" aria-label="AGSaaS overview">
           <Icons.LogoSmall className="h-6 w-auto" />
         </Link>
       </div>

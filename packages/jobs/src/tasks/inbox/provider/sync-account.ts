@@ -12,7 +12,7 @@ import {
   InboxSyncError,
   isInboxAuthError,
 } from "@midday/inbox/errors";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import { getExistingInboxAttachmentsQuery } from "@midday/supabase/queries";
 import { ensureFileExtension } from "@midday/utils";
 import { logger, schemaTask, tasks } from "@trigger.dev/sdk";
@@ -45,8 +45,6 @@ export const syncInboxAccount = schemaTask({
   run: async (payload) => {
     const { id, manualSync = false } = payload;
 
-    const supabase = createClient();
-
     if (!id) {
       throw new Error("id is required");
     }
@@ -60,6 +58,8 @@ export const syncInboxAccount = schemaTask({
     }
 
     const connector = new InboxConnector(accountRow.provider, getDb());
+
+    const supabase = createTeamClient(accountRow.teamId);
 
     logger.info("Starting inbox sync", {
       accountId: id,
