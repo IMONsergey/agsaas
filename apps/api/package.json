@@ -7,7 +7,7 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
-    "test": "bun run test:trpc && bun run test:bot-runtime && bun run test:slack-oauth && bun run test:mcp && bun run test:db-retry && bun run test:chat-lifecycle && bun run test:auth && bun run test:supabase-transport && bun run test:admin-deletion-deadline && bun run test:search-optional-ai && bun run test:invoice-payments && bun run test:startup && bun run test:team-invitation-queue && bun run test:files && bun run test:billing-webhook",
+    "test": "bun run test:trpc && bun run test:bot-runtime && bun run test:slack-oauth && bun run test:mcp && bun run test:db-retry && bun run test:chat-lifecycle && bun run test:auth && bun run test:supabase-transport && bun run test:admin-deletion-deadline && bun run test:search-optional-ai && bun run test:invoice-payments && bun run test:startup && bun run test:team-invitation-queue && bun run test:files && bun run test:billing-webhook && bun run test:inbox-webhook",
     "test:trpc": "bun test --exit --timeout 30000 --preload ./src/__tests__/setup.ts src/__tests__/trpc/ src/__tests__/routers/bot-linking.test.ts src/__tests__/routers/bot-thread-state.test.ts src/__tests__/routers/invoices.test.ts src/__tests__/routers/transactions.test.ts",
     "test:bot-runtime": "bun test --exit --timeout 30000 src/__tests__/routers/bot-runtime.test.ts",
     "test:slack-oauth": "bun test --exit --timeout 30000 src/__tests__/routers/slack-oauth-callback.test.ts",
@@ -25,7 +25,8 @@
     "eval:run": "bunx evalite",
     "test:team-invitation-queue": "bun --no-env-file test --exit --timeout 30000 src/services/team-invitation-queue.test.ts",
     "test:files": "bun --no-env-file test --exit --timeout 30000 src/__tests__/file-download-boundary.test.ts",
-    "test:billing-webhook": "bun --no-env-file test --exit --timeout 30000 src/__tests__/polar-webhook.test.ts"
+    "test:billing-webhook": "bun --no-env-file test --exit --timeout 30000 src/__tests__/polar-webhook.test.ts",
+    "test:inbox-webhook": "bun --no-env-file test --exit --timeout 30000 src/services/inbox-webhook-ingestion.test.ts && bun --no-env-file test --exit --timeout 30000 src/__tests__/inbox-webhook.test.ts"
   },
   "exports": {
     "./trpc/routers/_app": "./src/trpc/routers/_app.ts"

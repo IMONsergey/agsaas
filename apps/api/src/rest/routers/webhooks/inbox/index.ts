@@ -1,4 +1,5 @@
 import type { Context } from "@api/rest/types";
+import { InvalidInboxWebhookAttachment } from "@api/services/inbox-webhook-ingestion";
 import { resend } from "@api/services/resend";
 import { createAdminClient } from "@api/services/supabase";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
@@ -12,15 +13,14 @@ import {
 import { getInboxIdFromEmail, inboxWebhookPostSchema } from "@midday/inbox";
 import { logger } from "@midday/logger";
 import { basicAuth } from "hono/basic-auth";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
 import {
   ALLOWED_FORWARDING_EMAILS,
   filterAttachments,
   POSTMARK_IP_RANGE,
-  triggerProcessingJobs,
-  type UploadResult,
-  uploadAttachment,
+  receiveInboxAttachments,
 } from "./utils";
 
 const app = new OpenAPIHono<Context>();
@@ -80,6 +80,9 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+// 50 MiB of decoded attachments plus base64 expansion and email metadata.
+app.use("*", bodyLimit({ maxSize: 70 * 1024 * 1024 }));
+
 app.openapi(
   createRoute({
     method: "post",
@@ -129,6 +132,21 @@ app.openapi(
       },
       403: {
         description: "Invalid IP address",
+      },
+      503: {
+        description:
+          "Some attachments still need a durable handoff; retry this delivery",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.literal(false),
+              error: z.string(),
+              attempted: z.number(),
+              accepted: z.number(),
+              failed: z.number(),
+            }),
+          },
+        },
       },
       500: {
         description: "Internal server error",
@@ -249,6 +267,10 @@ app.openapi(
         return c.json({ success: true });
       }
 
+      if ((Attachments?.length ?? 0) > 100) {
+        return c.json({ error: "Too many inbound attachments" }, 400);
+      }
+
       const allowedAttachments = getAllowedAttachments(Attachments);
 
       if (!allowedAttachments?.length) {
@@ -291,68 +313,43 @@ app.openapi(
         allowedCount: allowedAttachments.length,
       });
 
-      // Upload all attachments in parallel
-      const uploadPromises = filteredAttachments.map((attachment) =>
-        uploadAttachment(
-          supabase,
-          teamId,
-          attachment,
-          FromFull?.Email || null,
-          Subject,
-          MessageID,
-        ),
-      );
-
-      const uploadResults = await Promise.all(uploadPromises);
-
-      // Filter out failed uploads
-      const successfulUploads = uploadResults.filter(
-        (result): result is UploadResult => result !== null,
-      );
-
-      const failedUploads = uploadResults.length - successfulUploads.length;
-
-      if (failedUploads > 0) {
-        logger.warn("Some attachments failed to upload", {
-          teamId,
-          inboxId,
-          messageId: MessageID,
-          successful: successfulUploads.length,
-          failed: failedUploads,
-          total: uploadResults.length,
-        });
-      }
-
-      if (!successfulUploads.length) {
-        logger.warn("No successful uploads", {
-          teamId,
-          inboxId,
-          messageId: MessageID,
-          attempted: uploadResults.length,
-        });
-        return c.json({ success: true });
-      }
-
-      logger.info("Successfully uploaded attachments", {
+      const result = await receiveInboxAttachments(db, supabase, {
         teamId,
-        inboxId,
         messageId: MessageID,
-        uploadCount: successfulUploads.length,
-        failedCount: failedUploads,
+        attachments: filteredAttachments.map((attachment) => ({
+          attachment,
+          index: Attachments!.indexOf(attachment),
+        })),
+        senderEmail: FromFull.Email || null,
+        subject: Subject,
       });
 
-      // Trigger processing jobs
-      await triggerProcessingJobs(teamId, successfulUploads);
-
+      if (!result.success) {
+        c.header("Retry-After", "60");
+        return c.json(
+          {
+            success: false as const,
+            error:
+              "Some attachments could not be retained and queued; retry this delivery",
+            attempted: result.attempted,
+            accepted: result.accepted,
+            failed: result.failed,
+          },
+          503,
+        );
+      }
       logger.info("Inbox webhook processed successfully", {
         teamId,
         inboxId,
         messageId: MessageID,
-        attachmentsProcessed: successfulUploads.length,
+        attachmentsProcessed: result.accepted,
       });
 
       return c.json({ success: true });
     } catch (error) {
+      if (error instanceof InvalidInboxWebhookAttachment) {
+        return c.json({ error: error.message }, 400);
+      }
       // Re-throw HTTPException as-is
       if (error instanceof HTTPException) {
         throw error;
