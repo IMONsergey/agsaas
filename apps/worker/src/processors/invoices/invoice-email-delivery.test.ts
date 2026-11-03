@@ -9,7 +9,7 @@ import {
 } from "bun:test";
 import { Socket } from "node:net";
 import type { NotificationOptions } from "@midday/notifications";
-import type { Job } from "bullmq";
+import type { Job, JobsOptions } from "bullmq";
 import {
   canSendInvoiceEmail,
   canSendInvoiceReminder,
@@ -112,6 +112,16 @@ let durableFinalizations = 0;
 let durableRecoveries = 0;
 const queued: Array<{ name: string; payload: unknown }> = [];
 const documentsQueued: Array<{ name: string; payload: unknown }> = [];
+const queuedOptions: JobsOptions[] = [];
+const documentOptions: JobsOptions[] = [];
+const admissionCalls: Array<{
+  queueName: string;
+  payload: unknown;
+  id: string;
+  jobName: string | undefined;
+}> = [];
+const queueEvents: string[] = [];
+let admissionBlocked = false;
 const fileWrites: Array<Record<string, unknown>> = [];
 const uploadedPaths: string[] = [];
 const notificationCalls: Array<{
@@ -235,8 +245,19 @@ mock.module("@midday/job-client", () => ({ decodeJobId }));
 mock.module("@midday/job-client/resource-admission", () => ({
   queuePayloadTeam: (payload: { teamId?: string } | null) =>
     payload?.teamId ?? null,
-  reserveQueuedJob: async (_queue: string, _payload: unknown, id?: string) =>
-    id ?? crypto.randomUUID(),
+  reserveQueuedJob: async (
+    queueName: string,
+    payload: unknown,
+    id?: string,
+    jobName?: string,
+  ) => {
+    queueEvents.push(`${queueName}:reserve`);
+    if (!id) throw new Error("Invoice child requires a stable admission ID");
+    admissionCalls.push({ queueName, payload, id, jobName });
+    if (admissionBlocked)
+      throw new Error("Fixture admission capacity exhausted");
+    return id;
+  },
   captureQueuedJobReservation: async () => ({
     generation: "fixture-admission",
     retry: "none",
@@ -250,18 +271,22 @@ mock.module("@midday/job-client/resource-admission", () => ({
 }));
 mock.module("../../queues/invoices", () => ({
   invoicesQueue: {
-    add: async (name: string, payload: unknown) => {
+    add: async (name: string, payload: unknown, options: JobsOptions) => {
+      queueEvents.push("invoices:add");
+      queuedOptions.push(options);
       if (queueFailure) throw new Error("Fixture queue unavailable");
       queued.push({ name, payload });
-      return { id: "generation-fixture-1" };
+      return { id: options.jobId };
     },
   },
 }));
 mock.module("../../queues/documents", () => ({
   documentsQueue: {
-    add: async (name: string, payload: unknown) => {
+    add: async (name: string, payload: unknown, options: JobsOptions) => {
+      queueEvents.push("documents:add");
+      documentOptions.push(options);
       documentsQueued.push({ name, payload });
-      return { id: "document-fixture-1" };
+      return { id: options.jobId };
     },
   },
 }));
@@ -440,6 +465,11 @@ beforeEach(() => {
   durableRecoveries = 0;
   queued.length = 0;
   documentsQueued.length = 0;
+  queuedOptions.length = 0;
+  documentOptions.length = 0;
+  admissionCalls.length = 0;
+  queueEvents.length = 0;
+  admissionBlocked = false;
   fileWrites.length = 0;
   uploadedPaths.length = 0;
   notificationCalls.length = 0;
@@ -460,6 +490,7 @@ describe("scheduled invoice handoff", () => {
       {
         name: "generate-invoice",
         payload: {
+          teamId,
           invoiceId,
           deliveryType: "create_and_send",
           expectedScheduledJobId: scheduleVersion,
@@ -521,6 +552,93 @@ describe("scheduled invoice handoff", () => {
       expect(queued).toHaveLength(0);
     });
   }
+});
+
+describe("invoice child admission", () => {
+  test("a scheduled invoice uses its stored team and cannot enqueue when admission is full", async () => {
+    invoice.status = "scheduled";
+    admissionBlocked = true;
+    await expect(scheduleProcessor.handle(scheduleJob())).rejects.toThrow(
+      "Fixture admission capacity exhausted",
+    );
+    expect(queued).toEqual([]);
+    expect(queuedOptions).toEqual([]);
+    expect(queueEvents).toEqual(["invoices:reserve"]);
+    expect(admissionCalls[0]).toMatchObject({
+      queueName: "invoices",
+      jobName: "generate-invoice",
+      payload: { teamId, invoiceId, expectedScheduledJobId: scheduleVersion },
+    });
+    expect(invoice.status).toBe("scheduled");
+    expect(invoice.scheduledJobId).toBe(scheduleVersion);
+  });
+  test("a retried schedule handoff reuses its admission ID and keeps queue retry options", async () => {
+    invoice.status = "scheduled";
+    queueFailure = true;
+    await expect(scheduleProcessor.handle(scheduleJob())).rejects.toThrow(
+      "Fixture queue unavailable",
+    );
+    queueFailure = false;
+    await scheduleProcessor.handle(scheduleJob());
+    expect(admissionCalls).toHaveLength(2);
+    expect(admissionCalls[1]?.id).toBe(admissionCalls[0]?.id);
+    expect(queuedOptions).toEqual([
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+    ]);
+    expect(queueEvents).toEqual([
+      "invoices:reserve",
+      "invoices:add",
+      "invoices:reserve",
+      "invoices:add",
+    ]);
+  });
+  test("document classification waits for admission and retries with the same canonical child ID", async () => {
+    admissionBlocked = true;
+    await expect(
+      generateProcessor.handle(
+        generateJob({ invoiceId, deliveryType: "create" }),
+      ),
+    ).rejects.toThrow("Fixture admission capacity exhausted");
+    expect(documentsQueued).toEqual([]);
+    expect(documentOptions).toEqual([]);
+    expect(queueEvents).toEqual(["documents:reserve"]);
+    expect(admissionCalls[0]).toMatchObject({
+      queueName: "documents",
+      jobName: "process-document",
+      payload: {
+        teamId,
+        mimetype: "application/pdf",
+        filePath: [teamId, "invoices", `${invoiceId}.pdf`],
+      },
+    });
+    admissionBlocked = false;
+    await generateProcessor.handle(
+      generateJob({ invoiceId, deliveryType: "create" }),
+    );
+    expect(admissionCalls).toHaveLength(2);
+    expect(admissionCalls[1]?.id).toBe(admissionCalls[0]?.id);
+    expect(documentOptions).toEqual([
+      {
+        jobId: admissionCalls[0]!.id,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+      },
+    ]);
+    expect(queueEvents).toEqual([
+      "documents:reserve",
+      "documents:reserve",
+      "documents:add",
+    ]);
+  });
 });
 
 describe("canonical invoice PDF identity", () => {

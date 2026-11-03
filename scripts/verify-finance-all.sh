@@ -12,6 +12,7 @@ if [[ -f apps/api/src/__tests__/unit-resource-admission.ts ]]; then
 fi
 (cd packages/workbench && bun run build) || failed=1
 (cd apps/worker && bun --no-env-file test --exit --timeout 30000 src/utils/financial-job-dispatch.test.ts) || failed=1
+(cd apps/worker && bun --no-env-file test --exit --timeout 30000 src/processors/insights/dispatch-insights.test.ts) || failed=1
 (cd apps/worker && bun --no-env-file test --exit --timeout 30000 src/processors/invoices/invoice-email-delivery.test.ts) || failed=1
 (cd apps/worker && bun --no-env-file test --exit --timeout 30000 src/utils/export-archive.test.ts) || failed=1
 for file in src/__tests__/trpc/invoices.test.ts src/__tests__/routers/invoices.test.ts src/__tests__/trpc/reports.test.ts src/__tests__/trpc/owner-procedures.test.ts src/__tests__/mcp/invoice-commands.test.ts; do

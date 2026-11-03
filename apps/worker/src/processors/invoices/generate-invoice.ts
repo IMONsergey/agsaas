@@ -1,3 +1,4 @@
+import { financialRequestHash } from "@midday/db/financial-job";
 import {
   getInvoiceById,
   isCurrentInvoiceSchedule,
@@ -7,6 +8,7 @@ import {
 } from "@midday/db/queries";
 import { ensureFinancialJobDispatch } from "@midday/db/queries/financial-job-dispatches";
 import { PdfTemplate, renderToBuffer } from "@midday/invoice";
+import { reserveQueuedJob } from "@midday/job-client/resource-admission";
 import { createTeamClient } from "@midday/supabase/job";
 import { validateVaultKey } from "@midday/supabase/storage-path";
 import type { Job } from "bullmq";
@@ -25,6 +27,8 @@ import { invoiceDeliveryOperationKey } from "./invoice-delivery-operation";
 export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePayload> {
   async process(job: Job<GenerateInvoicePayload>): Promise<void> {
     const { invoiceId, deliveryType, expectedScheduledJobId } = job.data;
+    if (!job.id)
+      throw new Error("Invoice generation requires its queue identity");
     const db = getDb();
 
     this.logger.info("Starting invoice generation", {
@@ -178,15 +182,27 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     }
 
     // Queue document processing for classification
-    await documentsQueue.add(
+    const documentPayload = {
+      filePath: pathArray,
+      mimetype: "application/pdf",
+      teamId: invoiceData.teamId,
+    };
+    const documentJobId = await reserveQueuedJob(
+      "documents",
+      documentPayload,
+      `invoice-document-${financialRequestHash([invoiceData.teamId, invoiceId, job.id])}`,
       "process-document",
-      {
-        filePath: pathArray,
-        mimetype: "application/pdf",
-        teamId: invoiceData.teamId,
-      },
-      DEFAULT_JOB_OPTIONS,
     );
+    const created = await documentsQueue.add(
+      "process-document",
+      documentPayload,
+      {
+        ...DEFAULT_JOB_OPTIONS,
+        jobId: documentJobId,
+      },
+    );
+    if (created.id !== documentJobId)
+      throw new Error("Invoice document processing was not acknowledged");
 
     this.logger.info("Invoice generation completed", {
       invoiceId,
