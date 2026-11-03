@@ -234,6 +234,45 @@ describe.skipIf(!configured)("admitted Inbox retry (isolated Redis)", () => {
     expect(await f.client.hget(f.keys[2]!, f.member)).toBe(before);
   });
 
+  test("stalled takeover with the same generation fences the old worker's release", async () => {
+    const f = await failedJob();
+    const lockKey = `${queue.toKey(f.id)}:lock`;
+    await f.client.set(lockKey, "old-fixture-lock");
+    const captured = parseQueuedJobReservation(
+      await runQueuedAdmissionCommand(
+        f.client,
+        "captureWorker",
+        [...f.keys, lockKey],
+        [f.member, "old-fixture-lock"],
+      ),
+    );
+    await f.client.set(lockKey, "takeover-fixture-lock");
+    try {
+      expect(
+        await runQueuedAdmissionCommand(
+          f.client,
+          "releaseWorker",
+          [...f.keys, lockKey],
+          [f.member, captured!.generation, "old-fixture-lock"],
+        ),
+      ).toBe(0);
+      expect(await f.client.zcard(f.keys[0]!)).toBe(1);
+      expect(await f.client.hget(f.keys[2]!, f.member)).toBe(
+        captured!.generation,
+      );
+      expect(
+        await runQueuedAdmissionCommand(
+          f.client,
+          "releaseWorker",
+          [...f.keys, lockKey],
+          [f.member, captured!.generation, "takeover-fixture-lock"],
+        ),
+      ).toBe(1);
+    } finally {
+      await f.client.del(lockKey);
+    }
+  });
+
   test("a lost retry response is recoverable without a second transition", async () => {
     const f = await failedJob();
     await runAdmittedInboxRetry(f.client, f.input); // Discard the first response.

@@ -246,6 +246,7 @@ mock.module("@midday/job-client/resource-admission", () => ({
     retry: "none",
   }),
   releaseQueuedJob: async () => true,
+  releaseWorkerQueuedJobReservation: async () => true,
 }));
 mock.module("../../queues/invoices", () => ({
   invoicesQueue: {

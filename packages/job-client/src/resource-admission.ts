@@ -6,6 +6,7 @@ import {
   parseQueuedJobReservation,
   queuedAdmissionKeys,
   releaseQueuedJobScript,
+  releaseWorkerQueuedJobScript,
   reserveQueuedJobScript,
 } from "./queued-admission-protocol";
 import { getQueue } from "./queues";
@@ -48,6 +49,11 @@ const commands = {
     name: "agsaasReleaseQueuedJobV2",
     numberOfKeys: 4,
     lua: releaseQueuedJobScript,
+  },
+  releaseWorker: {
+    name: "agsaasReleaseWorkerQueuedJobV2",
+    numberOfKeys: 5,
+    lua: releaseWorkerQueuedJobScript,
   },
   capture: {
     name: "agsaasCaptureQueuedJobV2",
@@ -188,6 +194,29 @@ export async function releaseQueuedJob(
   );
   if (released !== 0 && released !== 1)
     throw new Error("Queued admission release requires reconciliation");
+  return released === 1;
+}
+
+/** Automatic stalled takeover keeps the reservation generation. The worker's
+ * current Redis lock must therefore still match at release, not only capture. */
+export async function releaseWorkerQueuedJobReservation(
+  queueName: string,
+  id: string,
+  teamId: string,
+  generation: string,
+  token: string | undefined,
+) {
+  if (!uuid.test(teamId) || !token) return false;
+  const team = teamId.toLowerCase();
+  const queue = getQueue(queueName);
+  const released = await runQueuedAdmissionCommand(
+    await queue.client,
+    "releaseWorker",
+    [...admissionKeys(team), `${queue.toKey(id)}:lock`],
+    [JSON.stringify({ teamId: team, queueName, id }), generation, token],
+  );
+  if (released !== 0 && released !== 1)
+    throw new Error("Worker admission release requires reconciliation");
   return released === 1;
 }
 

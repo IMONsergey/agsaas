@@ -12,6 +12,9 @@ reservation additionally owns an opaque generation in a Redis hash. Terminal
 observers capture that generation **before** checking state. Worker capture also
 checks its current BullMQ lock token. Release is a compare-and-set: an old
 generation cannot remove a new reservation.
+Worker release also verifies its current lock token atomically. An automatic
+stalled takeover may keep the generation but changes the lock; its previous
+worker cannot release the takeover's slot.
 
 `retryInboxJobWithAdmission()` atomically checks the exact retained job name,
 payload and failed-attempt snapshot, reserves capacity, assigns a new generation,
@@ -64,7 +67,8 @@ to a fresh random fixture namespace; no global Redis flush is used.
 
 Run only through the host's shared queue against an approved temporary local Redis
 instance with a non-default database. `TEST_REDIS_URL` must never refer to a shared
-or production instance. The acceptance receipt must contain **11 pass, 0 fail,
+or production instance. The acceptance receipt must contain **12 pass, 0 fail,
 0 skip** for `resource-admission.test.ts` and `retry-inbox-job.test.ts`, plus cleanup
-and child-join evidence from the isolated Redis runner. A source review or skipped
+and child-join evidence from the isolated Redis runner. Include the stalled
+takeover case with the same generation and different worker lock. A source review or skipped
 test run does not establish runtime acceptance.

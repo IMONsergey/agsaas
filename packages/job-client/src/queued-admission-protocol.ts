@@ -66,7 +66,7 @@ if state~='reserved' or phase=='pending' then return {state,phase or ''} end
 return {'reserved',generation,phase}
 `;
 
-export const releaseQueuedJobScript = `${queuedAdmissionLua}
+const releaseReservationLua = `
 local state,generation,phase=admissionState(KEYS[1],KEYS[2],KEYS[3],KEYS[4],ARGV[1])
 if state=='missing' then return 0 end
 if state~='reserved' or phase=='pending' then return -1 end
@@ -74,6 +74,12 @@ if generation~=ARGV[2] then return 0 end
 redis.call('ZREM',KEYS[1],ARGV[1]); redis.call('ZREM',KEYS[2],ARGV[1])
 redis.call('HDEL',KEYS[3],ARGV[1]); redis.call('HDEL',KEYS[4],ARGV[1]); return 1
 `;
+
+export const releaseQueuedJobScript = `${queuedAdmissionLua}${releaseReservationLua}`;
+export const releaseWorkerQueuedJobScript = `${queuedAdmissionLua}
+if not validType(KEYS[5],'string') then return -1 end
+if not ARGV[3] or ARGV[3]=='' or redis.call('GET',KEYS[5])~=ARGV[3] then return 0 end
+${releaseReservationLua}`;
 
 export type QueuedJobReservation = {
   generation: string;

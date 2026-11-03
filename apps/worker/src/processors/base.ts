@@ -6,7 +6,7 @@ import {
 import {
   captureWorkerQueuedJobReservation,
   queuePayloadTeam,
-  releaseQueuedJob,
+  releaseWorkerQueuedJobReservation,
 } from "@midday/job-client/resource-admission";
 import { createLoggerWithContext } from "@midday/logger";
 import { diagnosticSummary } from "@midday/logger/diagnostics";
@@ -295,11 +295,12 @@ export abstract class BaseProcessor<TData = unknown> {
         admissionGeneration
       ) {
         try {
-          await releaseQueuedJob(
+          await releaseWorkerQueuedJobReservation(
             job.queueName,
             job.id,
             admissionTeamId,
             admissionGeneration,
+            job.token,
           );
         } catch {
           this.logger.warn("Job admission cleanup deferred", { jobId: job.id });
