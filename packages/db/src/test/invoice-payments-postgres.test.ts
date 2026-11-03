@@ -250,11 +250,74 @@ describe.skipIf(!isTestDatabaseAvailable())(
       });
     });
 
+    for (const change of ["amount", "currency"] as const) {
+      test(`issued ${change} cannot change during provider IO and the original reservation remains attachable`, async () => {
+        await withInvoice(async (tx, f) => {
+          const r = await reserveInvoicePayment(tx, f);
+          const [before] = await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, f.invoiceId));
+          expect(before).toBeDefined();
+          expect(before?.documentSnapshot).not.toBeNull();
+          // The full foundation protects issued financial identity at the DB
+          // boundary. A savepoint contains the expected SQL error; no guard is
+          // disabled and no impossible financial mutation is injected.
+          await expect(
+            tx.transaction(async (savepoint) => {
+              await savepoint
+                .update(invoices)
+                .set(
+                  change === "amount" ? { amount: 200 } : { currency: "EUR" },
+                )
+                .where(eq(invoices.id, f.invoiceId));
+            }),
+          ).rejects.toMatchObject({
+            cause: {
+              code: "23514",
+              message: expect.stringContaining("Issued invoice is immutable"),
+            },
+          });
+          const [after] = await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, f.invoiceId));
+          expect(after).toEqual(before);
+          const [reserved] = await tx
+            .select()
+            .from(invoicePaymentReservations)
+            .where(eq(invoicePaymentReservations.id, r.id));
+          expect(reserved).toMatchObject({
+            state: "reserved",
+            amountMinor: 12005,
+            currency: "usd",
+            paymentIntentId: null,
+          });
+          expect(
+            await attachInvoicePayment(tx, {
+              ...r,
+              paymentIntentId: "pi_fixture",
+            }),
+          ).toBe(true);
+          const [attached] = await tx
+            .select()
+            .from(invoicePaymentReservations)
+            .where(eq(invoicePaymentReservations.id, r.id));
+          expect(attached).toMatchObject({
+            state: "attached",
+            amountMinor: 12005,
+            currency: "usd",
+            paymentIntentId: "pi_fixture",
+            failureCode: null,
+          });
+        });
+      });
+    }
+
     for (const change of [
       "cancel",
-      "amount",
       "account",
-      "currency",
+      "restricted",
       "disabled",
     ] as const) {
       test(`current ${change} during HTTP prevents attachment and durably records the known intent`, async () => {
@@ -266,20 +329,15 @@ describe.skipIf(!isTestDatabaseAvailable())(
               teamId: f.teamId,
               status: "canceled",
             });
-          if (change === "amount")
-            await tx
-              .update(invoices)
-              .set({ amount: 200 })
-              .where(eq(invoices.id, f.invoiceId));
-          if (change === "currency")
-            await tx
-              .update(invoices)
-              .set({ currency: "EUR" })
-              .where(eq(invoices.id, f.invoiceId));
           if (change === "account")
             await tx
               .update(teams)
               .set({ stripeAccountId: "acct_other" })
+              .where(eq(teams.id, f.teamId));
+          if (change === "restricted")
+            await tx
+              .update(teams)
+              .set({ stripeConnectStatus: "restricted" })
               .where(eq(teams.id, f.teamId));
           if (change === "disabled")
             await tx
