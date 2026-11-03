@@ -81,6 +81,19 @@ const download = mock(async () => ({
 const triggerJobAndWait = mock(async () => ({
   result: { fullPath: transactionPath, totalItems: 1 },
 }));
+// Preserve the existing fixture query exports while installing an explicitly
+// owned app lookup before importing the REST/MCP consumers. setup.ts provides
+// this export inline; it deliberately has no mocks.getAppByAppId property.
+type AppLookup = typeof import("@midday/db/queries").getAppByAppId;
+type AppFixture = Pick<NonNullable<Awaited<ReturnType<AppLookup>>>, "config">;
+const getAppByAppId = mock(
+  async (..._args: Parameters<AppLookup>): Promise<AppFixture | null> => null,
+);
+const existingQueryFixtures = { ...(await import("@midday/db/queries")) };
+mock.module("@midday/db/queries", () => ({
+  ...existingQueryFixtures,
+  getAppByAppId,
+}));
 mock.module("@midday/db/queries/export-file-access", () => ({
   getExportFileAccessReceipts: getReceipts,
 }));
@@ -173,7 +186,7 @@ beforeEach(() => {
   mocks.getTransactionAttachment.mockReset();
   mocks.triggerJob.mockClear();
   mocks.getJobStatus.mockReset();
-  mocks.getAppByAppId.mockReset();
+  getAppByAppId.mockReset();
   triggerJobAndWait.mockClear();
   mocks.getDocumentById.mockImplementation(() => document(teamPath));
   mocks.getInboxById.mockImplementation(() => ({
@@ -524,7 +537,7 @@ describe("MCP reserved export file authority over an actual in-memory transport"
 
   test("transactions.write alone cannot read integration configuration or enqueue an accounting export", async () => {
     // This configured app would reach triggerJob without the read-scope guard.
-    mocks.getAppByAppId.mockImplementation(async () => ({
+    getAppByAppId.mockImplementation(async () => ({
       config: {
         provider: "xero",
         tenantId: "fixture-org",
@@ -538,7 +551,7 @@ describe("MCP reserved export file authority over an actual in-memory transport"
     });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).toContain("transactions.read is required");
-    expect(mocks.getAppByAppId).not.toHaveBeenCalled();
+    expect(getAppByAppId).not.toHaveBeenCalled();
     expect(mocks.triggerJob).not.toHaveBeenCalled();
     expect(triggerJobAndWait).not.toHaveBeenCalled();
     expect(mocks.signedUrl).not.toHaveBeenCalled();
