@@ -100,8 +100,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
           [randomUUID(), actor],
         );
       }
+      // The self-hosted baseline Auth trigger may already have created profiles.
       await client.query(
-        "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'MFA fixture'),($3,$4,'Other MFA fixture')",
+        "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'MFA fixture'),($3,$4,'Other MFA fixture') ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,full_name=EXCLUDED.full_name",
         [user, `${user}@example.test`, otherUser, `${otherUser}@example.test`],
       );
       await client.query(

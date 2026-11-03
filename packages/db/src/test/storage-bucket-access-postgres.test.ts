@@ -41,8 +41,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
       CREATE TABLE IF NOT EXISTS auth.sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),not_after timestamptz,refreshed_at timestamp,user_agent text,ip inet);
       CREATE TABLE IF NOT EXISTS auth.refresh_tokens(session_id uuid);
       CREATE TABLE IF NOT EXISTS auth.mfa_factors(id uuid PRIMARY KEY,user_id uuid NOT NULL,status text NOT NULL);
-      CREATE TABLE storage.buckets(id text PRIMARY KEY,name text NOT NULL,public boolean NOT NULL DEFAULT false,file_size_limit bigint,allowed_mime_types text[]);
-      CREATE TABLE storage.objects(id uuid PRIMARY KEY,bucket_id text NOT NULL REFERENCES storage.buckets(id),name text NOT NULL,owner_id text,metadata jsonb,version text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),archived_at timestamptz,is_delete_marker boolean DEFAULT false,UNIQUE(bucket_id,name));
+      CREATE TABLE IF NOT EXISTS storage.buckets(id text PRIMARY KEY,name text NOT NULL,public boolean NOT NULL DEFAULT false,file_size_limit bigint,allowed_mime_types text[]);
+      CREATE TABLE IF NOT EXISTS storage.objects(id uuid PRIMARY KEY,bucket_id text NOT NULL REFERENCES storage.buckets(id),name text NOT NULL,owner_id text,metadata jsonb,version text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),archived_at timestamptz,is_delete_marker boolean DEFAULT false,UNIQUE(bucket_id,name));
       CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $fn$ SELECT (nullif(current_setting('request.jwt.claims',true),'')::jsonb->>'sub')::uuid $fn$;
       CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $fn$ SELECT coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{}'::jsonb) $fn$;
       GRANT USAGE ON SCHEMA public,private,auth,storage TO authenticated,anon;
@@ -75,8 +75,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
           user,
           `${user}@example.test`,
         ]);
+        // A real baseline profile trigger may have handled the Auth insert.
         await client.query(
-          "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'Synthetic storage actor')",
+          "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'Synthetic storage actor') ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,full_name=EXCLUDED.full_name",
           [user, `${user}@example.test`],
         );
         await client.query(
@@ -183,10 +184,10 @@ describe.skipIf(!isTestDatabaseAvailable())(
       }));
     test("verified MFA requires AAL2; editable metadata and stale/reassigned sessions cannot bypass", () =>
       run(async (c, f) => {
-        await c.query("INSERT INTO auth.mfa_factors VALUES($1,$2,'verified')", [
-          randomUUID(),
-          f.owner,
-        ]);
+        await c.query(
+          "INSERT INTO auth.mfa_factors(id,user_id,status) VALUES($1,$2,'verified')",
+          [randomUUID(), f.owner],
+        );
         await claims(c, f.owner, f.sessions[f.owner], "aal1", {
           user_metadata: { aal: "aal2", mfa_enabled: false },
         });

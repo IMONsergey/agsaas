@@ -72,8 +72,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
           aal: "aal1",
         }),
       ]);
+      // The self-hosted baseline Auth trigger may already have created a profile.
       await client.query(
-        "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'Storage fixture')",
+        "INSERT INTO public.users(id,email,full_name) VALUES($1,$2,'Storage fixture') ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,full_name=EXCLUDED.full_name",
         [user, `${user}@example.test`],
       );
       await client.query(
