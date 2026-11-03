@@ -113,7 +113,7 @@ type Toast = {
 let currentToast: Toast | undefined;
 let toastCount = 0;
 const dismiss = mock((id?: string) => {
-  if (currentToast?.id === id) currentToast.open = false;
+  if (currentToast && currentToast.id === id) currentToast.open = false;
 });
 const update = mock((id: string, value: Partial<Toast>) => {
   if (currentToast?.id === id) currentToast = { ...currentToast, ...value };
@@ -293,15 +293,21 @@ beforeEach(() => {
     downloadFile,
   ])
     fn.mockClear();
-  const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
-    (callback) => {
+  // A callable proxy preserves the installed timer's overloads and function
+  // properties (including Node's __promisify__) without a type assertion.
+  const controlledTimeout = new Proxy(realSetTimeout, {
+    apply(_target, _receiver, args: unknown[]) {
+      const callback = args[0];
       if (typeof callback !== "function")
         throw new Error("Only function timers are supported");
-      timers.push(() => callback());
+      timers.push(() => callback(...args.slice(2)));
       const handle = realSetTimeout(() => {}, 0);
       realClearTimeout(handle);
       return handle;
     },
+  });
+  const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
+    controlledTimeout,
   );
   restoreTimer = () => timerSpy.mockRestore();
 });
