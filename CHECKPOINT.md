@@ -1,3 +1,9 @@
+# Latest continuation — 2026-11-03
+
+See [the current implementation and self-hosting checkpoint](CONTINUATION_2026-11-03.md) and its [90-item status registry](docs/completion-20261103/continuation-status.json). That checkpoint supersedes the working state and pending-gate descriptions below. Earlier entries are retained as historical records.
+
+---
+
 # Current AGSaaS completion checkpoint — 2026-11-03 11:55 UTC
 
 This section supersedes the historical entries below. Source progress, executed verification, synthetic database work and deployed acceptance are separate states.
