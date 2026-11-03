@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { IRedisClient } from "bullmq";
 import { getQueue } from "./queues";
 
 const globalKey = "agsaas:{resource-admission}:queued";
@@ -25,6 +26,47 @@ if redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 1 end
 if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) or redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[3]) then return 0 end
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1]); redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1]); return 1`;
 
+const commands = {
+  reserve: {
+    name: "agsaasReserveQueuedJobV1",
+    numberOfKeys: 2,
+    lua: reserveQueuedJobScript,
+  },
+  release: {
+    name: "agsaasReleaseQueuedJobV1",
+    numberOfKeys: 2,
+    lua: "redis.call('ZREM', KEYS[1], ARGV[1]); redis.call('ZREM', KEYS[2], ARGV[1]); return 1",
+  },
+  rotate: {
+    name: "agsaasRotateQueuedJobV1",
+    numberOfKeys: 1,
+    // A concurrent completion may release the reservation after reconciliation
+    // reads it. XX rotates an existing member without recreating an orphan.
+    lua: "return redis.call('ZADD', KEYS[1], 'XX', ARGV[2], ARGV[1])",
+  },
+} as const;
+const registeredClients = new WeakSet<IRedisClient>();
+
+/** BullMQ's public adapter contract supports named Lua commands across Redis
+ * clients; raw ioredis eval/zadd methods are not part of that contract. */
+export function runQueuedAdmissionCommand(
+  client: IRedisClient,
+  command: keyof typeof commands,
+  keys: string[],
+  args: Array<string | number>,
+): Promise<unknown> {
+  const definition = commands[command];
+  if (keys.length !== definition.numberOfKeys)
+    throw new Error("Invalid admission command keys");
+  if (!registeredClients.has(client)) {
+    for (const { name, numberOfKeys, lua } of Object.values(commands)) {
+      client.defineCommand(name, { numberOfKeys, lua });
+    }
+    registeredClients.add(client);
+  }
+  return client.runCommand(definition.name, [...keys, ...args]);
+}
+
 export async function reserveQueuedJob(
   queueName: string,
   payload: unknown,
@@ -49,15 +91,11 @@ export async function reserveQueuedJob(
     ["classify-document", "classify-image", "embed-document-tags"].includes(
       jobName ?? "",
     ) || queueName === "emails";
-  const admitted = await redis.eval(
-    reserveQueuedJobScript,
-    2,
-    globalKey,
-    teamKey(teamId),
-    member,
-    Date.now(),
-    continuation ? 200 : 160,
-    continuation ? 2000 : 1600,
+  const admitted = await runQueuedAdmissionCommand(
+    redis,
+    "reserve",
+    [globalKey, teamKey(teamId)],
+    [member, Date.now(), continuation ? 200 : 160, continuation ? 2000 : 1600],
   );
   if (admitted !== 1) throw new QueueCapacityError();
   return id;
@@ -69,14 +107,14 @@ export async function releaseQueuedJob(
   teamId: string,
 ) {
   if (!uuid.test(teamId)) return;
+  const normalizedTeam = teamId.toLowerCase();
   const redis = await getQueue(queueName).client;
-  const member = JSON.stringify({ teamId, queueName, id });
-  await redis.eval(
-    "redis.call('ZREM', KEYS[1], ARGV[1]); redis.call('ZREM', KEYS[2], ARGV[1]); return 1",
-    2,
-    globalKey,
-    teamKey(teamId),
-    member,
+  const member = JSON.stringify({ teamId: normalizedTeam, queueName, id });
+  await runQueuedAdmissionCommand(
+    redis,
+    "release",
+    [globalKey, teamKey(normalizedTeam)],
+    [member],
   );
 }
 
@@ -85,7 +123,7 @@ export async function releaseQueuedJob(
  * write. Age is a polling threshold, never proof that this producer has stopped. */
 export async function reconcileQueuedJobs() {
   const redis = await getQueue("teams").client;
-  const members = await redis.zrange(globalKey, 0, 99, "WITHSCORES");
+  const members = await redis.zrange(globalKey, 0, 99, { WITHSCORES: true });
   let released = 0;
   for (let i = 0; i < members.length; i += 2) {
     const text = members[i]!,
@@ -108,7 +146,13 @@ export async function reconcileQueuedJobs() {
       if (["completed", "failed"].includes(state)) {
         await releaseQueuedJob(value.queueName, value.id, value.teamId);
         released++;
-      } else await redis.zadd(globalKey, Date.now(), text); // rotate live jobs so old failures are not starved
+      } else
+        await runQueuedAdmissionCommand(
+          redis,
+          "rotate",
+          [globalKey],
+          [text, Date.now()],
+        ); // rotate live jobs so old failures are not starved
     } catch {
       /* keep ambiguous reservations */
     }
@@ -123,7 +167,7 @@ export async function inspectQueuedReservations(limit = 100) {
     globalKey,
     0,
     Math.min(Math.max(Math.trunc(limit), 1), 100) - 1,
-    "WITHSCORES",
+    { WITHSCORES: true },
   );
   const output: Array<{
     teamId: string;

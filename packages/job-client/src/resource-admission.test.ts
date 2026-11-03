@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { Queue } from "bullmq";
-import { reserveQueuedJobScript } from "./resource-admission";
+import { runQueuedAdmissionCommand } from "./resource-admission";
 
 const configured = process.env.TEST_REDIS_URL;
 describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
   let queue: Queue;
   const tag = randomUUID(),
-    global = `agsaas:test:${tag}:global`,
-    own = `agsaas:test:${tag}:team`;
+    global = `agsaas:{admission-test-${tag}}:global`,
+    own = `agsaas:{admission-test-${tag}}:team`;
+  const raceGlobal = `${global}:race`,
+    raceOwn = `${own}:race`;
   beforeAll(() => {
     const url = new URL(configured!);
     if (
@@ -31,7 +33,7 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
   afterAll(async () => {
     if (queue) {
       const client = await queue.client;
-      await client.del(global, own);
+      await client.del(global, own, raceGlobal, raceOwn);
       await queue.close();
     }
   });
@@ -39,15 +41,11 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
     const redis = await queue.client;
     const results = await Promise.all(
       Array.from({ length: 220 }, (_, index) =>
-        redis.eval(
-          reserveQueuedJobScript,
-          2,
-          global,
-          own,
-          `job-${index}`,
-          Date.now(),
-          200,
-          2000,
+        runQueuedAdmissionCommand(
+          redis,
+          "reserve",
+          [global, own],
+          [`job-${index}`, Date.now(), 200, 2000],
         ),
       ),
     );
@@ -55,31 +53,58 @@ describe.skipIf(!configured)("queued job capacity (isolated Redis)", () => {
     expect(await redis.zcard(own)).toBe(200);
     const first = (await redis.zrange(own, 0, 0))[0]!;
     expect(
-      await redis.eval(
-        reserveQueuedJobScript,
-        2,
-        global,
-        own,
-        first,
-        Date.now(),
-        200,
-        2000,
+      await runQueuedAdmissionCommand(
+        redis,
+        "reserve",
+        [global, own],
+        [first, Date.now(), 200, 2000],
       ),
     ).toBe(1);
     expect(await redis.zcard(own)).toBe(200);
-    await redis.zrem(global, first);
-    await redis.zrem(own, first);
+    await runQueuedAdmissionCommand(redis, "release", [global, own], [first]);
     expect(
-      await redis.eval(
-        reserveQueuedJobScript,
-        2,
-        global,
-        own,
-        "replacement",
-        Date.now(),
-        200,
-        2000,
+      await runQueuedAdmissionCommand(
+        redis,
+        "reserve",
+        [global, own],
+        ["replacement", Date.now(), 200, 2000],
       ),
     ).toBe(1);
+  });
+  test("reconciliation rotates only existing reservations and cannot resurrect a released job", async () => {
+    const redis = await queue.client;
+    expect(
+      await runQueuedAdmissionCommand(
+        redis,
+        "reserve",
+        [raceGlobal, raceOwn],
+        ["race-job", 10, 2, 2],
+      ),
+    ).toBe(1);
+    await runQueuedAdmissionCommand(
+      redis,
+      "rotate",
+      [raceGlobal],
+      ["race-job", 20],
+    );
+    expect(await redis.zrange(raceGlobal, 0, -1, { WITHSCORES: true })).toEqual(
+      ["race-job", "20"],
+    );
+    expect(await redis.zscore(raceOwn, "race-job")).toBe("10");
+    // Simulate completion winning the race after reconciliation read the job.
+    await runQueuedAdmissionCommand(
+      redis,
+      "release",
+      [raceGlobal, raceOwn],
+      ["race-job"],
+    );
+    await runQueuedAdmissionCommand(
+      redis,
+      "rotate",
+      [raceGlobal],
+      ["race-job", 30],
+    );
+    expect(await redis.zscore(raceGlobal, "race-job")).toBeNull();
+    expect(await redis.zscore(raceOwn, "race-job")).toBeNull();
   });
 });
