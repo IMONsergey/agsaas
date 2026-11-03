@@ -1,0 +1,39 @@
+{
+  "package": "fontkit",
+  "version": "2.0.4",
+  "sourceBase": "422306f5d6dceb57021c6dc5eb4cb0911a736bcd",
+  "patchSha256": "e64510006229a43047618756112d0823517bdace4acbd93c74758ad6d0f5d5cb",
+  "files": [
+    {
+      "path": "src/TTFFont.js",
+      "originalSha256": "e00c15435b659300450603439eb9fef428f6c9a999a8243e3b19e0065bcb7326",
+      "patchedSha256": "7b99039c74fa7cee9ac3ea25f13621eeec964a9d69aa6efe0071e6f6e8f3eaa3",
+      "bytesAdded": 307
+    },
+    {
+      "path": "dist/module.mjs",
+      "originalSha256": "3dde5aab2c79c239598211256ff26d460da28ca098d314b063b8554c13ee2e57",
+      "patchedSha256": "d8efaa6fc1e5b1fd9a473c67f83cbe646d43941bb9c630c85b9fb71ac6b28554",
+      "bytesAdded": 331
+    },
+    {
+      "path": "dist/main.cjs",
+      "originalSha256": "1cac5f3c126952095df9cb84bd2bef8230c7133ee1aeb119b2de85d3053fd245",
+      "patchedSha256": "5e88f8354d90ad8c1968e9d765aa14fc5b0fb8d14313df6d3b7f4aab6c4ca3d8",
+      "bytesAdded": 331
+    },
+    {
+      "path": "dist/browser-module.mjs",
+      "originalSha256": "f2bcd6bda6be2032d14f0256bef9a90d4c5a0eed6fb569d2216ff0710a688315",
+      "patchedSha256": "40f315d2982332b4c668b6daea3c4773ef31f3d14be1c23b94f0bb3faa375d94",
+      "bytesAdded": 331
+    },
+    {
+      "path": "dist/browser.cjs",
+      "originalSha256": "799c5e068e08e29b002924e272ea9e816c9c56a8512b267d3bf978e94ef3fbf0",
+      "patchedSha256": "193746f96c32ae21c376cd034226f0a1d7d0c0712acdff3168b0b1ed7ad98d80",
+      "bytesAdded": 331
+    }
+  ],
+  "runtimeValidation": "pending root-controlled install and tests"
+}

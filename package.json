@@ -105,6 +105,10 @@
     "langsmith": "0.11.6",
     "undici": "6.29.1",
     "vite": "8.3.5",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "fontkit": "2.0.4"
+  },
+  "patchedDependencies": {
+    "fontkit@2.0.4": "patches/fontkit@2.0.4.patch"
   }
 }
