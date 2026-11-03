@@ -124,6 +124,27 @@ describe.skipIf(!isTestDatabaseAvailable())(
     }
     test("connection/account writes persist intent without Redis; event replay coalesces and wrong team cannot claim", async () =>
       run(async (c, f) => {
+        // Account triggers use wall time, while the scheduler uses transaction
+        // time. Verify the trigger intent before representing an already-due
+        // item inside this rollback-only fixture transaction. Only this case's
+        // row is advanced; unrelated queue entries and the production SQL stay
+        // untouched. The oldest due time also makes the bounded list stable.
+        expect(
+          (
+            await c.query(
+              "SELECT requested_generation>completed_generation pending, next_attempt_at<=clock_timestamp() due, lease_token IS NULL unclaimed FROM private.bank_sync_operations WHERE connection_id=$1 AND team_id=$2",
+              [f.connection, f.team],
+            )
+          ).rows,
+        ).toEqual([{ pending: true, due: true, unclaimed: true }]);
+        expect(
+          (
+            await c.query(
+              "UPDATE private.bank_sync_operations SET next_attempt_at='-infinity'::timestamptz WHERE connection_id=$1 AND team_id=$2",
+              [f.connection, f.team],
+            )
+          ).rowCount,
+        ).toBe(1);
         expect(
           (
             await c.query("SELECT * FROM private.list_due_bank_sync(20)")
