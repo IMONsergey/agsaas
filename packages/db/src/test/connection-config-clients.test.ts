@@ -1,11 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { databaseTransportTestCa } from "./fixtures/database-transport-ca";
 
-const fixture = fileURLToPath(
-  new URL("./fixtures/connection-client-child.ts", import.meta.url),
-);
-const cwd = fileURLToPath(new URL("../../", import.meta.url));
+const fixture = resolve(__dirname, "fixtures/connection-client-child.ts");
+const cwd = resolve(__dirname, "../..");
 const prefix = "DATABASE_TRANSPORT_FIXTURE ";
 const ca = databaseTransportTestCa;
 

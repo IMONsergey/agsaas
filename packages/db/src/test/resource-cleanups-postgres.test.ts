@@ -13,7 +13,6 @@ import {
   retainFileCleanup,
   retainResourceCleanup,
 } from "../queries/resource-cleanups";
-import { withReplicas } from "../replicas";
 import { runtimeSchema } from "../runtime-schema";
 import { teams } from "../schema";
 import {
@@ -202,17 +201,16 @@ describe.skipIf(!isTestDatabaseAvailable())(
               schema: runtimeSchema,
               casing: "snake_case",
             });
-            const bound = withReplicas(
-              primary,
-              [primary],
-              (replicas) => replicas[0]!,
-            );
-            finishing = finishResourceCleanup(bound, claim, {
-              status: "completed",
-            }).then(
-              (value) => ({ value }),
-              (error: unknown) => ({ error }),
-            );
+            // A real transaction retains this PoolClient's PID and row locks.
+            // Its transaction client satisfies the production query contract.
+            finishing = primary
+              .transaction((tx) =>
+                finishResourceCleanup(tx, claim, { status: "completed" }),
+              )
+              .then(
+                (value) => ({ value }),
+                (error: unknown) => ({ error }),
+              );
             const lockDeadline = Date.now() + 3500;
             let blocked = false;
             while (Date.now() < lockDeadline) {
