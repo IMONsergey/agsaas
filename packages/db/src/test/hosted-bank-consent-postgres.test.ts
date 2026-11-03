@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { HostedConsentActor } from "../bank-consent";
 import type { Database, TransactionClient } from "../client";
@@ -348,12 +348,31 @@ describe.skipIf(!isTestDatabaseAvailable())(
         expect(accounts).toHaveLength(1);
         expect(accounts[0]?.balance).toBeNull();
         expect(accounts[0]?.accountId).toBe(`account-${row.id}`);
+        const syncScope = { teamId: actor.teamId, connectionId: row.id };
+        const syncStatus = await getBankSyncStatus(db, syncScope);
+        expect(syncStatus).toMatchObject({ completedGeneration: 0 });
+        expect(syncStatus?.requestedGeneration).toBeGreaterThan(0);
+        const receipts = await db.execute<{ event_key: string }>(
+          sql`SELECT event_key FROM private.bank_sync_webhook_receipts WHERE connection_id=${row.id}::uuid`,
+        );
+        expect(receipts.rows).toEqual([
+          {
+            event_key: createHash("sha256")
+              .update(`consent:${row.id}`)
+              .digest("hex"),
+          },
+        ]);
+        // Connection/account triggers may each advance the pending generation.
+        // Replaying accepted consent must preserve it and its single receipt.
+        await acceptHostedBankConsent(db, actor, row.id);
+        expect(await getBankSyncStatus(db, syncScope)).toEqual(syncStatus);
         expect(
-          await getBankSyncStatus(db, {
-            teamId: actor.teamId,
-            connectionId: row.id,
-          }),
-        ).toMatchObject({ requestedGeneration: 1, completedGeneration: 0 });
+          (
+            await db.execute<{ event_key: string }>(
+              sql`SELECT event_key FROM private.bank_sync_webhook_receipts WHERE connection_id=${row.id}::uuid`,
+            )
+          ).rows,
+        ).toEqual(receipts.rows);
         const events = await db.execute(
           sql`SELECT id FROM public.security_audit_events WHERE team_id=${actor.teamId}::uuid AND operation='bank.connect'`,
         );

@@ -591,7 +591,10 @@ export async function acceptHostedBankConsent(
         connectionId: row.id,
         teamId: scope.teamId,
         fullHistory: true,
-        eventKey: `consent:${row.id}`,
+        // The durable queue accepts only SHA-256 event identities.
+        eventKey: createHash("sha256")
+          .update(`consent:${row.id}`)
+          .digest("hex"),
       }))
     )
       throw new BankConsentError("state_changed");
