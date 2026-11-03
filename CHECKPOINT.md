@@ -110,3 +110,14 @@ Subsequent fixes: static ESM mocks, primary DB REST fixture/assertions, Auth/pro
 Isolated PG inventory: loopback55439/midday_test, PostgreSQL16.15, system_id7703819082990792743; partial old catalog lacks real Auth/Storage and migration history. Infra prepares transactional synthetic foundation preserving existing schemas/data. No DDL run yet. Synthetic PG16 is NOT canonicalPG17/realSupabase acceptance. Never fabricate migration history or replay baseline over partial catalog. Private env files must never be logged/committed. Actual self-hosted runtime, real Auth/Storage, provider acceptance and complete UI verification remain pending.
 
 Recorded: 2026-11-03T09:23:37.596378+00:00
+
+## Historical Plaid source checkpoint before integration
+
+The following note records the source lane before its later integration and tests; later evidence supersedes its pending-work statements.
+
+
+- Commit a2d0edab9396134c84f3d0e9966a40ce684c6728 contains22 server/source/test/docs files. Source formatting20/20 and Git diff checks passed; no type/unit/SQL/provider/runtime/browser acceptance was executed here. UI entry and operator resolution remain pending.
+- New append-only SQL is20261103111000_plaid_hosted_consent.sql per root coordination; existing SQL/source-lock untouched. Root owns later migration review and queued application. Feature defaults off and legacy provider paths remain closed.
+- Current owner/session/MFA scope, exact server Link proof, one-use exchange fence, durable encrypted receipt, atomic account/audit/native-sync acceptance and provider/client-bound revoke were reviewed by finance. Peer clock-skew issue fixed with SQL expiry and current-clock session checks; added regression source for old API clock and transaction-start now(). Unknown outcomes remain reconciliation and block new team consent.
+- Manifest/patch: Reports/security-resume-20261103/plaid-server-review-20261103. Original five-file paused draft retained separately.
+- Root round4 actual failures now take priority: API test unknown-number types, optional-client abort/redirect contract, API-key owner fixtures, inbox path, user file-key UUID and real user.delete marketing cleanup behavior. Next work uses a separate branch from b35a303 so this large draft is excluded.
