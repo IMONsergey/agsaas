@@ -383,3 +383,20 @@ export const teamMembersResponseSchema = z.object({
     description: "Array of team members with their roles and information",
   }),
 });
+
+export const exportHistoryInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(25).default(10),
+    cursor: z
+      .object({
+        createdAt: z.string().datetime({ precision: 6 }),
+        id: z.string().uuid(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const exportHistoryEntryInputSchema = z
+  .object({ id: z.string().uuid() })
+  .strict();

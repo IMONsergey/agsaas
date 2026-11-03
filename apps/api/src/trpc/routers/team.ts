@@ -5,6 +5,8 @@ import {
   deleteTeamInviteSchema,
   deleteTeamMemberSchema,
   deleteTeamSchema,
+  exportHistoryEntryInputSchema,
+  exportHistoryInputSchema,
   inviteTeamMembersSchema,
   leaveTeamSchema,
   updateBaseCurrencySchema,
@@ -39,6 +41,10 @@ import {
   updateTeamById,
   updateTeamMember,
 } from "@midday/db/queries";
+import {
+  getTeamExportHistoryById,
+  listTeamExportHistory,
+} from "@midday/db/queries/export-snapshots";
 import { getTeamEntitlements } from "@midday/db/queries/team-entitlements";
 import { triggerJob } from "@midday/job-client";
 import { getTeamInviteEmailConfig } from "@midday/notifications/team-invitation-config";
@@ -298,6 +304,26 @@ export const teamRouter = createTRPCRouter({
         },
         "transactions",
       );
+    }),
+
+  exportHistory: protectedProcedure
+    .input(exportHistoryInputSchema)
+    .query(({ ctx: { db, teamId }, input }) => {
+      if (!teamId)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Team not found" });
+      return listTeamExportHistory(db, {
+        teamId,
+        limit: input.limit,
+        cursor: input.cursor,
+      });
+    }),
+
+  exportHistoryEntry: protectedProcedure
+    .input(exportHistoryEntryInputSchema)
+    .query(({ ctx: { db, teamId }, input }) => {
+      if (!teamId)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Team not found" });
+      return getTeamExportHistoryById(db, { teamId, id: input.id });
     }),
 
   exportAllData: protectedProcedure.mutation(

@@ -1,5 +1,12 @@
 import { sql } from "drizzle-orm";
 import type { Database, DatabaseOrTransaction } from "../client";
+import {
+  type ExportHistoryCursor,
+  projectExportHistoryRecord,
+  type StoredExportHistoryRecord,
+  validateExportHistoryId,
+  validateExportHistoryPage,
+} from "../export-history";
 import { financialRequestHash } from "../financial-job";
 import { getTransactionsByIds } from "./transactions";
 
@@ -259,4 +266,71 @@ export async function markSnapshotTransactionsExported(
     marked += result.rowCount ?? 0;
   }
   return marked;
+}
+
+// Keep raw business data and arbitrary receipt fields out of the history query.
+// PostgreSQL timestamps retain microseconds in the cursor; JavaScript Date
+// would truncate them and could skip or repeat rows on adjacent pages.
+const exportHistoryColumns = sql`
+  id, team_id, operation_key, snapshot_hash,
+  snapshot->>'kind' as snapshot_kind,
+  snapshot->>'version' as snapshot_version,
+  snapshot->>'asOf' as snapshot_at,
+  to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at,
+  to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated_at,
+  case when result is null then null else jsonb_build_object(
+    'status', result->'status',
+    'operationId', result->'operationId',
+    'snapshotId', result->'snapshotId',
+    'snapshotHash', result->'snapshotHash',
+    'archiveHash', result->'archiveHash',
+    'fullPath', result->'fullPath',
+    'totalItems', result->'totalItems',
+    'missingFiles', result->'missingFiles'
+  ) end as result
+`;
+
+export async function listTeamExportHistory(
+  db: DatabaseOrTransaction,
+  input: { teamId: string; limit?: number; cursor?: ExportHistoryCursor },
+) {
+  const limit = validateExportHistoryPage(input);
+  const cursor = input.cursor
+    ? sql`and (created_at, id) < (${input.cursor.createdAt}::timestamptz, ${input.cursor.id}::uuid)`
+    : sql``;
+  const result = await primary(db).execute<StoredExportHistoryRecord>(sql`
+    select ${exportHistoryColumns} from export_snapshots
+    where team_id=${input.teamId}::uuid and snapshot->>'kind'='team'
+    ${cursor}
+    order by export_snapshots.created_at desc, id desc limit ${limit + 1}
+  `);
+  const rows = result.rows.slice(0, limit);
+  const last = rows.at(-1);
+  return {
+    teamId: input.teamId,
+    items: rows.map((row) => projectExportHistoryRecord(row, input.teamId)),
+    nextCursor:
+      result.rows.length > limit && last
+        ? { createdAt: last.created_at, id: last.id }
+        : null,
+  };
+}
+
+export async function getTeamExportHistoryById(
+  db: DatabaseOrTransaction,
+  input: { teamId: string; id: string },
+) {
+  validateExportHistoryId(input.id);
+  const result = await primary(db).execute<StoredExportHistoryRecord>(sql`
+    select ${exportHistoryColumns} from export_snapshots
+    where team_id=${input.teamId}::uuid and id=${input.id}::uuid
+      and snapshot->>'kind'='team'
+    limit 1
+  `);
+  return {
+    teamId: input.teamId,
+    item: result.rows[0]
+      ? projectExportHistoryRecord(result.rows[0], input.teamId)
+      : null,
+  };
 }
