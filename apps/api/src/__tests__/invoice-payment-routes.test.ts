@@ -90,6 +90,11 @@ let event: {
   data: { object: Record<string, unknown> };
 };
 const constructEvent = mock(async () => event);
+const unexpectedAdministration = () => {
+  throw new Error(
+    "Public invoice payment tests must not enter integration administration",
+  );
+};
 
 mock.module("@api/rest/middleware", () => ({
   publicMiddleware: [],
@@ -108,6 +113,13 @@ mock.module("@midday/db/queries", () => ({
   getTeamById: async () => null,
   updateTeamById: async () => null,
   getTeamByStripeAccountId: async () => null,
+  createIntegrationOAuthIntent: unexpectedAdministration,
+  findIntegrationOAuthIntent: unexpectedAdministration,
+  consumeIntegrationOAuthIntent: unexpectedAdministration,
+  completeIntegrationOAuthIntent: unexpectedAdministration,
+  getTeamMemberRole: unexpectedAdministration,
+  assertNoPendingProviderCleanup: unexpectedAdministration,
+  requestStripeDisconnect: unexpectedAdministration,
 }));
 mock.module("@midday/job-client", () => ({ triggerJob: queue }));
 mock.module("@midday/logger", () => ({

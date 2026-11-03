@@ -8,6 +8,7 @@ import {
   actorEmail,
   actorId,
   inviteeEmail,
+  sessionId,
   signAccessToken,
   verifyAccessToken,
 } from "./jwt-fixture";
@@ -38,6 +39,7 @@ const findInvite = mock(async ({ where }: { where: SQL }) =>
 const insertMembership = mock(async (_values: unknown) => {});
 const deleteInvite = mock(async (_where: SQL) => {});
 const db = {
+  usePrimaryOnly: () => db,
   transaction: async (run: (tx: unknown) => Promise<unknown>) => run(db),
   execute: async (_statement: SQL) => ({ rows: [] }),
   select: () => ({
@@ -105,6 +107,7 @@ mock.module("@midday/db/queries", () => ({
   getTeamMembersByTeamId: unexpectedOperation,
   getTeamsByUserId: unexpectedOperation,
   getUserById: unexpectedOperation,
+  getOwnAuthSessions: unexpectedOperation,
   getUserTeamId: unexpectedOperation,
   getApiKeyByToken: unexpectedOperation,
   validateAccessToken: unexpectedOperation,
@@ -195,6 +198,7 @@ describe("signed access-token identity", () => {
     );
 
     expect(await verifyAccessToken(token)).toEqual({
+      sessionId,
       aal: "aal1",
       user: { id: actorId, email: actorEmail, full_name: "Local User" },
     });

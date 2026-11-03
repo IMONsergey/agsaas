@@ -96,13 +96,20 @@ export function asMock(fn: (...args: any[]) => any): MockFn {
 // Create reusable mock functions that tests can access
 export const mocks = {
   getOwnAuthSessions: mock(() => Promise.resolve([])) as MockFn,
-  revokeAuthSessions: mock(() => Promise.resolve({revoked:0})) as MockFn,
+  revokeAuthSessions: mock(() => Promise.resolve({ revoked: 0 })) as MockFn,
   isAuthSessionActive: mock(() => Promise.resolve(true)) as MockFn,
   requestCustomerEnrichment: mock(() => null) as MockFn,
   cancelCustomerEnrichment: mock(() => false) as MockFn,
 
   // Tracked administrative writes: denial tests assert zero side effects.
   disconnectApp: mock(() => Promise.resolve({})) as MockFn,
+  requestStripeDisconnect: mock(() =>
+    Promise.resolve({
+      success: true,
+      cleanupPending: true,
+      cleanupId: "f5418c2c-7595-4a41-8daf-008482ac8016",
+    }),
+  ) as MockFn,
   createBankConnection: mock(() => Promise.resolve({})) as MockFn,
   reconnectBankConnection: mock(() => Promise.resolve({})) as MockFn,
   addProviderAccounts: mock(() => Promise.resolve({})) as MockFn,
@@ -860,6 +867,11 @@ const createDefaultMock = () => mock(() => null);
 // Mock @midday/db/queries with a Proxy to handle any export
 const dbQueriesMock = new Proxy(
   {
+    // Bun enumerates named ESM exports before the Proxy getter can run.
+    getOwnAuthSessions: mocks.getOwnAuthSessions,
+    revokeAuthSessions: mocks.revokeAuthSessions,
+    isAuthSessionActive: mocks.isAuthSessionActive,
+    requestStripeDisconnect: mocks.requestStripeDisconnect,
     // Transaction functions
     getTransactions: mocks.getTransactions,
     getTransactionById: mocks.getTransactionById,
