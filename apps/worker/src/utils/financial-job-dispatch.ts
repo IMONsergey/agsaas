@@ -81,6 +81,17 @@ export async function dispatchFinancialJob(
     if (state === "completed")
       return { status: "completed" as const, cleanup: () => existing.remove() };
     if (state === "failed") return { status: "failed" as const };
+    if (
+      ![
+        "waiting",
+        "active",
+        "delayed",
+        "prioritized",
+        "paused",
+        "waiting-children",
+      ].includes(state)
+    )
+      throw new Error("Financial job state is uncertain");
     // Adopt a retained pre-admission job without adding another queue entry.
     if (!reservation) await reserve();
     return { status: "accepted" as const };

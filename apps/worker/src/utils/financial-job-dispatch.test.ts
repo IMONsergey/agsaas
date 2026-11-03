@@ -207,6 +207,26 @@ describe("durable financial queue handoff", () => {
     ]);
     expect(f.exists()).toBe(true);
   });
+  test("unknown or unsupported states neither accept a receipt nor adopt a legacy capacity slot", async () => {
+    for (const state of ["unknown", "unexpected_state", ""]) {
+      for (const legacy of [false, true]) {
+        const f = fixture();
+        await dispatchFinancialJob(f.row, f.queue, f.admission);
+        if (legacy) f.loseAdmission();
+        const generation = f.generation();
+        f.setState(state);
+        f.admissionEvents.length = 0;
+        await expect(
+          dispatchFinancialJob(f.row, f.queue, f.admission),
+        ).rejects.toThrow("Financial job state is uncertain");
+        expect(f.admissionEvents).toEqual(["capture", "getJob", "state"]);
+        expect(f.generation()).toBe(generation);
+        expect(f.releases).toEqual([]);
+        expect(f.reservations()).toBe(1);
+        expect(f.calls()).toBe(1);
+      }
+    }
+  });
   test("an uncertain state read retains the captured admission generation", async () => {
     const f = fixture();
     await dispatchFinancialJob(f.row, f.queue, f.admission);
