@@ -308,7 +308,9 @@ describe("dashboard Docker installer release wiring", () => {
     const installer = readFileSync(
       join(root, "apps/dashboard/Dockerfile"),
       "utf8",
-    ).match(/^FROM base AS installer\r?\n([\s\S]*?)^FROM base AS runner$/m)?.[1];
+    ).match(
+      /^FROM base AS installer\r?\n([\s\S]*?)^FROM base AS runner$/m,
+    )?.[1];
     if (!installer) throw new Error("Missing dashboard installer stage");
     const commands = installer
       .replace(/\\\r?\n/g, "")
@@ -316,7 +318,9 @@ describe("dashboard Docker installer release wiring", () => {
       .filter(
         (line) =>
           line.startsWith("RUN ") &&
-          line.includes("node apps/dashboard/scripts/verify-release-source.mjs"),
+          line.includes(
+            "node apps/dashboard/scripts/verify-release-source.mjs",
+          ),
       );
     const [instruction] = commands;
     if (
