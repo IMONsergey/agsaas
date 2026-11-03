@@ -104,7 +104,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
     };
 
     // Wrap all processing in try-catch to ensure reaction cleanup on any error
-    let inboxData: { id: string } | null | undefined = null;
+    let inboxData: Awaited<ReturnType<typeof createInbox>> | null = null;
 
     try {
       // Download file from Slack
@@ -187,7 +187,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
         filePath,
         fileName,
         contentType: file.mimetype,
-        size: file.size,
+        size: fileData.byteLength,
         referenceId: await createReceiptReferenceId({
           teamId,
           platform: "slack",
@@ -214,10 +214,14 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
       });
 
       // Get signed URL for document processing (30 minutes expiration)
-      const pathForSignedUrl = requireVaultPathForTeam(
-        inboxData.filePath ?? filePath,
+      // A deduplicated inbox row owns the file reference for both processing jobs.
+      // Missing canonical storage must fail instead of using an unreferenced upload.
+      const canonicalFile = requireVaultPathForTeam(
+        inboxData.filePath ?? [],
         teamId,
-      ).normalizedPath;
+      );
+      const pathForSignedUrl = canonicalFile.normalizedPath;
+      const documentMimeType = inboxData.contentType ?? file.mimetype;
       if (pathForSignedUrl !== filePathStr) {
         const cleanup = await supabase.storage
           .from("vault")
@@ -272,7 +276,7 @@ export class SlackUploadProcessor extends BaseProcessor<SlackUploadPayload> {
           kind: "extract",
           request: {
             documentUrl: signedUrl,
-            mimetype: file.mimetype,
+            mimetype: documentMimeType,
           },
         },
         { timeoutMs: TIMEOUTS.DOCUMENT_PROCESSING },
@@ -537,8 +541,8 @@ Focus on what was purchased (e.g., "office supplies", "software subscription", "
       await triggerJob(
         "process-document",
         {
-          mimetype: file.mimetype,
-          filePath,
+          mimetype: documentMimeType,
+          filePath: canonicalFile.pathArray,
           teamId,
         },
         "documents",

@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { writeToString } from "@fast-csv/format";
 import { financialRequestHash } from "@midday/db/financial-job";
-import type { createClient } from "@midday/supabase/job";
+import type { createTeamClient } from "@midday/supabase/job";
 import { requireVaultPathForTeam } from "@midday/supabase/storage-path";
 import archiver from "archiver";
 import { TIMEOUTS, withTimeout } from "./timeout";
 
-type StorageClient = ReturnType<typeof createClient>;
+// Archive operations require the scoped Storage capability, not database query generics.
+type StorageClient = Pick<ReturnType<typeof createTeamClient>, "storage">;
 export type ArchiveFile = { name: string; data: Buffer };
 export type AssetRequest = {
   id: string;

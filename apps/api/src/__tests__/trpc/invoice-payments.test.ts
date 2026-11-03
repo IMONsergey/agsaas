@@ -31,6 +31,11 @@ const { invoicePaymentsRouter } = await import(
 );
 const createCaller = createCallerFactory(invoicePaymentsRouter);
 
+beforeEach(() => {
+  mocks.getTeamMemberRole.mockReset();
+  mocks.getTeamMemberRole.mockImplementation(async () => "owner");
+});
+
 describe("tRPC: invoicePayments.stripeStatus", () => {
   beforeEach(() => {
     mocks.getTeamById.mockReset();
@@ -110,38 +115,55 @@ describe("tRPC: invoicePayments.getConnectUrl", () => {
 });
 
 describe("tRPC: invoicePayments.disconnectStripe", () => {
+  const receipt = {
+    success: true,
+    cleanupPending: true,
+    cleanupId: "f5418c2c-7595-4a41-8daf-008482ac8016",
+  };
   beforeEach(() => {
-    mocks.getTeamById.mockReset();
-    mocks.updateTeam.mockReset();
-    mocks.getTeamById.mockImplementation(() =>
-      Promise.resolve({
-        id: "test-team-id",
-        stripeAccountId: null,
-        stripeConnectStatus: null,
-      }),
-    );
-    mocks.updateTeam.mockImplementation(() => Promise.resolve({}));
+    mocks.requestStripeDisconnect.mockReset();
+    mocks.requestStripeDisconnect.mockImplementation(async () => receipt);
+    mocks.getTeamById.mockClear();
+    mocks.updateTeam.mockClear();
   });
 
-  test("clears Stripe fields via getTeamById and updateTeamById", async () => {
+  test("returns durable cleanup receipt and binds the authenticated actor", async () => {
     const caller = createCaller(createTestContext());
-    const result = await caller.disconnectStripe();
+    expect(await caller.disconnectStripe()).toEqual(receipt);
+    expect(mocks.requestStripeDisconnect).toHaveBeenCalledWith(
+      expect.anything(),
+      { teamId: "test-team-id", actorUserId: "test-user-id" },
+    );
+    expect(mocks.getTeamById).not.toHaveBeenCalled();
+    expect(mocks.updateTeam).not.toHaveBeenCalled();
+  });
 
-    expect(result).toEqual({ success: true });
-    expect(mocks.getTeamById).toHaveBeenCalledWith(
-      expect.anything(),
-      "test-team-id",
-    );
-    expect(mocks.updateTeam).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        id: "test-team-id",
-        data: {
-          stripeAccountId: null,
-          stripeConnectStatus: null,
-        },
-      }),
-    );
+  test("preserves completed cleanup instead of inventing pending work", async () => {
+    const completed = { success: true, cleanupPending: false, cleanupId: null };
+    mocks.requestStripeDisconnect.mockImplementation(async () => completed);
+    const caller = createCaller(createTestContext());
+    expect(await caller.disconnectStripe()).toEqual(completed);
+  });
+
+  test("a member cannot create the cleanup intent", async () => {
+    mocks.getTeamMemberRole.mockImplementation(async () => "member");
+    const caller = createCaller(createTestContext());
+    await expect(caller.disconnectStripe()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(mocks.requestStripeDisconnect).not.toHaveBeenCalled();
+    expect(mocks.updateTeam).not.toHaveBeenCalled();
+  });
+
+  test("persistence failure cannot report successful disconnection or use a direct-write fallback", async () => {
+    mocks.requestStripeDisconnect.mockImplementation(async () => {
+      throw new Error("fixture cleanup persistence failure");
+    });
+    const caller = createCaller(createTestContext());
+    await expect(caller.disconnectStripe()).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+    });
+    expect(mocks.updateTeam).not.toHaveBeenCalled();
   });
 });
 
