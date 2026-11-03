@@ -33,9 +33,13 @@ function freshQueryClient() {
   });
 }
 
-const network = spyOn(globalThis, "fetch").mockImplementation(async () => {
+const rejectNetwork = () => {
   throw new Error("Unexpected network access in the Inbox page regression");
+};
+const blockedFetch: typeof fetch = Object.assign(async () => rejectNetwork(), {
+  preconnect: rejectNetwork,
 });
+const network = spyOn(globalThis, "fetch").mockImplementation(blockedFetch);
 
 // Keep the actual page, query client and URL parsers. Only transport and client
 // presentation leaves are replaced; none of the empty/error decisions live here.
