@@ -48,9 +48,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
     afterAll(async () => {
       await pool?.end();
     });
-    async function fixture(client: PoolClient) {
+    async function fixture(client: PoolClient, replayMigration = true) {
       await client.query("BEGIN");
-      await client.query(migration);
+      if (replayMigration) await client.query(migration);
       const team = randomUUID(),
         other = randomUUID(),
         connection = randomUUID(),
@@ -391,7 +391,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
         second = await pool.connect();
       let f: Fixture | undefined;
       try {
-        f = await fixture(first);
+        // The shared foundation already installed this SQL. Commit only this
+        // case's own rows; migration replay belongs to rollback-only cases.
+        f = await fixture(first, false);
         // Only this case commits its synthetic rows so a genuinely separate
         // connection can race. The isolated catalog is already approved by the gate.
         await first.query("COMMIT");
