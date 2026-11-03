@@ -61,11 +61,12 @@ passing render or production deployment before those receipts exist.
 
 ## PDF boundary
 
-PDF templates continue to use the common bounded loader and their existing
-renderer. This OG change does not establish that the PDF renderer handles
-every malformed raster safely, and the OG regressions are not a PDF decoder
-acceptance test. The existing PDF styles, fonts and own-URL tests remain in
-their separate gate.
+PDF has its own server decoding entrypoint, described in
+[pdf-logo-decoding-20261103.md](pdf-logo-decoding-20261103.md). Its source
+normalizes optional logos before the PDF renderer; the shared PDF template
+never fetches persisted logo bytes itself. The OG regressions are not a PDF
+acceptance test. Actual PDF styles, fonts, malformed rasters and own-URL
+assertions still require their separate queued gate.
 
 ## Primary API references
 

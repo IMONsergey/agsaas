@@ -173,7 +173,14 @@ export async function loadPublicLogo(
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) controller.abort();
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  // DOM and Bun readers expose different additional methods. Cleanup only needs
+  // this shared structural contract; the loop uses its own narrowed reader.
+  let reader:
+    | Pick<
+        ReadableStreamDefaultReader<Uint8Array>,
+        "read" | "cancel" | "releaseLock"
+      >
+    | undefined;
   try {
     if (controller.signal.aborted) return null;
     const response = await (options.fetcher ?? fetch)(url, {
@@ -207,11 +214,12 @@ export async function loadPublicLogo(
       (!/^\d+$/.test(declared) || Number(declared) > MAX_PUBLIC_LOGO_BYTES)
     )
       return null;
-    reader = response.body.getReader();
+    const bodyReader = response.body.getReader();
+    reader = bodyReader;
     const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await bodyReader.read();
       if (controller.signal.aborted) return null;
       if (done) break;
       total += value.byteLength;

@@ -290,7 +290,7 @@ mock.module("../../queues/documents", () => ({
     },
   },
 }));
-mock.module("@midday/invoice", () => ({
+mock.module("@midday/invoice/server", () => ({
   PdfTemplate: async () => ({}),
   renderToBuffer: async () => {
     rendered += 1;

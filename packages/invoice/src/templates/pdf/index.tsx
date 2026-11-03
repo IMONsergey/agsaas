@@ -2,7 +2,7 @@ import { getAppUrl } from "@midday/utils/envs";
 import { Document, Font, Image, Page, Text, View } from "@react-pdf/renderer";
 import QRCodeUtil from "qrcode";
 import type { Invoice } from "../../types";
-import { loadPublicLogo } from "../../utils/logo";
+import { isInlineLogo } from "../../utils/logo";
 import {
   getOwnedPdfFonts,
   OWNED_INVOICE_FONT_FAMILY,
@@ -29,8 +29,15 @@ function registerOwnedFonts() {
   return fontRegistration;
 }
 
+declare const preparedPdfLogoBrand: unique symbol;
+/** Internal compile-time handoff; the server entrypoint owns actual decoding. */
+export type PreparedPdfLogo = string & {
+  readonly [preparedPdfLogoBrand]: true;
+};
+
 type PdfTemplateOptions = {
   isReceipt?: boolean;
+  preparedLogo?: PreparedPdfLogo | null;
 };
 
 export async function PdfTemplate(
@@ -64,11 +71,14 @@ export async function PdfTemplate(
   }
 
   await registerOwnedFonts();
-  // Both renderers and their image decoders receive validated bytes, never a
-  // user-supplied URL or local filesystem path. New logo uploads are PNG.
-  const logo = await loadPublicLogo(template.logoUrl, {
-    formats: ["image/png", "image/jpeg"],
-  });
+  // Persisted URLs and undecoded bytes never reach the shared PDF renderer.
+  // Server callers prepare a bounded PNG through @midday/invoice/server.
+  const preparedLogo = options?.preparedLogo;
+  const logo =
+    isInlineLogo(preparedLogo) &&
+    preparedLogo.startsWith("data:image/png;base64,")
+      ? preparedLogo
+      : null;
 
   // Override title for receipt
   const title = isReceipt ? "Receipt" : template.title;

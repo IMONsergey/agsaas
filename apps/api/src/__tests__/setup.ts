@@ -1363,8 +1363,7 @@ mock.module("@midday/invoice/token", () => ({
   verify: mock(() => ({ id: "invoice-123", teamId: "test-team-id" })),
 }));
 
-mock.module("@midday/invoice", () => ({
-  DEFAULT_TEMPLATE: {},
+const invoicePdfRendererMocks = {
   PdfTemplate: mock(async () => ({})),
   renderToStream: mock(() =>
     Promise.resolve(
@@ -1376,7 +1375,12 @@ mock.module("@midday/invoice", () => ({
       }),
     ),
   ),
+};
+mock.module("@midday/invoice", () => ({
+  DEFAULT_TEMPLATE: {},
+  ...invoicePdfRendererMocks,
 }));
+mock.module("@midday/invoice/server", () => invoicePdfRendererMocks);
 
 // Mock @api/services/supabase
 mock.module("@api/services/supabase", () => ({

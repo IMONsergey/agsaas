@@ -6,9 +6,10 @@ import {
   expect,
   test,
 } from "bun:test";
+import { fstatSync, readFileSync, readlinkSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { PdfTemplate, renderToBuffer } from "@midday/invoice";
+import { PdfTemplate, renderToBuffer } from "@midday/invoice/server";
 import { syntheticInvoice } from "../../../../../packages/invoice/src/test/fixtures/invoice";
 import {
   documentInputBase64,
@@ -47,11 +48,61 @@ beforeEach(() => {
   logoBytes = Uint8Array.from(png);
   requests = [];
 });
+/** Bun 1.3.11 adopts an extra child stdio descriptor via net.connect({ fd }).
+ * This test exception is restricted to that internal document-child call site
+ * and an anonymous Linux IPC descriptor. It never opens a network/path socket.
+ */
+function isDocumentChildStdioConnect(args: readonly unknown[]): boolean {
+  if (process.platform !== "linux" || args.length !== 1) return false;
+  const normalized = args[0];
+  if (!Array.isArray(normalized) || normalized.length !== 2) return false;
+  const [options, listener] = normalized;
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Object.keys(options).length !== 1 ||
+    !Object.hasOwn(options, "fd") ||
+    (listener !== null && listener !== undefined)
+  )
+    return false;
+  const fd = (options as { fd: unknown }).fd;
+  if (typeof fd !== "number" || !Number.isSafeInteger(fd) || fd < 3)
+    return false;
+  const stack = new Error().stack ?? "";
+  if (
+    !/#(?:createStdioObject|getBunSpawnIo) \(node:child_process:/.test(stack) ||
+    !stack.includes("runDocumentTask") ||
+    !stack.includes("/document-isolation.ts:")
+  )
+    return false;
+  try {
+    const descriptor = fstatSync(fd);
+    const target = readlinkSync(`/proc/self/fd/${fd}`);
+    if (descriptor.isFIFO() && /^pipe:\[\d+\]$/.test(target)) return true;
+    const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1];
+    if (!descriptor.isSocket() || !inode) return false;
+    return readFileSync("/proc/self/net/unix", "utf8")
+      .split("\n")
+      .slice(1)
+      .some((line) => {
+        const columns = line.trim().split(/\s+/);
+        // Connected AF_UNIX stream with no pathname (a private socket pair).
+        return (
+          columns.length === 7 &&
+          columns[4] === "0001" &&
+          columns[5] === "03" &&
+          columns[6] === inode
+        );
+      });
+  } catch {
+    return false;
+  }
+}
 beforeAll(() => {
   process.env.DASHBOARD_URL = "https://dashboard.agsaas.example.test";
   process.env.NEXT_PUBLIC_SUPABASE_URL = origin;
   globalThis.fetch = Object.assign(
-    async (input: RequestInfo | URL) => {
+    async (input: Parameters<typeof globalThis.fetch>[0]) => {
       const url = input instanceof Request ? input.url : String(input);
       requests.push(url);
       if (url !== logo) throw new Error("External document network forbidden");
@@ -61,9 +112,12 @@ beforeAll(() => {
     },
     { preconnect: () => {} },
   ) as typeof fetch;
-  Socket.prototype.connect = (() => {
+  Socket.prototype.connect = function (this: Socket, ...args: unknown[]) {
+    if (isDocumentChildStdioConnect(args)) {
+      return Reflect.apply(priorConnect, this, args);
+    }
     throw new Error("External document socket forbidden");
-  }) as typeof Socket.prototype.connect;
+  } as typeof Socket.prototype.connect;
 });
 afterAll(() => {
   globalThis.fetch = priorFetch;
@@ -74,6 +128,22 @@ afterAll(() => {
   }
 });
 describe("actual offline invoice PDF", () => {
+  test("the offline fence rejects TCP, path sockets and caller-supplied descriptors", () => {
+    for (const args of [
+      [{ host: "127.0.0.1", port: 9 }],
+      [{ path: "/tmp/agsaas-untrusted-socket" }],
+      [[{ fd: 999999 }, null]],
+    ]) {
+      const socket = new Socket();
+      try {
+        expect(() => Reflect.apply(socket.connect, socket, args)).toThrow(
+          "External document socket forbidden",
+        );
+      } finally {
+        socket.destroy();
+      }
+    }
+  });
   test.each([
     false,
     true,
@@ -194,6 +264,23 @@ describe("actual offline invoice PDF", () => {
     );
     expect(text).toContain("OWN-CORRUPT-LOGO");
     expect(requests).toEqual([logo]);
+  });
+  test("the shared template omits a persisted logo unless the server prepares it", async () => {
+    const { PdfTemplate: SharedPdfTemplate } = await import("@midday/invoice");
+    logoBytes = Uint8Array.from(brokenIdatPng);
+    const buffer = await renderToBuffer(
+      await SharedPdfTemplate({
+        ...syntheticInvoice,
+        template: {
+          ...syntheticInvoice.template,
+          includeQr: false,
+          logoUrl: logo,
+        },
+      }),
+    );
+    expect(buffer.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(requests).toEqual([]);
+    expect(buffer.toString("latin1")).not.toContain("/Subtype /Image");
   });
   test.each([
     "file:///etc/hostname",

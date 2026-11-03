@@ -7,7 +7,7 @@ import {
   updateInvoice,
 } from "@midday/db/queries";
 import { ensureFinancialJobDispatch } from "@midday/db/queries/financial-job-dispatches";
-import { PdfTemplate, renderToBuffer } from "@midday/invoice";
+import { PdfTemplate, renderToBuffer } from "@midday/invoice/server";
 import { reserveQueuedJob } from "@midday/job-client/resource-admission";
 import { createTeamClient } from "@midday/supabase/job";
 import { validateVaultKey } from "@midday/supabase/storage-path";

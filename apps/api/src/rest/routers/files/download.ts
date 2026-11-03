@@ -7,7 +7,7 @@ import {
   getInvoiceDocumentById,
   getPublishedInvoiceById,
 } from "@midday/db/queries";
-import { PdfTemplate, renderToStream } from "@midday/invoice";
+import { PdfTemplate, renderToStream } from "@midday/invoice/server";
 import { verify } from "@midday/invoice/token";
 import { download } from "@midday/supabase/storage";
 import { HTTPException } from "hono/http-exception";

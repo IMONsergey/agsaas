@@ -31,8 +31,9 @@ import {
   searchInvoiceNumber,
   updateInvoiceWithIntent as updateInvoice,
 } from "@midday/db/queries";
-import { DEFAULT_TEMPLATE, PdfTemplate, renderToStream } from "@midday/invoice";
+import { DEFAULT_TEMPLATE } from "@midday/invoice";
 import { calculateTotal } from "@midday/invoice/calculate";
+import { PdfTemplate, renderToStream } from "@midday/invoice/server";
 import { transformCustomerToContent } from "@midday/invoice/utils";
 import { triggerJob } from "@midday/job-client";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
