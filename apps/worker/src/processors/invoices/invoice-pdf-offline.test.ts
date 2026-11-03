@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { createHash } from "node:crypto";
 import { fstatSync, readFileSync, readlinkSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
@@ -104,6 +105,25 @@ beforeAll(() => {
   globalThis.fetch = Object.assign(
     async (input: Parameters<typeof globalThis.fetch>[0]) => {
       const url = input instanceof Request ? input.url : String(input);
+      // Yoga loads its bundled WASM through an inline data URL. Return only the
+      // reviewed locked bytes directly; no fetch or socket is opened here.
+      const wasmPrefix = "data:application/octet-stream;base64,";
+      if (
+        url.startsWith(wasmPrefix) &&
+        url.length === wasmPrefix.length + 95648
+      ) {
+        const encoded = url.slice(wasmPrefix.length);
+        const bytes = Buffer.from(encoded, "base64");
+        if (
+          bytes.toString("base64") === encoded &&
+          createHash("sha256").update(bytes).digest("hex") ===
+            "7ba9c9483c8c38a468e9aef4a95ed72fad8a43594be8e5123eb3bdb6479edf5b"
+        ) {
+          return new Response(bytes, {
+            headers: { "content-type": "application/wasm" },
+          });
+        }
+      }
       requests.push(url);
       if (url !== logo) throw new Error("External document network forbidden");
       return new Response(logoBytes, {
@@ -240,7 +260,7 @@ describe("actual offline invoice PDF", () => {
   });
   test.each(
     malformedPngs,
-  )("keeps the actual invoice readable when its own optional logo is %s", async (_kind, bytes) => {
+  )("keeps the actual invoice readable when its own optional logo is %s", async (kind, bytes) => {
     logoBytes = Uint8Array.from(bytes);
     const buffer = await renderToBuffer(
       await PdfTemplate({
@@ -254,6 +274,12 @@ describe("actual offline invoice PDF", () => {
       }),
     );
     expect(buffer.subarray(0, 5).toString()).toBe("%PDF-");
+    // Keep the actual document available even if extraction finds a defect.
+    if (process.env.AGSAAS_RENDER_ARTIFACT_DIR)
+      await Bun.write(
+        join(process.env.AGSAAS_RENDER_ARTIFACT_DIR, `own-invoice-${kind}.pdf`),
+        buffer,
+      );
     const text = await runDocumentTask(
       {
         kind: "parse",
