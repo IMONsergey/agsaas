@@ -281,6 +281,8 @@ export async function getJobStatus(
   compositeJobId: string,
   options?: {
     teamId?: string;
+    /** Restrict scoped tool polling before reading progress or return values. */
+    allowedJobNames?: readonly string[];
   },
 ): Promise<JobStatusResponse> {
   const { queueName, jobId } = decodeJobId(compositeJobId);
@@ -324,6 +326,10 @@ export async function getJobStatus(
       });
       throw new Error("Job not found or access denied");
     }
+  }
+
+  if (options?.allowedJobNames && !options.allowedJobNames.includes(job.name)) {
+    throw new Error("Job not found or access denied");
   }
 
   const state = await job.getState();

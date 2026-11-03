@@ -99,7 +99,8 @@
     "./queries/hosted-bank-consents": "./src/queries/hosted-bank-consents.ts",
     "./queries/inbox-receipts": "./src/queries/inbox-receipts.ts",
     "./queries/inbox-deletion-receipts": "./src/queries/inbox-deletion-receipts.ts",
-    "./export-archive-receipt": "./src/export-archive-receipt.ts"
+    "./export-archive-receipt": "./src/export-archive-receipt.ts",
+    "./queries/export-file-access": "./src/queries/export-file-access.ts"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",

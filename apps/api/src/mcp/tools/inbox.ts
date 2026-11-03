@@ -134,7 +134,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
           : null;
 
         const fileUrl = storagePath
-          ? await getVaultSignedUrl(storagePath)
+          ? await getVaultSignedUrl(ctx, storagePath)
           : null;
 
         const clean = sanitize(mcpInboxDetailSchema, { ...result, fileUrl });
@@ -149,6 +149,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
         if (includeFile && storagePath && fileUrl && filename) {
           try {
             const resource = await downloadVaultFile(
+              ctx,
               storagePath,
               fileUrl,
               getMimeType(filename),

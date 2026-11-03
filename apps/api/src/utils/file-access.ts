@@ -9,7 +9,12 @@ import { MfaPolicyError, requireSessionMfa } from "./mfa";
 import { admitFileRequest } from "./resource-admission";
 import type { Scope } from "./scopes";
 
-export type FileAccess = { userId: string; teamId: string };
+export type FileAccess = {
+  userId: string;
+  teamId: string;
+  interactive: boolean;
+  scopes: readonly Scope[];
+};
 
 /**
  * Dashboard img/download URLs use a short-lived, user-bound key. API/OAuth
@@ -37,7 +42,12 @@ export async function requireFileAccess(
       });
     }
     await admitFileRequest(c, { userId: session.user.id, teamId });
-    return { userId: session.user.id, teamId };
+    return {
+      userId: session.user.id,
+      teamId,
+      interactive: c.get("authType") === "session" && !!session.sessionId,
+      scopes,
+    };
   }
 
   const identity = await verifyFileKey(fk);
@@ -74,5 +84,10 @@ export async function requireFileAccess(
     userId: identity.userId,
     teamId: identity.teamId,
   });
-  return { userId: identity.userId, teamId: identity.teamId };
+  return {
+    userId: identity.userId,
+    teamId: identity.teamId,
+    interactive: true,
+    scopes: [],
+  };
 }

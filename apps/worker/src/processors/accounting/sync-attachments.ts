@@ -15,6 +15,7 @@ import {
   updateSyncedAttachmentMapping,
 } from "@midday/db/queries";
 import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { AccountingAttachmentSyncPayload } from "../../schemas/accounting";
 import { AccountingProcessorBase, type AccountingProviderId } from "./base";
@@ -200,6 +201,7 @@ export class SyncAttachmentsProcessor extends AccountingProcessorBase<Accounting
         async (attachment) => {
           return uploadAttachment(
             attachment,
+            teamId,
             supabase,
             provider,
             orgId,
@@ -368,6 +370,7 @@ export class SyncAttachmentsProcessor extends AccountingProcessorBase<Accounting
       path: string[] | null;
       type: string | null;
     },
+    teamId: string,
     supabase: ReturnType<typeof createTeamClient>,
     provider: AccountingProvider,
     orgId: string,
@@ -394,10 +397,31 @@ export class SyncAttachmentsProcessor extends AccountingProcessorBase<Accounting
       };
     }
 
-    // Download file from storage
-    const filePath = Array.isArray(attachment.path)
-      ? attachment.path.join("/")
-      : attachment.path;
+    // The caller-controlled attachment reference cannot turn a full export
+    // into an accounting upload. Enforce this before any Storage byte read;
+    // MIME/name metadata are not authority for a reserved archive.
+    let filePath: string;
+    try {
+      const source = requireVaultPathForTeam(attachment.path, teamId);
+      if (source.pathArray[1] === "exports") {
+        return {
+          success: false,
+          attachmentId: attachment.id,
+          providerAttachmentId: null,
+          error: "Export archives cannot be synced as transaction attachments",
+          errorCode: "ATTACHMENT_RESERVED_EXPORT",
+        };
+      }
+      filePath = source.normalizedPath;
+    } catch {
+      return {
+        success: false,
+        attachmentId: attachment.id,
+        providerAttachmentId: null,
+        error: "Invalid attachment source",
+        errorCode: "ATTACHMENT_INVALID_SOURCE",
+      };
+    }
 
     const { data: fileData, error: downloadError } = await supabase.storage
       .from("vault")

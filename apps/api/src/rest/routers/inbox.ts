@@ -13,6 +13,10 @@ import {
 } from "@api/schemas/inbox";
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
+import {
+  assertVaultFileReadAccess,
+  vaultReadPrincipalFromRequest,
+} from "@api/utils/vault-file-access";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   deleteInbox,
@@ -185,11 +189,15 @@ app.openapi(
       return c.json({ error: "Attachment file path not available" }, 400);
     }
 
-    // Create admin supabase client
+    const filePath = await assertVaultFileReadAccess(
+      db,
+      vaultReadPrincipalFromRequest(c),
+      inboxItem.filePath.join("/"),
+    );
+    // Create admin supabase client only after file authority is verified.
     const supabase = await createAdminClient();
 
     // Generate the pre-signed URL with 60-second expiration
-    const filePath = inboxItem.filePath.join("/");
     const expireIn = 60; // 60 seconds
 
     const { data, error } = await signedUrl(supabase, {

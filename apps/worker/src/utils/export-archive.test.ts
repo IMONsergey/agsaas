@@ -171,6 +171,47 @@ describe("immutable export archives and completeness", () => {
     expect(f.reads()).toBe(0);
   });
 
+  for (const reservedPath of [
+    [teamId, "exports", "team-export-2026-11-03.zip"],
+    [teamId, "exports", "a".repeat(64), `${"b".repeat(64)}.zip`],
+  ]) {
+    test(`cannot embed reserved export bytes from ${reservedPath.slice(1).join("/")}`, async () => {
+      const f = storage();
+      f.objects.set(
+        reservedPath.join("/"),
+        Buffer.from("private full-team archive"),
+      );
+      const result = await collectExportAssets(f.client, teamId, [
+        {
+          id: "reserved",
+          transactionId: "tx-reserved",
+          path: reservedPath,
+          name: "attachments/disguised-receipt.zip",
+          contentType: "application/zip",
+        },
+      ]);
+      expect(f.reads()).toBe(0);
+      expect(result.files).toEqual([]);
+      expect(result.receipts).toEqual([
+        {
+          id: "reserved",
+          transactionId: "tx-reserved",
+          source: reservedPath.join("/"),
+          name: "attachments/disguised-receipt.zip",
+          status: "invalid",
+          reason: "reserved_export_artifact",
+        },
+      ]);
+      expect(
+        exportOutcome(["tx-reserved"], ["tx-reserved"], result.receipts),
+      ).toMatchObject({
+        status: "partial",
+        missingFiles: 1,
+        completeIds: [],
+      });
+    });
+  }
+
   test("manifest hashes identify actual bytes and archive names cannot collide", async () => {
     const files = [{ name: "data.json", data: Buffer.from("[]") }];
     const manifest = buildExportManifest({

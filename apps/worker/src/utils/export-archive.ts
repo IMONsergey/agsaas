@@ -121,6 +121,14 @@ export async function collectExportAssets(
       receipts.push({ ...receipt, reason: "missing_source_path" });
       continue;
     }
+    if (path.split("/")[1] === "exports") {
+      receipts.push({
+        ...receipt,
+        status: "invalid",
+        reason: "reserved_export_artifact",
+      });
+      continue;
+    }
     try {
       const response = await withTimeout(
         () => client.storage.from("vault").download(path),

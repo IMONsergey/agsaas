@@ -11,6 +11,11 @@ import {
 } from "@api/schemas/documents";
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
+import {
+  assertVaultFileReadAccess,
+  filterReadableVaultDocuments,
+  vaultReadPrincipalFromRequest,
+} from "@api/utils/vault-file-access";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 
@@ -64,7 +69,14 @@ app.openapi(
       ...filter,
     });
 
-    return c.json(validateResponse(result, documentsResponseSchema));
+    const data = await filterReadableVaultDocuments(
+      db,
+      vaultReadPrincipalFromRequest(c),
+      result.data,
+    );
+    return c.json(
+      validateResponse({ ...result, data }, documentsResponseSchema),
+    );
   },
 );
 
@@ -103,6 +115,13 @@ app.openapi(
       id,
     });
 
+    if (!result)
+      throw new HTTPException(404, { message: "Document not found" });
+    await assertVaultFileReadAccess(
+      db,
+      vaultReadPrincipalFromRequest(c),
+      result.pathTokens?.join("/") ?? "",
+    );
     return c.json(validateResponse(result, documentResponseSchema));
   },
 );
@@ -179,11 +198,15 @@ app.openapi(
         return c.json({ error: "Document file path not available" }, 400);
       }
 
-      // Create admin supabase client
+      const filePath = await assertVaultFileReadAccess(
+        db,
+        vaultReadPrincipalFromRequest(c),
+        document.pathTokens.join("/"),
+      );
+      // Create admin supabase client only after file authority is verified.
       const supabase = await createAdminClient();
 
       // Generate the pre-signed URL with 60-second expiration
-      const filePath = document.pathTokens.join("/");
       const expireIn = 60; // 60 seconds
 
       const { data, error } = await signedUrl(supabase, {
@@ -212,7 +235,8 @@ app.openapi(
       };
 
       return c.json(validateResponse(result, preSignedUrlResponseSchema), 200);
-    } catch (_error) {
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
       return c.json({ error: "Failed to generate pre-signed URL" }, 500);
     }
   },
