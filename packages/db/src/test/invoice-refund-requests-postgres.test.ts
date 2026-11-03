@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { InvoiceFinancialStateError } from "@midday/invoice/calculate";
 import { and, eq, type SQL, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import type { DurableRefundProvider } from "../../../../apps/api/src/services/invoice-refund-engine";
@@ -373,14 +374,17 @@ describe.skipIf(!isTestDatabaseAvailable())(
       await expect(reserveInvoicePayment(db, scope())).rejects.toMatchObject({
         status: 400,
       });
-      await expect(
-        updateInvoiceWithIntent(db, {
-          id: f.own.invoiceId,
-          teamId: f.own.teamId,
-          userId: f.own.userId,
-          status: "paid",
-        }),
-      ).rejects.toMatchObject({ status: 409 });
+      // The command exposes a domain error. REST/tRPC map it to 409/CONFLICT.
+      const markPaid = updateInvoiceWithIntent(db, {
+        id: f.own.invoiceId,
+        teamId: f.own.teamId,
+        userId: f.own.userId,
+        status: "paid",
+      });
+      await expect(markPaid).rejects.toBeInstanceOf(InvoiceFinancialStateError);
+      await expect(markPaid).rejects.toMatchObject({
+        message: "Existing settlement history requires reconciliation",
+      });
       expect(
         await reconcileInvoiceSettlement(db, { ...ownerScope(), apply: true }),
       ).toMatchObject({ state: "requires_evidence", changed: false });
