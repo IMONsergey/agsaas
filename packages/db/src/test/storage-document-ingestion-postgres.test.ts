@@ -413,6 +413,29 @@ describe.skipIf(!isTestDatabaseAvailable())(
           "avatars",
         );
         expect(await doc(client, avatar.id)).toBeUndefined();
+        // This suite replays only 090002: it preserves any newer BEFORE guard.
+        // Choose the exact expected rejection from the installed contract before
+        // attempting the write; never infer it from the error under test.
+        const [guards] = (
+          await client.query<{
+            receipt_scope: boolean;
+            storage_guard: boolean;
+          }>(`
+            SELECT
+              to_regprocedure('private.lock_inbox_deletion_scope(uuid,text,text,boolean,boolean)') IS NOT NULL AS receipt_scope,
+              to_regprocedure('private.guard_live_storage_object()') IS NOT NULL AS storage_guard
+          `)
+        ).rows;
+        if (!guards) throw new Error("Missing Storage guard inventory");
+        const unknownTeamError = guards.receipt_scope
+          ? { code: "23514", message: "Receipt team is no longer active" }
+          : guards.storage_guard
+            ? { code: "23514", message: "Storage team is no longer active" }
+            : {
+                code: "P0001",
+                message:
+                  "Vault objects require a canonical existing team namespace",
+              };
         for (const invalid of [
           {
             name: `${f.team}/../foreign.txt`,
@@ -428,8 +451,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
           },
           {
             name: `${randomUUID()}/unknown.txt`,
-            code: "23514",
-            message: "Storage team is no longer active",
+            ...unknownTeamError,
           },
         ]) {
           const invalidId = randomUUID();
@@ -449,6 +471,15 @@ describe.skipIf(!isTestDatabaseAvailable())(
               await client.query("SELECT id FROM storage.objects WHERE id=$1", [
                 invalidId,
               ])
+            ).rowCount,
+          ).toBe(0);
+          expect(await doc(client, invalidId)).toBeUndefined();
+          expect(
+            (
+              await client.query(
+                "SELECT object_id FROM private.storage_document_projection WHERE object_id=$1",
+                [invalidId],
+              )
             ).rowCount,
           ).toBe(0);
         }
