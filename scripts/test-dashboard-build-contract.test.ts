@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assertBuildInputChangesHash,
   browserAssetManifest,
@@ -10,6 +11,7 @@ import {
   hashedBuildInputs,
   inspectDashboardAssetPreparation,
   inspectDashboardBuildReport,
+  publicBuildInputs,
   verifyPreparedDashboardBrowserAssets,
 } from "./test-dashboard-build-contract";
 
@@ -27,6 +29,8 @@ function fixture() {
           "next.config.ts": "hash",
           "src/app/[locale]/layout.tsx": "hash",
           "scripts/prepare-browser-assets.mjs": "hash",
+          "scripts/verify-release-source.mjs": "hash",
+          "src/app/[locale]/(public)/source/page.tsx": "hash",
           [browserAssetManifest]: "hash",
         },
         resolvedTaskDefinition: {
@@ -36,7 +40,7 @@ function fixture() {
         },
         environmentVariables: {
           configured: hashedBuildInputs.map((name) => `${name}=hash`),
-          inferred: ["NEXT_PUBLIC_API_URL=hash"],
+          inferred: publicBuildInputs.map((name) => `${name}=hash`),
           passthrough: [] as string[],
         },
       },
@@ -73,6 +77,8 @@ describe("dashboard build contract report", () => {
   });
   test.each([
     "scripts/prepare-browser-assets.mjs",
+    "scripts/verify-release-source.mjs",
+    "src/app/[locale]/(public)/source/page.tsx",
     browserAssetManifest,
   ])("requires the browser asset source input %s to be hashed", (name) => {
     const report = fixture();
@@ -102,11 +108,20 @@ describe("dashboard build contract report", () => {
       "strict environment mode",
     );
   });
-  test("rejects missing public build input", () => {
+  test.each(
+    publicBuildInputs,
+  )("rejects missing or passthrough-only public input %s", (name) => {
     const report = fixture();
-    report.tasks[0]!.environmentVariables.inferred = [];
+    const variables = report.tasks[0]!.environmentVariables;
+    variables.inferred = variables.inferred.filter(
+      (entry) => !entry.startsWith(`${name}=`),
+    );
     expect(() => inspectDashboardBuildReport(JSON.stringify(report))).toThrow(
-      "NEXT_PUBLIC_API_URL",
+      name,
+    );
+    variables.passthrough.push(`${name}=do-not-print`);
+    expect(() => inspectDashboardBuildReport(JSON.stringify(report))).toThrow(
+      name,
     );
   });
   test.each([
@@ -170,6 +185,7 @@ describe("dashboard build contract report", () => {
       DASHBOARD_URL: "secret-must-not-appear",
       NEXT_PUBLIC_URL: "secret-must-not-appear",
       NEXT_PUBLIC_API_URL: "secret-must-not-appear",
+      NEXT_PUBLIC_RELEASE_SHA: "secret-must-not-appear",
     });
     expect(env.PATH).toBe("/usr/bin");
     expect(env.HOME).toBe("/tmp");
@@ -184,6 +200,65 @@ describe("dashboard build contract report", () => {
     ]) {
       expect(env[name]).toBeUndefined();
     }
+  });
+});
+
+describe("dashboard release source image guard", () => {
+  const exact = "a".repeat(40);
+  const run = (git: string | undefined, published: string | undefined) =>
+    Bun.spawnSync({
+      cmd: [
+        "node",
+        fileURLToPath(
+          new URL(
+            "../apps/dashboard/scripts/verify-release-source.mjs",
+            import.meta.url,
+          ),
+        ),
+      ],
+      env: {
+        PATH: process.env.PATH ?? "",
+        GIT_COMMIT_SHA: git,
+        NEXT_PUBLIC_RELEASE_SHA: published,
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 3_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 16 * 1024,
+    });
+
+  test("accepts the exact matching release without exposing its environment", () => {
+    const result = run(exact, exact);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe("");
+  });
+
+  test.each([
+    { name: "missing both revisions", git: undefined, published: undefined },
+    { name: "missing public revision", git: exact, published: undefined },
+    { name: "missing build revision", git: undefined, published: exact },
+    { name: "mismatched revision", git: exact, published: "b".repeat(40) },
+    { name: "short revision", git: "a".repeat(39), published: "a".repeat(39) },
+    {
+      name: "non-hex revision",
+      git: "z".repeat(40),
+      published: "z".repeat(40),
+    },
+    {
+      name: "uppercase revision",
+      git: "A".repeat(40),
+      published: "A".repeat(40),
+    },
+  ])("rejects $name before building an image", ({ git, published }) => {
+    const result = run(git, published);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe(
+      "Exact matching release SHA required\n",
+    );
   });
 });
 

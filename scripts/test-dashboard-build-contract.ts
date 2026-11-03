@@ -12,10 +12,15 @@ export const hashedBuildInputs = [
   "NEXT_PUBLIC_URL",
 ] as const;
 
-const publicBuildInput = "NEXT_PUBLIC_API_URL";
+export const publicBuildInputs = [
+  "NEXT_PUBLIC_API_URL",
+  "NEXT_PUBLIC_RELEASE_SHA",
+] as const;
 const undeclaredInput = "DASHBOARD_BUILD_CONTRACT_UNDECLARED";
 export const browserAssetManifest = "src/utils/pdf-public-assets.json";
-type BuildInput = (typeof hashedBuildInputs)[number] | typeof publicBuildInput;
+type BuildInput =
+  | (typeof hashedBuildInputs)[number]
+  | (typeof publicBuildInputs)[number];
 type Environment = Record<string, string | undefined>;
 type JsonObject = Record<string, unknown>;
 
@@ -45,13 +50,14 @@ export function buildContractEnvironment(source: Environment): Environment {
     TURBO_TELEMETRY_DISABLED: "1",
     NEXT_TELEMETRY_DISABLED: "1",
     DO_NOT_TRACK: "1",
-    GIT_COMMIT_SHA: "dashboard-contract-baseline",
+    GIT_COMMIT_SHA: "a".repeat(40),
     SENTRY_RELEASE: "dashboard-contract-baseline",
     // Synthetic input for a dry run only. No application is built with this key.
     NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
     DASHBOARD_URL: "https://dashboard-contract.invalid",
     NEXT_PUBLIC_URL: "https://dashboard-contract.invalid",
     NEXT_PUBLIC_API_URL: "https://dashboard-contract.invalid",
+    NEXT_PUBLIC_RELEASE_SHA: "a".repeat(40),
     [undeclaredInput]: "must-not-reach-the-build",
   };
   for (const key of [
@@ -115,6 +121,8 @@ export function inspectDashboardBuildReport(raw: string): { hash: string } {
       "next.config.ts",
       "src/app/[locale]/layout.tsx",
       "scripts/prepare-browser-assets.mjs",
+      "scripts/verify-release-source.mjs",
+      "src/app/[locale]/(public)/source/page.tsx",
       browserAssetManifest,
     ].some((name) => typeof inputs?.[name] !== "string")
   ) {
@@ -141,10 +149,10 @@ export function inspectDashboardBuildReport(raw: string): { hash: string } {
       );
     }
   }
-  if (!configured.has(publicBuildInput) && !inferred.has(publicBuildInput)) {
-    throw new BuildContractError(
-      `${publicBuildInput} must be forwarded and hashed.`,
-    );
+  for (const name of publicBuildInputs) {
+    if (!configured.has(name) && !inferred.has(name)) {
+      throw new BuildContractError(`${name} must be forwarded and hashed.`);
+    }
   }
   if (
     [
@@ -410,14 +418,15 @@ export function verifyDashboardBuildContract(root: string) {
   };
   const baseline = run(baselineEnv);
   const variants: Record<BuildInput, string> = {
-    GIT_COMMIT_SHA: "dashboard-contract-changed",
+    GIT_COMMIT_SHA: "b".repeat(40),
     SENTRY_RELEASE: "dashboard-contract-changed",
     NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: Buffer.alloc(32, 2).toString("base64"),
     DASHBOARD_URL: "https://dashboard-server-changed.invalid",
     NEXT_PUBLIC_URL: "https://dashboard-public-changed.invalid",
     NEXT_PUBLIC_API_URL: "https://dashboard-contract-changed.invalid",
+    NEXT_PUBLIC_RELEASE_SHA: "b".repeat(40),
   };
-  for (const name of [...hashedBuildInputs, publicBuildInput] as const) {
+  for (const name of [...hashedBuildInputs, ...publicBuildInputs] as const) {
     assertBuildInputChangesHash(
       name,
       baseline,
@@ -438,7 +447,7 @@ if (import.meta.main) {
       dirname(dirname(fileURLToPath(import.meta.url))),
     );
     console.log(
-      "Dashboard build contract passed: strict environment, source/output/dependency contracts, six cache-invalidating inputs (eight dry runs), and verified offline PDF.js asset preparation; no application build or cache restore was executed.",
+      "Dashboard build contract passed: strict environment, source/output/dependency contracts, seven cache-invalidating inputs (nine dry runs), and verified offline PDF.js asset preparation; no application build or cache restore was executed.",
     );
     console.log(
       JSON.stringify({ kind: "agsaas-dashboard-asset-contract-v1", ...assets }),

@@ -39,12 +39,14 @@ RUN bun install --frozen-lockfile
 # Copy full source from pruned workspace
 COPY --from=builder /app/out/full/ .
 
-# Build-time NEXT_PUBLIC_ env vars (Railway passes these as build args)
+# Build-time NEXT_PUBLIC_ env vars (must match this installation's release)
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_AUTH_COOKIE_NAME
 ARG NEXT_PUBLIC_SUPABASE_ID
 ARG NEXT_PUBLIC_URL
+ARG NEXT_PUBLIC_RELEASE_SHA
+ENV NEXT_PUBLIC_RELEASE_SHA=$NEXT_PUBLIC_RELEASE_SHA
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_OPENPANEL_CLIENT_ID
 ARG NEXT_PUBLIC_SENTRY_DSN
@@ -79,6 +81,7 @@ ENV NODE_ENV=production
 RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
     export GIT_COMMIT_SHA; \
     export SENTRY_RELEASE="$GIT_COMMIT_SHA"; \
+    node apps/dashboard/scripts/verify-release-source.mjs && \
     bunx turbo run build --filter=@midday/dashboard --only
 
 # Runner stage - native Node plus Bun health/test tools, no turbo
