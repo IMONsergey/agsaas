@@ -1,0 +1,135 @@
+{
+  "kind": "agsaas-synthetic-foundation-source-lock-v1",
+  "reviewedFromCommit": "9ef3bbcebc90325337a46c0ff5dc9f0fd93c2123",
+  "evidence": "Application SQL coverage only; not a canonical Supabase, Auth, Storage or PostgreSQL 17 installation",
+  "files": [
+    {
+      "path": "packages/db/self-hosted/supabase/migrations/20261031154237_application_baseline.sql",
+      "sha256": "e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261031181308_account_deletion_state.sql",
+      "sha256": "f708a9126917dfbf946f8c886ddc091eb1a6c966c84d7e8f0e0a0b41eebfaf45"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101042940_preserve_team_financial_history.sql",
+      "sha256": "7416a7ff916cea34fa600deed4c58ea08926b0727b6cf13d3046057a35910ff9"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101060329_preserve_team_oauth_applications.sql",
+      "sha256": "ded00559e7fc3279fd74f3c8f22da89958fc05a0bfc1499fbdbea80035c09306"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101060354_reserve_invoice_payments.sql",
+      "sha256": "dd6ee002f24aabbde32f28b4566473a44625808949166639763db62e5cf4ea2e"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101060507_durable_invoice_email_delivery.sql",
+      "sha256": "fbb45aec30733b9325c4c10e820fa1585bb31020da1d5a6af948e2a37fd31eaa"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101080254_durable_team_invitation_delivery.sql",
+      "sha256": "1dc26a8c4e2f0812c0451aa0a765319d588cd27dc7c4d27277da951c9532eaf4"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101111052_generic_notification_dispatch.sql",
+      "sha256": "53df86009e67490239ea29894067082ab638399ae3dbcf2daa4d5a9759a4b616"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101111923_inbox_oauth_intents.sql",
+      "sha256": "90b386c91bc92e16467a830a8bb574859c37cca6d23b1f473ce9bca11e81ab46"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101112557_invoice_documents_and_tracker_integrity.sql",
+      "sha256": "6dde817d06d84536c6a13aa2082563c91245c225cac1e3303e8707df187820fd"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101112922_financial_job_handoff_and_tracker_allocations.sql",
+      "sha256": "7f0a3647d865efc9b170edc7cf9c39e999137c113c706571de82eab175772cf4"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101114309_bank_connection_cleanup.sql",
+      "sha256": "c3d551e3b663dce714e9d71152ecb0def8e484f8401a5dd11d4c113139db0937"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261101114925_billing_subscription_event_order.sql",
+      "sha256": "a56a62af6178b04b63fad03e2d6542a82aa940ca85e1a1ea924c42a0900b0818"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103060000_invoice_commands.sql",
+      "sha256": "7691838dfd8a1a2e5eeb7e5ca0160fb98750f02e020c7e565c24fb8e17f42f85"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103061000_export_snapshots.sql",
+      "sha256": "220370afbaaf37626c68ec8456162f717dc5301e709b52b255dd4f814e4bba1e"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103062000_shared_report_snapshots.sql",
+      "sha256": "45dd3d2eec631730606313e9b6983b9e827f8983735c6c08f7412fb75f0b9e19"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103064000_customer_enrichment_operations.sql",
+      "sha256": "f18880264b267ceba2cb1f5abd75ba0ae2aa4afcc1e01c7a255ba83ab83f7bb5"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103065000_invoice_ledger.sql",
+      "sha256": "72923ea6c554e28c654d381dc1d8d11f564e62a6ef123962819a45657a33ffcc"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103070000_support_requests.sql",
+      "sha256": "1addd73e86ebeef71c0f4a997029a1201e6380db248709e1a902a3d7353c11bb"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103071000_auth_session_revocation.sql",
+      "sha256": "229104087d1c5e063b762f99f6b2cad491f7ca7dc1cb509e28e77c0759ac1970"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103090001_mfa_assurance.sql",
+      "sha256": "39cfde9d79801e3f8ac7427cc09893afca2ff17ef61acae283bdce2c5a47b025"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103090002_storage_document_ingestion.sql",
+      "sha256": "b2ef8d412d9c09b0959d6c3ae55344afaf4bad26b61d68680211a8ff09c7277b"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103091000_bank_browser_reconnect_boundary.sql",
+      "sha256": "6df08d817bf0e91b002f13cde62d8d26b5955b047325ae505f9ece077b77b11b"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103092000_integration_oauth_intents.sql",
+      "sha256": "3f47cbd89887da655d9b72e90bb0f4b2065433e2bbe1e1be7ead349294733447"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103093000_assistant_action_approvals.sql",
+      "sha256": "9446074eca189a3d37633be0688d8312eb38183cb643b97b3c22f52bf0468f3b"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103093100_storage_bucket_access.sql",
+      "sha256": "4d4d2702348df17c2fab903cfa1fd8c99d1aea9948be4bb3304b8b860348cd03"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103094000_security_audit_events.sql",
+      "sha256": "c639bc6f0b44ee8a8ab7af1e9f97bbf4d75373e8ff0cd2c0469868cccda5f385"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103095000_resource_cleanups.sql",
+      "sha256": "d86929cf0709fa2eb1e333d5ddfd6442523ccb28ecb4dd527ba8286414150376"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103100000_resource_admission.sql",
+      "sha256": "6f9b1af25bdd6012cca54d9bea15d2be144c172fac0cd729a50876cbe48b1502"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103101000_team_entitlements.sql",
+      "sha256": "7a25d575e998950ae8ac0db193b19d078913283367449a92333539549e01decf"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103102000_native_bank_sync.sql",
+      "sha256": "fd1b6afbba06d2afd2aeabaab0d58ffb572103e2f9892524f2576db16cd19aa6"
+    },
+    {
+      "path": "packages/db/self-hosted/upgrades/supabase/migrations/20261103103000_onboarding_deliveries.sql",
+      "sha256": "615a77648b20428d70ee713eda37fba1043aba2065be8d9b28456aca0c363f25"
+    }
+  ]
+}
