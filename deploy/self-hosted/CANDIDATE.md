@@ -142,12 +142,16 @@ The daemon's image import/export and filesystem cache remain outside the CLI
 cgroup; the shared 8 GiB disk-reserve monitor remains necessary. Measured
 resource acceptance has not been performed.
 
-The current application Dockerfiles still refer to `oven/bun:1.3.11` and
-`node:24.21.0-trixie-slim` by version tags. Application source provenance is exact,
-but base-image digest resolution/pinning is a separate unresolved reproducibility
-gate. A dedicated BuildKit may need approved registry/dependency access for
-those build inputs; preinstalled Docker runtime images do not automatically
-populate its independent cache.
+Application Dockerfiles pin Bun 1.3.11 and Node 24.21.0-trixie-slim to the
+verified OCI index digests in `base-image-receipt-20261103.json`. The receipt
+also records their Linux amd64 manifests and a real BuildKit v0.34.1 digest.
+Registry metadata was verified over HTTPS; no image was pulled or built by that
+source change. The BuildKit choice includes the latest official stable patch
+observed in the [upstream release](https://github.com/moby/buildkit/releases/tag/v0.34.1).
+This pins base content, not every build input: apt package repositories and
+network-fetched dependencies still require controlled build acceptance/cache.
+A dedicated BuildKit may need approved registry/dependency access; preinstalled
+Docker runtime images do not automatically populate its independent cache.
 
 Reference: Docker's [docker-container driver options](https://docs.docker.com/build/builders/drivers/docker-container/)
 and [Compose build options](https://docs.docker.com/reference/cli/docker/compose/build/).
