@@ -72,7 +72,7 @@ file or put credentials in command arguments. Exact command arguments for the
 read-only step are:
 
 ```text
-bun --no-env-file packages/db/src/test/helpers/synthetic-foundation.ts --inspect
+bun --no-env-file packages/db/src/test/helpers/synthetic-foundation.mts --inspect
 ```
 
 This prints an inspect report with `mutation: false`, the catalog fingerprint,
@@ -103,7 +103,7 @@ The queued environment must also explicitly set
 `AGSAAS_SYNTHETIC_FOUNDATION_WRITE` to the same acknowledgement string. First run:
 
 ```text
-bun --no-env-file packages/db/src/test/helpers/synthetic-foundation.ts --rehearse --approval <private-approval-file>
+bun --no-env-file packages/db/src/test/helpers/synthetic-foundation.mts --rehearse --approval <private-approval-file>
 ```
 
 Rehearsal executes the full operation, then causes an actual PostgreSQL `22P02`

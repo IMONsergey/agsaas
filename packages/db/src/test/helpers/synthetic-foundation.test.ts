@@ -22,7 +22,7 @@ import {
   queueUnit,
   validateApproval,
   WRITE_ACK,
-} from "./synthetic-foundation";
+} from "./synthetic-foundation.mts";
 
 const ROOT = resolve(__dirname, "../../../../..");
 const catalogDigest = "a".repeat(64);

@@ -15,7 +15,7 @@ import { upgradeStatements } from "../../../../../scripts/self-hosted-rehearsal.
 import {
   getTestDatabaseUrl,
   TestDatabaseConfigurationError,
-} from "./test-database-config";
+} from "./test-database-config.ts";
 
 // This intentionally is not a portable database installer. A new instance or
 // catalog requires another review; it must never discover a production target.
