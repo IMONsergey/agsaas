@@ -80,8 +80,9 @@ async function updateInvoiceViewedAt(id: string) {
 export default async function Page(props: Props) {
   const params = await props.params;
   const searchParams = await props.searchParams;
-  const viewerParam = searchParams?.viewer as string | undefined;
-  const viewer = viewerParam ? decodeURIComponent(viewerParam) : undefined;
+  // Next already decodes query values; ignore repeated optional viewer keys.
+  const viewerParam = searchParams?.viewer;
+  const viewer = typeof viewerParam === "string" ? viewerParam : undefined;
 
   const queryClient = getQueryClient();
 
