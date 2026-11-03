@@ -62,8 +62,32 @@ describe("actual offline invoice PDF", () => {
         logoUrl: null,
         includeQr: false,
         title: "Счёт",
+        dateFormat: "yyyy-MM-dd",
+        timezone: "UTC",
       },
       lineItems: [{ name: "Разработка AGSaaS", quantity: 1, price: 100 }],
+      fromDetails: {
+        type: "doc" as const,
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Normal text " },
+              { type: "text", text: "Bold text ", marks: [{ type: "bold" }] },
+              {
+                type: "text",
+                text: "Italic text ",
+                marks: [{ type: "italic" }],
+              },
+              {
+                type: "text",
+                text: "BoldItalic text",
+                marks: [{ type: "bold" }, { type: "italic" }],
+              },
+            ],
+          },
+        ],
+      },
     };
     const buffer = await renderToBuffer(
       await PdfTemplate(invoice, { isReceipt }),
@@ -81,6 +105,18 @@ describe("actual offline invoice PDF", () => {
     expect(text).toContain("OWN-001");
     expect(text).toContain("Разработка");
     expect(text).toContain("AGSaaS");
+    for (const label of [
+      "Normal text",
+      "Bold text",
+      "Italic text",
+      "BoldItalic text",
+    ]) {
+      expect(text).toContain(label);
+    }
+    if (isReceipt) {
+      expect(String(text).replace(/\s+/g, "")).toContain("PAID");
+      expect(text).toContain("2026-11-03");
+    }
     expect(requests).toEqual([]);
     if (process.env.AGSAAS_RENDER_ARTIFACT_DIR)
       await Bun.write(

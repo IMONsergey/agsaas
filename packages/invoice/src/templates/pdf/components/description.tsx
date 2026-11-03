@@ -1,5 +1,6 @@
 import { Text, View } from "@react-pdf/renderer";
 import { isValidJSON } from "../../../utils/content";
+import { OWNED_INVOICE_FONT_FAMILY } from "../../../utils/owned-fonts";
 import { EditorContent } from "./editor-content";
 
 export function Description({ content }: { content: string }) {
@@ -7,7 +8,11 @@ export function Description({ content }: { content: string }) {
 
   // If the content is not valid JSON, return the content as a string
   if (!value) {
-    return <Text style={{ fontFamily: "Inter", fontSize: 9 }}>{content}</Text>;
+    return (
+      <Text style={{ fontFamily: OWNED_INVOICE_FONT_FAMILY, fontSize: 9 }}>
+        {content}
+      </Text>
+    );
   }
 
   return (

@@ -3,7 +3,10 @@ import { Document, Font, Image, Page, Text, View } from "@react-pdf/renderer";
 import QRCodeUtil from "qrcode";
 import type { Invoice } from "../../types";
 import { loadPublicLogo } from "../../utils/logo";
-import { getOwnedPdfFonts } from "../../utils/owned-fonts";
+import {
+  getOwnedPdfFonts,
+  OWNED_INVOICE_FONT_FAMILY,
+} from "../../utils/owned-fonts";
 import { EditorContent } from "./components/editor-content";
 import { LineItems } from "./components/line-items";
 import { Meta } from "./components/meta";
@@ -88,7 +91,7 @@ export async function PdfTemplate(
           padding: 20,
           backgroundColor: "#fff",
           color: "#000",
-          fontFamily: "Liberation Sans",
+          fontFamily: OWNED_INVOICE_FONT_FAMILY,
           fontWeight: 400,
         }}
       >

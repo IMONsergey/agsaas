@@ -1,4 +1,4 @@
-const FONT_FAMILY = "Liberation Sans";
+export const OWNED_INVOICE_FONT_FAMILY = "Liberation Sans";
 
 export async function getOwnedPdfFonts() {
   const [regular, bold, italic, boldItalic] = await Promise.all([
@@ -8,7 +8,7 @@ export async function getOwnedPdfFonts() {
     import("../fonts/liberation-bolditalic"),
   ]);
   return {
-    family: FONT_FAMILY,
+    family: OWNED_INVOICE_FONT_FAMILY,
     fonts: [
       {
         src: `data:font/ttf;base64,${regular.fontBase64}`,
