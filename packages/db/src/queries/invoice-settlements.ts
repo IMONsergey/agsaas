@@ -43,6 +43,8 @@ const columns = sql`id,team_id as "teamId",invoice_id as "invoiceId",operation_k
   amount_minor::text as "amountMinor",currency,payment_id as "paymentId",reverses_id as "reversesId",provider,
   provider_account_id as "providerAccountId",provider_resource_id as "providerResourceId",actor_id as "actorId",reason,
   occurred_at::text as "occurredAt",created_at::text as "createdAt"`;
+export const STRIPE_LEDGER_RECONCILIATION_REASON =
+  "stripe_known_refund_requires_reconciliation";
 export async function getInvoiceSettlementEntries(
   db: DatabaseOrTransaction,
   teamId: string,
@@ -164,7 +166,7 @@ async function persistProjection(
   await db.execute(sql`insert into invoice_settlement_state(invoice_id,team_id,projection,entry_count)
     values(${invoice.id}::uuid,${invoice.teamId}::uuid,${JSON.stringify(projection)}::jsonb,${rows.length})
     on conflict(invoice_id) do update set projection=excluded.projection,entry_count=excluded.entry_count,
-      updated_at=clock_timestamp(),reconciliation_required=false,reason=null`);
+      updated_at=greatest(clock_timestamp(),invoice_settlement_state.updated_at + interval '1 microsecond')`);
   if (!rows.length)
     throw new InvoicePaymentError(
       409,
@@ -194,6 +196,57 @@ async function persistProjection(
       and(eq(invoices.id, invoice.id), eq(invoices.teamId, invoice.teamId)),
     );
   return projection;
+}
+
+/** The original provider resources remain bound by the immutable journal. */
+export async function requireInvoiceSettlementProviderReconciliation(
+  db: DatabaseOrTransaction,
+  input: { invoiceId: string; teamId: string },
+) {
+  return primary(db).transaction(async (tx) => {
+    const invoice = await lockedInvoice(tx, input);
+    const rows = await getInvoiceSettlementEntries(
+      tx,
+      input.teamId,
+      input.invoiceId,
+    );
+    if (!rows.some((row) => row.provider === "stripe" && row.kind === "refund"))
+      throw new InvoicePaymentError(
+        409,
+        "Unknown provider history requires manual reconciliation",
+      );
+    const unknownRequest = await tx
+      .select({ id: invoicePaymentReservations.id })
+      .from(invoicePaymentReservations)
+      .where(
+        and(
+          eq(invoicePaymentReservations.invoiceId, input.invoiceId),
+          eq(invoicePaymentReservations.teamId, input.teamId),
+          sql`${invoicePaymentReservations.state} <> 'settled'`,
+          sql`${invoicePaymentReservations.paymentIntentId} is null`,
+        ),
+      )
+      .limit(1);
+    const reason = unknownRequest.length
+      ? "manual_unknown"
+      : STRIPE_LEDGER_RECONCILIATION_REASON;
+    const amount = getInvoiceLedgerAmount(invoice.amount, invoice.currency);
+    const projection = calculateInvoiceSettlement(
+      String(amount.amountMinor),
+      amount.currency,
+      rows,
+    );
+    await tx.execute(sql`insert into invoice_settlement_state
+      (invoice_id,team_id,projection,entry_count,reconciliation_required,reason)
+      values(${input.invoiceId}::uuid,${input.teamId}::uuid,${JSON.stringify(projection)}::jsonb,${rows.length},true,${reason})
+      on conflict(invoice_id) do update set
+        projection=excluded.projection,entry_count=excluded.entry_count,
+        updated_at=greatest(clock_timestamp(),invoice_settlement_state.updated_at + interval '1 microsecond'),
+        reconciliation_required=true,
+        reason=case when invoice_settlement_state.reconciliation_required
+          and invoice_settlement_state.reason is distinct from ${STRIPE_LEDGER_RECONCILIATION_REASON}
+          then invoice_settlement_state.reason else excluded.reason end`);
+  });
 }
 
 /** Confirmed evidence only. Provider authorization belongs to its adapter; this function enforces money invariants. */
@@ -241,6 +294,14 @@ export async function recordInvoiceSettlement(
         "Settlement currency does not match invoice",
       );
     if (input.provider !== "stripe") {
+      const state = await tx.execute<{ required: boolean }>(sql`
+        select reconciliation_required as required from invoice_settlement_state
+        where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid`);
+      if (state.rows[0]?.required)
+        throw new InvoicePaymentError(
+          409,
+          "Verify the provider settlement before recording outside money",
+        );
       if (
         !prior.length &&
         (invoice.status === "paid" ||
@@ -410,9 +471,17 @@ export async function getInvoiceSettlement(
           ),
       reconciliationRequired:
         legacy || stored?.reconciliation_required === true,
+      providerReconciliationRequired: stored?.reconciliation_required === true,
+      providerVerificationAvailable:
+        stored?.reconciliation_required === true &&
+        stored.reason === STRIPE_LEDGER_RECONCILIATION_REASON,
       reason: legacy
         ? "Legacy paid/refunded state has no confirmed ledger evidence"
-        : (stored?.reason ?? null),
+        : stored?.reason === STRIPE_LEDGER_RECONCILIATION_REASON
+          ? "A previously confirmed Stripe refund changed or could not be verified. Verify its current provider state before recording more money."
+          : stored?.reason === "manual_unknown"
+            ? "A provider request has an unknown outcome. Reconcile that request before recording more money."
+            : (stored?.reason ?? null),
     };
   });
 }
@@ -445,10 +514,15 @@ export async function reconcileInvoiceSettlement(
       rows,
     );
     const stored = (
-      await tx.execute<{ projection: unknown }>(
-        sql`select projection from invoice_settlement_state where team_id=${input.teamId}::uuid and invoice_id=${input.invoiceId}::uuid`,
+      await tx.execute<{
+        projection: unknown;
+        reconciliation_required: boolean;
+      }>(
+        sql`select projection,reconciliation_required from invoice_settlement_state where team_id=${input.teamId}::uuid and invoice_id=${input.invoiceId}::uuid`,
       )
     ).rows[0];
+    if (stored?.reconciliation_required)
+      return { state: "requires_evidence" as const, changed: false, expected };
     const drift =
       financialRequestHash(stored?.projection) !==
         financialRequestHash(expected) ||

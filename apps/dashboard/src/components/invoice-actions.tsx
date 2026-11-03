@@ -61,7 +61,9 @@ export function InvoiceActions({
   const { data: settlement } = useQuery(
     trpc.invoicePayments.settlement.queryOptions({ invoiceId: id }),
   );
-  const canManageSettlement = settlement?.canManage === true;
+  const canManageSettlement =
+    settlement?.canManage === true &&
+    settlement.reconciliationRequired === false;
   const [cancelSeriesOpen, setCancelSeriesOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const duplicateInvoice = useMutation(
@@ -318,7 +320,7 @@ export function InvoiceActions({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            disabled={refundMutation.isPending}
+            disabled={refundMutation.isPending || !canRefund}
             onClick={() => refundMutation.mutate({ invoiceId: id })}
           >
             Refund

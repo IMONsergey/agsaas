@@ -117,7 +117,7 @@ export async function requestInvoiceRefund(
   }
 }
 
-type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
+export type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
   refunds: {
     list(
       params: Stripe.RefundListParams,
@@ -142,13 +142,22 @@ type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
 export async function getConfirmedInvoiceRefunds(
   stripe: RefundStateProvider,
   params: { paymentIntentId: string; stripeAccountId: string },
+  deadline = performance.now() + 15_000,
 ) {
-  const started = performance.now();
+  const withinBudget = () => {
+    if (performance.now() > deadline)
+      throw new InvoicePaymentError(
+        503,
+        "Refund confirmation exceeded its processing budget",
+      );
+  };
   const options = { stripeAccount: params.stripeAccountId };
+  withinBudget();
   const intent = await stripe.paymentIntents.retrieve(
     params.paymentIntentId,
     options,
   );
+  withinBudget();
   if (
     intent.id !== params.paymentIntentId ||
     intent.status !== "succeeded" ||
@@ -167,12 +176,7 @@ export async function getConfirmedInvoiceRefunds(
   const records: Array<{ id: string; amountMinor: number; status: string }> =
     [];
   for (let page = 0; page < 5; page++) {
-    if (performance.now() - started > 15_000) {
-      throw new InvoicePaymentError(
-        503,
-        "Refund confirmation exceeded its processing budget",
-      );
-    }
+    withinBudget();
     const refunds = await stripe.refunds.list(
       {
         payment_intent: params.paymentIntentId,
@@ -181,6 +185,7 @@ export async function getConfirmedInvoiceRefunds(
       },
       options,
     );
+    withinBudget();
     if (!Array.isArray(refunds.data) || typeof refunds.has_more !== "boolean") {
       throw new InvoicePaymentError(409, "Refund list requires reconciliation");
     }

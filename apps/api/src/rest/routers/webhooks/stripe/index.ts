@@ -1,5 +1,5 @@
 import type { Context } from "@api/rest/types";
-import { getConfirmedInvoiceRefunds } from "@api/services/invoice-refund-request";
+import { confirmStripeRefundsForWebhook } from "@api/services/invoice-provider-reconciliation";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   applyStripeInvoicePaymentEvent,
@@ -192,7 +192,7 @@ app.openapi(
             timeout: 5_000,
             maxNetworkRetries: 0,
           });
-          const confirmation = await getConfirmedInvoiceRefunds(stripe, {
+          const confirmation = await confirmStripeRefundsForWebhook(stripe, {
             paymentIntentId,
             stripeAccountId: event.account,
           });

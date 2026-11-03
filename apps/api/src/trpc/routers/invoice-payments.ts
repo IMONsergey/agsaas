@@ -1,4 +1,5 @@
 import { requestInvoiceRefund } from "@api/services/invoice-refund-request";
+import { getInvoiceProviderReconciliationProofs } from "@api/services/invoice-provider-reconciliation";
 import {
   createTRPCRouter,
   ownerProcedure,
@@ -7,6 +8,8 @@ import {
 import { InvoicePaymentError } from "@midday/db/errors";
 import { financialRequestHash } from "@midday/db/financial-job";
 import {
+  applyInvoiceProviderReconciliation,
+  getInvoiceProviderReconciliationPlan,
   getInvoiceRefundContext,
   getInvoiceSettlement,
   getTeamById,
@@ -98,19 +101,51 @@ export const invoicePaymentsRouter = createTRPCRouter({
     ),
   reconcileSettlement: ownerProcedure
     .input(
-      z.object({
-        invoiceId: z.string().uuid(),
-        apply: z.boolean().default(false),
-      }),
+      z
+        .object({
+          invoiceId: z.string().uuid(),
+          apply: z.boolean().default(false),
+          verifyProvider: z.boolean().optional(),
+        })
+        .strict(),
     )
     .mutation(async ({ input, ctx }) =>
-      settlementResult(() =>
-        reconcileInvoiceSettlement(ctx.db, {
-          ...input,
+      settlementResult(async () => {
+        const scope = {
+          invoiceId: input.invoiceId,
           teamId: ctx.teamId!,
           actorId: ctx.session.user.id,
-        }),
-      ),
+        };
+        if (input.verifyProvider) {
+          if (!input.apply)
+            throw new InvoicePaymentError(
+              400,
+              "Confirm provider reconciliation before applying it",
+            );
+          const plan = await getInvoiceProviderReconciliationPlan(
+            ctx.db,
+            scope,
+          );
+          if (!plan) return { state: "consistent" as const, changed: false };
+          const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+            timeout: 5_000,
+            maxNetworkRetries: 0,
+          });
+          const proofs = await getInvoiceProviderReconciliationProofs(
+            stripe,
+            plan,
+          );
+          return applyInvoiceProviderReconciliation(ctx.db, {
+            ...scope,
+            revision: plan.revision,
+            proofs,
+          });
+        }
+        return reconcileInvoiceSettlement(ctx.db, {
+          ...scope,
+          apply: input.apply,
+        });
+      }),
     ),
 
   // Get Stripe Connect status for the current team

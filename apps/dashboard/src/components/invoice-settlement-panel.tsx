@@ -66,6 +66,27 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
       },
     }),
   );
+  const verifyProvider = useMutation(
+    trpc.invoicePayments.reconcileSettlement.mutationOptions({
+      onSuccess: async () => {
+        setError(null);
+        await Promise.all([
+          cache.invalidateQueries({
+            queryKey: trpc.invoicePayments.settlement.queryKey({ invoiceId }),
+          }),
+          cache.invalidateQueries({
+            queryKey: trpc.invoice.getById.queryKey({ id: invoiceId }),
+          }),
+          cache.invalidateQueries({ queryKey: trpc.invoice.get.queryKey() }),
+          cache.invalidateQueries({ queryKey: trpc.customers.get.queryKey() }),
+        ]);
+      },
+      onError: (failure) => {
+        setError(failure.message);
+        void query.refetch();
+      },
+    }),
+  );
   if (query.isPending)
     return (
       <div className="mt-6 text-sm text-muted-foreground" role="status">
@@ -102,10 +123,37 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
         Payments and refunds
       </h3>
       {data.reconciliationRequired ? (
-        <p role="alert" className="text-sm">
-          {data.reason}. Verify original evidence before changing settlement
-          history.
-        </p>
+        <div className="space-y-2">
+          <p role="alert" className="text-sm">
+            {data.reason ??
+              "Verify original evidence before changing settlement history."}
+          </p>
+          {data.canManage && data.providerVerificationAvailable && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Check current payments and refunds with Stripe. Pending or
+                unverified results keep further money operations blocked.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={verifyProvider.isPending}
+                onClick={() => {
+                  setError(null);
+                  verifyProvider.mutate({
+                    invoiceId,
+                    apply: true,
+                    verifyProvider: true,
+                  });
+                }}
+              >
+                {verifyProvider.isPending
+                  ? "Verifying with Stripe..."
+                  : "Verify with Stripe"}
+              </Button>
+            </>
+          )}
+        </div>
       ) : (
         projection && (
           <dl className="grid grid-cols-2 gap-2 text-sm">
@@ -125,6 +173,11 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
             )}
           </dl>
         )
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
       )}
       {data.entries.length ? (
         <ol
@@ -273,11 +326,6 @@ export function InvoiceSettlementPanel({ invoiceId }: { invoiceId: string }) {
             />
             <span>I verified that this money was received or returned.</span>
           </label>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
           <Button type="submit" disabled={record.isPending || !confirmed}>
             {record.isPending ? "Recording..." : "Record confirmed entry"}
           </Button>

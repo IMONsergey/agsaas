@@ -18,14 +18,20 @@ import {
   updateInvoiceWithIntent,
 } from "../queries/invoice-commands";
 import {
+  applyInvoiceProviderReconciliation,
   applyStripeInvoicePaymentEvent,
   attachInvoicePayment,
+  getInvoiceProviderReconciliationPlan,
+  getInvoiceRefundContext,
+  type InvoiceProviderReconciliationPlan,
+  type InvoiceProviderReconciliationProof,
   reserveInvoicePayment,
 } from "../queries/invoice-payments";
 import {
   getInvoiceSettlement,
   reconcileInvoiceSettlement,
   recordInvoiceSettlement,
+  requireInvoiceSettlementProviderReconciliation,
 } from "../queries/invoice-settlements";
 import { getInvoiceSummary } from "../queries/invoices";
 import {
@@ -428,7 +434,15 @@ describe.skipIf(!isTestDatabaseAvailable())(
       });
       const failed = {
         ...event,
-        refunds: [{ id: "re_pending", amountMinor: 2000, status: "failed" }],
+        refunds: [
+          {
+            id: "re_pending",
+            amountMinor: 2000,
+            status: "failed",
+            verifiedBy: "resource_get" as const,
+            failureBalanceTransactionId: "txn_returnedFixture",
+          },
+        ],
       };
       await applyStripeInvoicePaymentEvent(db, failed);
       await applyStripeInvoicePaymentEvent(db, failed);
@@ -439,6 +453,339 @@ describe.skipIf(!isTestDatabaseAvailable())(
         refundedMinor: "0",
         status: "paid",
       });
+    });
+
+    async function confirmedStripeRefund() {
+      await db
+        .update(teams)
+        .set({
+          stripeAccountId: "acct_fixture",
+          stripeConnectStatus: "connected",
+        })
+        .where(eq(teams.id, f.own.teamId));
+      await db
+        .update(invoices)
+        .set({
+          status: "unpaid",
+          template: { paymentEnabled: true, currency: "USD" },
+        })
+        .where(eq(invoices.id, f.own.invoiceId));
+      const reservation = await reserveInvoicePayment(db, scope());
+      const suffix = randomUUID().replaceAll("-", "");
+      const refund = {
+        id: `re_${suffix}`,
+        amountMinor: 2000,
+        status: "succeeded",
+      };
+      const event = {
+        ...scope(),
+        reservationId: reservation.id,
+        paymentIntentId: `pi_${suffix}`,
+        stripeAccountId: "acct_fixture",
+        amountMinor: 10000,
+        currency: "usd",
+        kind: "refunded" as const,
+        occurredAt: "2026-11-02T12:00:00Z",
+        refunds: [refund],
+      };
+      await applyStripeInvoicePaymentEvent(db, event);
+      return { event, refund };
+    }
+    const ownerScope = () => ({ ...scope(), actorId: f.own.userId });
+    async function providerPlan() {
+      const plan = await getInvoiceProviderReconciliationPlan(db, ownerScope());
+      if (!plan)
+        throw new Error("Expected a retained provider uncertainty marker");
+      return plan;
+    }
+    function resourceProofs(
+      plan: InvoiceProviderReconciliationPlan,
+    ): InvoiceProviderReconciliationProof[] {
+      return plan.payments.map((payment) => ({
+        source: "resource_get",
+        paymentIntentId: payment.paymentIntentId,
+        stripeAccountId: payment.stripeAccountId,
+        amountMinor: payment.amountMinor,
+        currency: payment.currency,
+        refunds: payment.refunds.map((refund) => ({
+          id: refund.id,
+          amountMinor: refund.amountMinor,
+          status: refund.reversed ? "failed" : "succeeded",
+          verifiedBy: "resource_get",
+          failureBalanceTransactionId: refund.reversed
+            ? "txn_returnedFixture"
+            : null,
+        })),
+      }));
+    }
+    for (const anomaly of [
+      "missing",
+      "pending",
+      "requires_action",
+      "amount_changed",
+    ] as const) {
+      test(`a ${anomaly} confirmed-refund observation survives rollback boundaries, paid replay and local rebuild`, async () => {
+        const { event, refund } = await confirmedStripeRefund();
+        const before = await getInvoiceSettlement(db, scope());
+        await expect(
+          applyStripeInvoicePaymentEvent(db, {
+            ...event,
+            refunds:
+              anomaly === "missing"
+                ? []
+                : [
+                    {
+                      ...refund,
+                      amountMinor:
+                        anomaly === "amount_changed"
+                          ? 1999
+                          : refund.amountMinor,
+                      status:
+                        anomaly === "amount_changed" ? "succeeded" : anomaly,
+                    },
+                  ],
+          }),
+        ).rejects.toMatchObject({ status: 409 });
+        expect(
+          (await getInvoiceSettlement(db, scope())).reconciliationRequired,
+        ).toBe(true);
+        await applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          kind: "paid",
+          refunds: undefined,
+        });
+        expect(
+          await reconcileInvoiceSettlement(db, {
+            ...ownerScope(),
+            apply: true,
+          }),
+        ).toMatchObject({ state: "requires_evidence", changed: false });
+        const after = await getInvoiceSettlement(db, scope());
+        expect(after.entries).toEqual(before.entries);
+        expect(after.projection).toEqual(before.projection);
+        expect(after.reconciliationRequired).toBe(true);
+        expect(after.providerVerificationAvailable).toBe(true);
+        await expect(
+          recordInvoiceSettlement(db, payment("1")),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(
+          getInvoiceRefundContext(db, scope()),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(reserveInvoicePayment(db, scope())).rejects.toMatchObject({
+          status: 400,
+        });
+      });
+    }
+    test("exact current resource proofs clear uncertainty without inventing money", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [{ ...refund, status: "requires_action" }],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const before = await getInvoiceSettlement(db, scope());
+      const plan = await providerPlan();
+      expect(
+        await applyInvoiceProviderReconciliation(db, {
+          ...ownerScope(),
+          revision: plan.revision,
+          proofs: resourceProofs(plan),
+        }),
+      ).toEqual({ state: "verified", changed: true });
+      const after = await getInvoiceSettlement(db, scope());
+      expect(after.entries).toEqual(before.entries);
+      expect(after.projection).toEqual(before.projection);
+      expect(after.reconciliationRequired).toBe(false);
+    });
+    test("an event arriving during provider GET invalidates even an unchanged monetary snapshot", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      const uncertain = {
+        ...event,
+        refunds: [{ ...refund, status: "pending" }],
+      };
+      await expect(
+        applyStripeInvoicePaymentEvent(db, uncertain),
+      ).rejects.toMatchObject({ status: 409 });
+      const snapshot = await providerPlan();
+      const proofs = resourceProofs(snapshot);
+      const before = await getInvoiceSettlement(db, scope());
+      await expect(
+        applyStripeInvoicePaymentEvent(db, uncertain),
+      ).rejects.toMatchObject({ status: 409 });
+      expect((await providerPlan()).revision).not.toBe(snapshot.revision);
+      await expect(
+        applyInvoiceProviderReconciliation(db, {
+          ...ownerScope(),
+          revision: snapshot.revision,
+          proofs,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const after = await getInvoiceSettlement(db, scope());
+      expect(after.entries).toEqual(before.entries);
+      expect(after.reconciliationRequired).toBe(true);
+    });
+    test("missing resources, unknown states and cross-account proof never clear the marker", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [{ ...refund, status: "pending" }],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const plan = await providerPlan();
+      for (const change of [
+        "missing",
+        "unknown_status",
+        "account",
+        "amount",
+      ] as const) {
+        const proofs = resourceProofs(plan);
+        if (change === "missing") proofs[0]!.refunds = [];
+        if (change === "unknown_status")
+          proofs[0]!.refunds[0]!.status = "new_provider_status";
+        if (change === "account") proofs[0]!.stripeAccountId = "acct_foreign";
+        if (change === "amount") proofs[0]!.refunds[0]!.amountMinor = 1999;
+        await expect(
+          applyInvoiceProviderReconciliation(db, {
+            ...ownerScope(),
+            revision: plan.revision,
+            proofs,
+          }),
+        ).rejects.toMatchObject({ status: 409 });
+        expect(
+          (await getInvoiceSettlement(db, scope())).reconciliationRequired,
+        ).toBe(true);
+      }
+    });
+    test("failed exact proof requires a returned balance transaction before one compensating entry", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [{ ...refund, status: "failed" }],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [
+            {
+              ...refund,
+              status: "failed",
+              verifiedBy: "resource_get",
+              failureBalanceTransactionId: "txn_returnedFixture",
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const plan = await providerPlan();
+      const proofs = resourceProofs(plan);
+      proofs[0]!.refunds[0]!.status = "failed";
+      await expect(
+        applyInvoiceProviderReconciliation(db, {
+          ...ownerScope(),
+          revision: plan.revision,
+          proofs,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect((await getInvoiceSettlement(db, scope())).entries).toHaveLength(2);
+      proofs[0]!.refunds[0]!.failureBalanceTransactionId =
+        "txn_returnedFixture";
+      await applyInvoiceProviderReconciliation(db, {
+        ...ownerScope(),
+        revision: plan.revision,
+        proofs,
+      });
+      const result = await getInvoiceSettlement(db, scope());
+      expect(result.entries).toHaveLength(3);
+      expect(
+        result.entries.filter((row) => row.kind === "refund_reversal"),
+      ).toHaveLength(1);
+      expect(result.projection).toMatchObject({
+        netSettledMinor: "10000",
+        refundedMinor: "0",
+        status: "paid",
+      });
+      expect(result.reconciliationRequired).toBe(false);
+    });
+    test("an unresolved create without a provider ID is manual_unknown, not proof by known resources", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      const unknown = await reserveInvoicePayment(db, scope());
+      expect(unknown.paymentIntentId).toBeNull();
+      await expect(
+        applyStripeInvoicePaymentEvent(db, {
+          ...event,
+          refunds: [{ ...refund, status: "pending" }],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const result = await getInvoiceSettlement(db, scope());
+      expect(result.reconciliationRequired).toBe(true);
+      expect(result.providerVerificationAvailable).toBe(false);
+      await expect(
+        getInvoiceProviderReconciliationPlan(db, ownerScope()),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        (
+          await db.execute<{ reason: string }>(
+            sql`select reason from invoice_settlement_state where invoice_id=${f.own.invoiceId}::uuid`,
+          )
+        ).rows[0]?.reason,
+      ).toBe("manual_unknown");
+    });
+    test("a late succeeded refund after a proven reversal cannot silently change money or clear uncertainty", async () => {
+      const { event, refund } = await confirmedStripeRefund();
+      await applyStripeInvoicePaymentEvent(db, {
+        ...event,
+        refunds: [
+          {
+            ...refund,
+            status: "failed",
+            verifiedBy: "resource_get",
+            failureBalanceTransactionId: "txn_returnedFixture",
+          },
+        ],
+      });
+      const before = await getInvoiceSettlement(db, scope());
+      await expect(
+        applyStripeInvoicePaymentEvent(db, event),
+      ).rejects.toMatchObject({ status: 409 });
+      const plan = await providerPlan();
+      const proofs = resourceProofs(plan);
+      proofs[0]!.refunds[0]!.status = "succeeded";
+      await expect(
+        applyInvoiceProviderReconciliation(db, {
+          ...ownerScope(),
+          revision: plan.revision,
+          proofs,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const after = await getInvoiceSettlement(db, scope());
+      expect(after.entries).toEqual(before.entries);
+      expect(after.projection).toEqual(before.projection);
+      expect(after.reconciliationRequired).toBe(true);
+    });
+    test("a new known-resource anomaly cannot downgrade an existing manual_unknown marker", async () => {
+      await confirmedStripeRefund();
+      await requireInvoiceSettlementProviderReconciliation(db, scope());
+      const plan = await providerPlan();
+      await db.execute(
+        sql`update invoice_settlement_state set reason='manual_unknown' where invoice_id=${f.own.invoiceId}::uuid`,
+      );
+      await requireInvoiceSettlementProviderReconciliation(db, scope());
+      await expect(
+        applyInvoiceProviderReconciliation(db, {
+          ...ownerScope(),
+          revision: plan.revision,
+          proofs: resourceProofs(plan),
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        (await getInvoiceSettlement(db, scope())).providerVerificationAvailable,
+      ).toBe(false);
+      expect(
+        (await getInvoiceSettlement(db, scope())).reconciliationRequired,
+      ).toBe(true);
     });
     test("invoice, customer and top-client metrics distinguish billed money from confirmed partial receipts", async () => {
       await db

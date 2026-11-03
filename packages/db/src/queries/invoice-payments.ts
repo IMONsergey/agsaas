@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, or, sql } from "drizzle-orm";
-import type { DatabaseOrTransaction } from "../client";
+import type { DatabaseOrTransaction, TransactionClient } from "../client";
 import { InvoicePaymentError } from "../errors";
 import { getInvoicePaymentAmount } from "../invoice-money";
 export { getInvoicePaymentAmount } from "../invoice-money";
@@ -9,8 +9,13 @@ import { financialRequestHash } from "../financial-job";
 import {
   getInvoiceSettlement,
   getInvoiceSettlementEntries,
+  lockInvoiceSettlementOwner,
+  reconcileInvoiceSettlement,
   recordInvoiceSettlement,
+  requireInvoiceSettlementProviderReconciliation,
+  STRIPE_LEDGER_RECONCILIATION_REASON,
 } from "./invoice-settlements";
+import { appendSecurityAuditEvent } from "./security-audit";
 
 export type InvoicePaymentReservation =
   typeof invoicePaymentReservations.$inferSelect;
@@ -261,6 +266,11 @@ export async function getInvoiceRefundContext(
       .from(teams)
       .where(eq(teams.id, params.teamId));
     const ledger = await getInvoiceSettlement(tx, params);
+    if (ledger.providerReconciliationRequired)
+      throw new InvoicePaymentError(
+        409,
+        "Verify the provider settlement before requesting another refund",
+      );
     const payment = ledger.entries.find(
       (entry) =>
         entry.kind === "payment" &&
@@ -434,6 +444,14 @@ export async function attachInvoicePayment(
   });
 }
 
+export type StripeRefundEvidence = {
+  id: string;
+  amountMinor: number;
+  status: string;
+  verifiedBy?: "resource_get";
+  failureBalanceTransactionId?: string | null;
+};
+
 export type StripeInvoicePaymentEvent = {
   paymentIntentId: string;
   stripeAccountId: string;
@@ -444,7 +462,7 @@ export type StripeInvoicePaymentEvent = {
   invoiceId?: string;
   teamId?: string;
   reservationId?: string;
-  refunds?: Array<{ id: string; amountMinor: number; status: string }>;
+  refunds?: StripeRefundEvidence[];
 };
 
 /** Provider signature alone is insufficient: lock and authorize the stored original account and attempt. */
@@ -599,40 +617,45 @@ export async function applyStripeInvoicePaymentEvent(
       const knownRefunds = history.filter(
         (row) => row.kind === "refund" && row.paymentId === payment.entry.id,
       );
-      const anomalous = knownRefunds.some(
-        (row) =>
-          !event.refunds!.some(
-            (refund) => refund.id === row.providerResourceId,
-          ) ||
-          event.refunds!.some(
-            (refund) =>
-              refund.id === row.providerResourceId &&
-              (["pending", "requires_action"].includes(refund.status) ||
-                String(refund.amountMinor) !== row.amountMinor),
-          ),
-      );
-      if (anomalous)
-        throw new InvoicePaymentError(
-          409,
-          "Previously confirmed refund state requires reconciliation",
+      const uncertainty = (
+        await tx.execute<{ required: boolean }>(sql`
+        select reconciliation_required as required from invoice_settlement_state
+        where invoice_id=${invoice.id}::uuid and team_id=${invoice.teamId}::uuid`)
+      ).rows[0];
+      const anomalous = knownRefunds.some((row) => {
+        const refund = event.refunds!.find(
+          (value) => value.id === row.providerResourceId,
         );
+        return (
+          !refund ||
+          String(refund.amountMinor) !== row.amountMinor ||
+          ["pending", "requires_action"].includes(refund.status) ||
+          (refund.status === "succeeded" &&
+            history.some(
+              (entry) =>
+                entry.kind === "refund_reversal" && entry.reversesId === row.id,
+            )) ||
+          (["failed", "canceled"].includes(refund.status) &&
+            (uncertainty?.required ||
+              refund.verifiedBy !== "resource_get" ||
+              !/^txn_[A-Za-z0-9]+$/.test(
+                refund.failureBalanceTransactionId ?? "",
+              )))
+        );
+      });
+      if (anomalous) {
+        await requireInvoiceSettlementProviderReconciliation(tx, {
+          invoiceId: invoice.id,
+          teamId: invoice.teamId,
+        });
+        // Commit the uncertainty before returning an error to the adapter.
+        return { blocked: true as const };
+      }
       for (const refund of event.refunds) {
         const original = knownRefunds.find(
           (row) => row.providerResourceId === refund.id,
         );
         if (refund.status === "succeeded") {
-          if (
-            original &&
-            history.some(
-              (row) =>
-                row.kind === "refund_reversal" &&
-                row.reversesId === original.id,
-            )
-          )
-            throw new InvoicePaymentError(
-              409,
-              "Reversed refund cannot be silently confirmed again",
-            );
           projection = (
             await recordInvoiceSettlement(tx, {
               ...identity,
@@ -711,4 +734,305 @@ export async function applyStripeInvoicePaymentEvent(
   if ("blocked" in result)
     throw new InvoicePaymentError(409, "Payment event requires reconciliation");
   return result;
+}
+
+export type InvoiceProviderReconciliationPlan = {
+  invoiceId: string;
+  teamId: string;
+  revision: string;
+  payments: Array<{
+    paymentIntentId: string;
+    stripeAccountId: string;
+    amountMinor: number;
+    currency: string;
+    refunds: Array<{ id: string; amountMinor: number; reversed: boolean }>;
+  }>;
+};
+
+/** Internal adapter output: HTTP callers cannot submit these proofs. */
+export type InvoiceProviderReconciliationProof = {
+  source: "resource_get";
+  paymentIntentId: string;
+  stripeAccountId: string;
+  amountMinor: number;
+  currency: string;
+  refunds: StripeRefundEvidence[];
+};
+
+async function loadProviderReconciliationPlan(
+  tx: TransactionClient,
+  input: { invoiceId: string; teamId: string },
+): Promise<InvoiceProviderReconciliationPlan | null> {
+  const [invoice] = await tx
+    .select()
+    .from(invoices)
+    .where(
+      and(eq(invoices.id, input.invoiceId), eq(invoices.teamId, input.teamId)),
+    )
+    .for("update");
+  if (!invoice) throw new InvoicePaymentError(404, "Invoice not found");
+  const state = (
+    await tx.execute<{
+      required: boolean;
+      reason: string | null;
+      updatedAt: string;
+    }>(sql`select reconciliation_required as required,reason,updated_at::text as "updatedAt"
+    from invoice_settlement_state where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid`)
+  ).rows[0];
+  if (!state?.required) return null;
+  // An unknown create/refund request is not proved absent by checking only known IDs.
+  // Never turn an unrecognized/manual_unknown marker into the automatic path.
+  if (state.reason !== STRIPE_LEDGER_RECONCILIATION_REASON)
+    throw new InvoicePaymentError(
+      409,
+      "An unknown provider request requires manual reconciliation",
+    );
+  if (!["unpaid", "overdue", "paid", "refunded"].includes(invoice.status))
+    throw new InvoicePaymentError(
+      409,
+      "Invoice state requires manual reconciliation",
+    );
+  const unresolved = await tx
+    .select({ id: invoicePaymentReservations.id })
+    .from(invoicePaymentReservations)
+    .where(
+      and(
+        eq(invoicePaymentReservations.invoiceId, input.invoiceId),
+        eq(invoicePaymentReservations.teamId, input.teamId),
+        sql`${invoicePaymentReservations.state} <> 'settled'`,
+      ),
+    )
+    .limit(1);
+  if (unresolved.length)
+    throw new InvoicePaymentError(
+      409,
+      "An unfinished provider request must be reconciled first",
+    );
+  const entries = await getInvoiceSettlementEntries(
+    tx,
+    input.teamId,
+    input.invoiceId,
+  );
+  const stripePayments = entries.filter(
+    (row) => row.provider === "stripe" && row.kind === "payment",
+  );
+  const stripeRefunds = entries.filter(
+    (row) => row.provider === "stripe" && row.kind === "refund",
+  );
+  if (!stripePayments.length || !stripeRefunds.length)
+    throw new InvoicePaymentError(
+      409,
+      "Known provider resources are insufficient to clear this uncertainty",
+    );
+  if (stripePayments.length > 16 || stripeRefunds.length > 100)
+    throw new InvoicePaymentError(
+      409,
+      "Provider history exceeds automatic verification limits",
+    );
+  const payments = stripePayments.map((payment) => ({
+    paymentIntentId: payment.providerResourceId,
+    stripeAccountId: payment.providerAccountId,
+    amountMinor: Number(payment.amountMinor),
+    currency: payment.currency,
+    refunds: stripeRefunds
+      .filter((refund) => refund.paymentId === payment.id)
+      .map((refund) => {
+        const reversed = entries
+          .filter(
+            (row) =>
+              row.kind === "refund_reversal" && row.reversesId === refund.id,
+          )
+          .reduce((sum, row) => sum + BigInt(row.amountMinor), 0n);
+        if (reversed !== 0n && reversed !== BigInt(refund.amountMinor))
+          throw new InvoicePaymentError(
+            409,
+            "Partial provider reversal requires manual reconciliation",
+          );
+        return {
+          id: refund.providerResourceId,
+          amountMinor: Number(refund.amountMinor),
+          reversed: reversed > 0n,
+        };
+      }),
+  }));
+  return {
+    invoiceId: input.invoiceId,
+    teamId: input.teamId,
+    revision: financialRequestHash({ invoice, entries, state }),
+    payments,
+  };
+}
+
+export async function getInvoiceProviderReconciliationPlan(
+  db: DatabaseOrTransaction,
+  input: { invoiceId: string; teamId: string; actorId: string },
+) {
+  return db.transaction(async (tx) => {
+    await lockInvoiceSettlementOwner(tx, input);
+    return loadProviderReconciliationPlan(tx, input);
+  });
+}
+
+/** Apply fresh resource evidence after HTTP has finished; no SQL lock spans provider IO. */
+export async function applyInvoiceProviderReconciliation(
+  db: DatabaseOrTransaction,
+  input: {
+    invoiceId: string;
+    teamId: string;
+    actorId: string;
+    revision: string;
+    proofs: InvoiceProviderReconciliationProof[];
+  },
+) {
+  return db.transaction(async (tx) => {
+    await lockInvoiceSettlementOwner(tx, input);
+    const plan = await loadProviderReconciliationPlan(tx, input);
+    if (!plan || plan.revision !== input.revision)
+      throw new InvoicePaymentError(
+        409,
+        "Settlement changed during provider verification; verify again",
+      );
+    if (input.proofs.length !== plan.payments.length)
+      throw new InvoicePaymentError(
+        409,
+        "Incomplete provider payment verification",
+      );
+    const seenPayments = new Set<string>();
+    const reversals: Array<{
+      payment: InvoiceProviderReconciliationPlan["payments"][number];
+      refundId: string;
+    }> = [];
+    for (const proof of input.proofs) {
+      const key = `${proof.stripeAccountId}/${proof.paymentIntentId}`;
+      const payment = plan.payments.find(
+        (row) =>
+          row.paymentIntentId === proof.paymentIntentId &&
+          row.stripeAccountId === proof.stripeAccountId,
+      );
+      if (
+        proof.source !== "resource_get" ||
+        !payment ||
+        seenPayments.has(key) ||
+        proof.amountMinor !== payment.amountMinor ||
+        proof.currency !== payment.currency ||
+        proof.refunds.length > 100
+      )
+        throw new InvoicePaymentError(
+          409,
+          "Provider verification does not match the original payment",
+        );
+      seenPayments.add(key);
+      const seenRefunds = new Set<string>();
+      for (const refund of proof.refunds) {
+        if (
+          refund.verifiedBy !== "resource_get" ||
+          !/^(re|pyr)_[A-Za-z0-9]+$/.test(refund.id) ||
+          seenRefunds.has(refund.id) ||
+          !Number.isSafeInteger(refund.amountMinor) ||
+          refund.amountMinor <= 0 ||
+          refund.amountMinor > payment.amountMinor ||
+          ![
+            "succeeded",
+            "pending",
+            "requires_action",
+            "failed",
+            "canceled",
+          ].includes(refund.status)
+        )
+          throw new InvoicePaymentError(
+            409,
+            "Incomplete or unknown refund verification",
+          );
+        seenRefunds.add(refund.id);
+        const known = payment.refunds.find((row) => row.id === refund.id);
+        const failed = ["failed", "canceled"].includes(refund.status);
+        if (!known) {
+          if (!failed)
+            throw new InvoicePaymentError(
+              409,
+              "Provider money is not yet represented by the confirmed journal",
+            );
+          continue;
+        }
+        if (
+          refund.amountMinor !== known.amountMinor ||
+          ["pending", "requires_action"].includes(refund.status) ||
+          (known.reversed && refund.status === "succeeded")
+        )
+          throw new InvoicePaymentError(
+            409,
+            "Confirmed refund still requires reconciliation",
+          );
+        if (
+          failed &&
+          !/^txn_[A-Za-z0-9]+$/.test(refund.failureBalanceTransactionId ?? "")
+        )
+          throw new InvoicePaymentError(
+            409,
+            "Refund failure has no verified return-of-funds reference",
+          );
+        if (failed && !known.reversed)
+          reversals.push({ payment, refundId: known.id });
+      }
+      if (payment.refunds.some((refund) => !seenRefunds.has(refund.id)))
+        throw new InvoicePaymentError(
+          409,
+          "A confirmed refund was not verified by its exact resource ID",
+        );
+    }
+    const entries = await getInvoiceSettlementEntries(
+      tx,
+      input.teamId,
+      input.invoiceId,
+    );
+    for (const { payment, refundId } of reversals) {
+      const originalPayment = entries.find(
+        (row) =>
+          row.kind === "payment" &&
+          row.provider === "stripe" &&
+          row.providerResourceId === payment.paymentIntentId &&
+          row.providerAccountId === payment.stripeAccountId,
+      )!;
+      const refund = entries.find(
+        (row) =>
+          row.kind === "refund" &&
+          row.paymentId === originalPayment.id &&
+          row.providerResourceId === refundId,
+      )!;
+      await recordInvoiceSettlement(tx, {
+        invoiceId: input.invoiceId,
+        teamId: input.teamId,
+        operationKey: financialRequestHash(
+          `stripe/${payment.stripeAccountId}/${refundId}/reversal`,
+        ),
+        kind: "refund_reversal",
+        amountMinor: refund.amountMinor,
+        currency: payment.currency,
+        paymentId: originalPayment.id,
+        reversesId: refund.id,
+        provider: "stripe",
+        providerAccountId: payment.stripeAccountId,
+        providerResourceId: refundId,
+        reason: "Stripe resource GET verified a returned refund",
+      });
+    }
+    await tx.execute(sql`update invoice_settlement_state set reconciliation_required=false,reason=null,
+      updated_at=greatest(clock_timestamp(),updated_at + interval '1 microsecond')
+      where invoice_id=${input.invoiceId}::uuid and team_id=${input.teamId}::uuid
+        and reconciliation_required and reason=${STRIPE_LEDGER_RECONCILIATION_REASON}`);
+    await reconcileInvoiceSettlement(tx, { ...input, apply: true });
+    await appendSecurityAuditEvent(tx, {
+      teamId: input.teamId,
+      actorUserId: input.actorId,
+      operation: "invoice.settlement.verify_provider",
+      targetType: "invoice",
+      targetId: input.invoiceId,
+      metadata: {
+        provider: "stripe",
+        status: "verified",
+        count: input.proofs.length,
+      },
+    });
+    return { state: "verified" as const, changed: true };
+  });
 }

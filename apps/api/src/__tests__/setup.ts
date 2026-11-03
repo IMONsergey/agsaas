@@ -146,6 +146,8 @@ export const mocks = {
       entries: [],
       projection: null,
       reconciliationRequired: false,
+      providerReconciliationRequired: false,
+      providerVerificationAvailable: false,
       reason: null,
     }),
   ) as MockFn,
@@ -154,6 +156,12 @@ export const mocks = {
   ) as MockFn,
   reconcileInvoiceSettlement: mock(() =>
     Promise.resolve({ state: "consistent", changed: false }),
+  ) as MockFn,
+  getInvoiceProviderReconciliationPlan: mock(() =>
+    Promise.resolve(null),
+  ) as MockFn,
+  applyInvoiceProviderReconciliation: mock(() =>
+    Promise.resolve({ state: "verified", changed: true }),
   ) as MockFn,
   getBillingSubscriptionBinding: mock(() => Promise.resolve(null)) as MockFn,
   applyBillingSubscriptionEvent: mock(() =>
@@ -896,6 +904,10 @@ const dbQueriesMock = new Proxy(
     getInvoiceSettlement: mocks.getInvoiceSettlement,
     recordInvoiceSettlement: mocks.recordInvoiceSettlement,
     reconcileInvoiceSettlement: mocks.reconcileInvoiceSettlement,
+    getInvoiceProviderReconciliationPlan:
+      mocks.getInvoiceProviderReconciliationPlan,
+    applyInvoiceProviderReconciliation:
+      mocks.applyInvoiceProviderReconciliation,
     getBillingSubscriptionBinding: mocks.getBillingSubscriptionBinding,
     applyBillingSubscriptionEvent: mocks.applyBillingSubscriptionEvent,
     createInvoice: mocks.createInvoice,
