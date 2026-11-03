@@ -27,6 +27,10 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def root_owned(metadata):
+    return metadata.st_uid == 0
+
+
 def atomic(path, body, mode, uid, gid):
     fd, temporary = tempfile.mkstemp(prefix='.heavy-slot-', dir=path.parent)
     try:
@@ -68,7 +72,7 @@ def main():
     for path in (MODULE.parent, CONTROL):
         if path.exists():
             metadata = path.lstat()
-            require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == 0 and not metadata.st_mode & 0o022 and path.resolve() == path,
+            require(stat.S_ISDIR(metadata.st_mode) and root_owned(metadata) and not metadata.st_mode & 0o022 and path.resolve() == path,
                     'Existing protocol directory is unsafe')
     protocol = {'protocol': 1, 'lock': str(LOCK), 'lockIdentity': [lock.st_dev, lock.st_ino],
                 'queue': str(QUEUE), 'queueSha256': hashlib.sha256(after).hexdigest()}
@@ -79,7 +83,7 @@ def main():
     for path, expected in ((MODULE, module), (CONTROL / 'protocol.json', protocol_bytes)):
         if os.path.lexists(path):
             metadata = path.lstat()
-            require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and metadata.st_nlink == 1 and
+            require(stat.S_ISREG(metadata.st_mode) and root_owned(metadata) and metadata.st_nlink == 1 and
                     not metadata.st_mode & 0o022, 'Existing protocol file is unsafe')
             value = path.read_bytes()
             require(value == expected, 'Unknown installed protocol/module revision; review and preserve it before upgrade')

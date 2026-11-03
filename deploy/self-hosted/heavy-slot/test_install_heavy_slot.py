@@ -14,7 +14,6 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
-@unittest.skipUnless(os.getuid() == 0, 'Installer ownership fixture requires local root; never escalates')
 class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -29,8 +28,17 @@ class InstallTests(unittest.TestCase):
         self.patches = [patch.object(installer, 'QUEUE', self.queue), patch.object(installer, 'LOCK', self.lock),
                         patch.object(installer, 'MODULE', self.module), patch.object(installer, 'CONTROL', self.control),
                         patch.object(installer, 'BACKUP_ROOT', self.root / 'backups'),
-                        patch.object(installer.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=0))]
+                        patch.object(installer.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=os.getuid())),
+                        patch.object(installer, 'root_owned', lambda metadata: metadata.st_uid == os.getuid()),
+                        patch.object(installer.os, 'chown', self.simulate_chown)]
         for item in self.patches: item.start()
+
+    def simulate_chown(self, path, uid, gid):
+        # The only mocked privileged OS operation. These tests never request
+        # real root ownership; assert installer targets only its temporary files.
+        self.assertTrue(Path(path).resolve().is_relative_to(self.root))
+        self.assertIn(uid, (0, os.getuid()))
+        self.assertIn(gid, (0, os.getgid()))
 
     def tearDown(self):
         for item in reversed(self.patches): item.stop()
@@ -72,7 +80,7 @@ class InstallTests(unittest.TestCase):
         fd = os.open(self.lock, os.O_RDWR)
         try:
             with self.assertRaisesRegex(heavy_slot.SlotFailure, 'differs'):
-                heavy_slot.Control(self.control, self.lock, self.queue).validate(fd, verify_queue=True)
+                heavy_slot.Control(self.control, self.lock, self.queue, owner_uid=os.getuid()).validate(fd, verify_queue=True)
         finally: os.close(fd)
 
     def test_install_and_replay_preserve_lock_and_do_not_rewrite(self):

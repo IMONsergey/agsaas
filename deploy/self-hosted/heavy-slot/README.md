@@ -82,8 +82,9 @@ The protocol suite kills a real holder process, exercises the actual proposed
 `imon-job.run` with an ordinary competing subprocess, verifies that the command
 does not start while quarantined or while Docker is unavailable, and releases
 it only after recovery. Docker behavior is explicitly a test implementation.
-Installer tests run only under the already-root local test runtime and never
-escalate privileges. No server Docker behavior is claimed by these tests.
+Installer tests mock the protected-file owner predicate and chown boundary,
+assert their requested IDs/targets, and run under an ordinary user without
+requesting real root ownership. Production owner validation remains strict. No server Docker behavior is claimed by these tests.
 
 Server acceptance must still verify:
 
