@@ -28,7 +28,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
   "read-only export history on isolated PostgreSQL",
   () => {
     let db: Database;
-    let teamIds: string[] = [];
+    let teamIds: [string, string] | null = null;
     beforeAll(() => {
       db = getTestDatabase();
     });
@@ -43,11 +43,16 @@ describe.skipIf(!isTestDatabaseAvailable())(
       );
     });
     afterEach(async () => {
-      if (teamIds.length)
-        await db.delete(teams).where(inArray(teams.id, teamIds));
-      teamIds = [];
+      if (teamIds) await db.delete(teams).where(inArray(teams.id, teamIds));
+      teamIds = null;
     });
     afterAll(closeDatabase);
+
+    function fixtureTeamIds(): [string, string] {
+      if (!teamIds)
+        throw new Error("Export history fixture teams are unavailable");
+      return teamIds;
+    }
 
     async function seed(
       teamId: string,
@@ -102,37 +107,39 @@ describe.skipIf(!isTestDatabaseAvailable())(
       return { id, teamId, operationId, snapshotHash, archiveHash, at };
     }
     async function savedRows(database: DatabaseOrTransaction) {
+      const [teamId, foreignTeamId] = fixtureTeamIds();
       const result = await database.execute(sql`
         select to_jsonb(s) as row from export_snapshots s
-        where team_id in (${teamIds[0]}::uuid, ${teamIds[1]}::uuid)
+        where team_id in (${teamId}::uuid, ${foreignTeamId}::uuid)
         order by id
       `);
       return result.rows;
     }
 
     test("list/get isolate the current team and full-team kind", async () => {
-      const own = await seed(teamIds[0]!, { outcome: "complete" });
-      const foreign = await seed(teamIds[1]!, { outcome: "complete" });
-      const selection = await seed(teamIds[0]!, {
+      const [teamId, foreignTeamId] = fixtureTeamIds();
+      const own = await seed(teamId, { outcome: "complete" });
+      const foreign = await seed(foreignTeamId, { outcome: "complete" });
+      const selection = await seed(teamId, {
         kind: "transactions",
         outcome: "complete",
       });
-      const page = await listTeamExportHistory(db, { teamId: teamIds[0]! });
-      expect(page.teamId).toBe(teamIds[0]);
+      const page = await listTeamExportHistory(db, { teamId });
+      expect(page.teamId).toBe(teamId);
       expect(page.items.map((row) => row.id)).toEqual([own.id]);
       expect(
         await getTeamExportHistoryById(db, {
-          teamId: teamIds[0]!,
+          teamId,
           id: foreign.id,
         }),
       ).toEqual({
-        teamId: teamIds[0],
+        teamId,
         item: null,
       });
       expect(
         (
           await getTeamExportHistoryById(db, {
-            teamId: teamIds[0]!,
+            teamId,
             id: selection.id,
           })
         ).item,
@@ -144,7 +151,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
     });
 
     test("reads primary even when the configured replica refuses history reads", async () => {
-      const own = await seed(teamIds[0]!, { outcome: "complete" });
+      const [teamId] = fixtureTeamIds();
+      const own = await seed(teamId, { outcome: "complete" });
       const primary = db.usePrimaryOnly();
       let replicaReads = 0;
       const replica = new Proxy(primary, {
@@ -163,13 +171,12 @@ describe.skipIf(!isTestDatabaseAvailable())(
         (replicas) => replicas[0]!,
       );
       expect(
-        (await listTeamExportHistory(routed, { teamId: teamIds[0]! })).items[0]
-          ?.id,
+        (await listTeamExportHistory(routed, { teamId })).items[0]?.id,
       ).toBe(own.id);
       expect(
         (
           await getTeamExportHistoryById(routed, {
-            teamId: teamIds[0]!,
+            teamId,
             id: own.id,
           })
         ).item?.id,
@@ -178,11 +185,12 @@ describe.skipIf(!isTestDatabaseAvailable())(
     });
 
     test("both endpoints work in an enforced read-only transaction and preserve every saved row", async () => {
-      const own = await seed(teamIds[0]!);
+      const [teamId] = fixtureTeamIds();
+      const own = await seed(teamId);
       const before = await savedRows(db);
       await db.transaction(async (tx) => {
         await tx.execute(sql`set transaction read only`);
-        const page = await listTeamExportHistory(tx, { teamId: teamIds[0]! });
+        const page = await listTeamExportHistory(tx, { teamId });
         expect(page.items[0]).toMatchObject({
           id: own.id,
           outcome: "unknown",
@@ -191,7 +199,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
         expect(
           (
             await getTeamExportHistoryById(tx, {
-              teamId: teamIds[0]!,
+              teamId,
               id: own.id,
             })
           ).item,
@@ -201,10 +209,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
     });
 
     test("keyset pagination retains microseconds and ties without gaps or duplicate rows", async () => {
+      const [teamId] = fixtureTeamIds();
       const rows = [];
       for (const suffix of ["000001", "000002", "000002", "000003"]) {
         rows.push(
-          await seed(teamIds[0]!, {
+          await seed(teamId, {
             createdAt: `2026-11-03T12:00:00.${suffix}Z`,
           }),
         );
@@ -216,7 +225,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       let cursor: { createdAt: string; id: string } | undefined;
       for (let pageIndex = 0; pageIndex < rows.length; pageIndex++) {
         const page = await listTeamExportHistory(db, {
-          teamId: teamIds[0]!,
+          teamId,
           limit: 1,
           cursor,
         });
@@ -234,16 +243,17 @@ describe.skipIf(!isTestDatabaseAvailable())(
     });
 
     test("null, invalid, partial and failed receipts keep their distinct durable outcomes", async () => {
-      const unknown = await seed(teamIds[0]!);
-      const invalid = await seed(teamIds[0]!, {
+      const [teamId, foreignTeamId] = fixtureTeamIds();
+      const unknown = await seed(teamId);
+      const invalid = await seed(teamId, {
         outcome: "complete",
         overrides: {
-          fullPath: `${teamIds[1]}/exports/${"a".repeat(64)}/${"b".repeat(64)}.zip`,
+          fullPath: `${foreignTeamId}/exports/${"a".repeat(64)}/${"b".repeat(64)}.zip`,
         },
       });
-      const partial = await seed(teamIds[0]!, { outcome: "partial" });
-      const failed = await seed(teamIds[0]!, { outcome: "failed" });
-      const page = await listTeamExportHistory(db, { teamId: teamIds[0]! });
+      const partial = await seed(teamId, { outcome: "partial" });
+      const failed = await seed(teamId, { outcome: "failed" });
+      const page = await listTeamExportHistory(db, { teamId });
       const byId = new Map(page.items.map((entry) => [entry.id, entry]));
       expect(byId.get(unknown.id)).toMatchObject({
         outcome: "unknown",
