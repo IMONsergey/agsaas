@@ -10,6 +10,12 @@ import {
   transactions,
 } from "../schema";
 import { assertTeamOwnership } from "../utils/tenant-ownership";
+import {
+  InboxReceiptDeletedError,
+  isInboxReceiptDeleted,
+  lockInboxDeletionScope,
+  lockInboxDeletionScopes,
+} from "./inbox-deletion-receipts";
 import { retainFileCleanup } from "./resource-cleanups";
 
 const logger = createLoggerWithContext("inbox");
@@ -492,11 +498,20 @@ export async function deleteInbox(
   params: DeleteInboxParams,
 ) {
   const { id, teamId } = params;
-  return db.transaction(async (tx) => {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  const primary = "usePrimaryOnly" in db ? db.usePrimaryOnly() : db;
+  return primary.transaction(async (tx) => {
+    const [scope] = await tx
+      .select({ filePath: inbox.filePath, referenceId: inbox.referenceId })
+      .from(inbox)
+      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)));
+    if (!scope) throw new Error("Inbox item not found");
+    await lockInboxDeletionScope(tx, { teamId, ...scope });
     const [item] = await tx
       .select({
         id: inbox.id,
         filePath: inbox.filePath,
+        referenceId: inbox.referenceId,
         transactionId: inbox.transactionId,
         attachmentId: inbox.attachmentId,
       })
@@ -504,6 +519,12 @@ export async function deleteInbox(
       .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
       .for("update");
     if (!item) throw new Error("Inbox item not found");
+    if (
+      item.referenceId !== scope.referenceId ||
+      JSON.stringify(item.filePath) !== JSON.stringify(scope.filePath)
+    ) {
+      throw new Error("Inbox scope changed; retry deletion");
+    }
     const cleanup = item.filePath?.length
       ? await retainFileCleanup(tx, { teamId, path: item.filePath })
       : null;
@@ -571,8 +592,15 @@ export async function deleteInboxMany(
 ) {
   if (params.ids.length > 100)
     throw new Error("Delete at most 100 inbox items at a time");
-  return db.transaction(async (tx) => {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  return db.usePrimaryOnly().transaction(async (tx) => {
     const ids = [...new Set(params.ids)].sort();
+    if (ids.length === 0) return [];
+    const scopes = await tx
+      .select({ filePath: inbox.filePath, referenceId: inbox.referenceId })
+      .from(inbox)
+      .where(and(inArray(inbox.id, ids), eq(inbox.teamId, params.teamId)));
+    await lockInboxDeletionScopes(tx, params.teamId, scopes);
     const results: Awaited<ReturnType<typeof deleteInbox>>[] = [];
     for (const id of ids)
       results.push(await deleteInbox(tx, { id, teamId: params.teamId }));
@@ -975,62 +1003,16 @@ export async function updateInbox(
 ) {
   const { id, teamId, ...data } = params;
 
-  // Special handling for status: "deleted" - need to clean up transaction attachments
   if (data.status === "deleted") {
-    // First get the inbox item to check if it has attachments
-    const [result] = await db
-      .select({
-        id: inbox.id,
-        transactionId: inbox.transactionId,
-        attachmentId: inbox.attachmentId,
-      })
-      .from(inbox)
-      .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-      .limit(1);
-
-    if (result?.attachmentId && result?.transactionId) {
-      // Delete the specific transaction attachment for this inbox item
-      await db
-        .delete(transactionAttachments)
-        .where(
-          and(
-            eq(transactionAttachments.id, result.attachmentId),
-            eq(transactionAttachments.teamId, teamId),
-          ),
-        );
-
-      // Check if this transaction still has other attachments before resetting tax info
-      const remainingAttachments = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(transactionAttachments)
-        .where(
-          and(
-            eq(transactionAttachments.transactionId, result.transactionId),
-            eq(transactionAttachments.teamId, teamId),
-          ),
-        );
-
-      // Only reset tax rate and type if no more attachments exist for this transaction
-      if (remainingAttachments[0]?.count === 0) {
-        await db
-          .update(transactions)
-          .set({
-            taxRate: null,
-            taxType: null,
-          })
-          .where(eq(transactions.id, result.transactionId));
-      }
-    }
-
-    // Delete any match suggestions for this inbox item
-    await db
-      .delete(transactionMatchSuggestions)
-      .where(
-        and(
-          eq(transactionMatchSuggestions.inboxId, id),
-          eq(transactionMatchSuggestions.teamId, teamId),
-        ),
-      );
+    const erased = await deleteInbox(db, { id, teamId });
+    // This is a command result, never a soft row or a copy of the erased PII.
+    return {
+      id: erased.id,
+      deleted: true as const,
+      status: "deleted" as const,
+      cleanupPending: erased.cleanupPending,
+      cleanupId: erased.cleanupId,
+    };
   }
 
   // Update the inbox record
@@ -1674,18 +1656,122 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
     status = "new",
   } = params;
 
-  await assertInboxUploadScope(db, teamId, [{ filePath, inboxAccountId }]);
+  // The erasure decision and insert share the source/object locks. If a late
+  // upload arrived after deletion, retain cleanup and commit it before refusing.
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  const result = await db.usePrimaryOnly().transaction(async (tx) => {
+    await assertInboxUploadScope(tx, teamId, [{ filePath, inboxAccountId }]);
+    await lockInboxDeletionScope(tx, { teamId, referenceId, filePath });
+    if (await isInboxReceiptDeleted(tx, { teamId, referenceId, filePath })) {
+      await retainFileCleanup(tx, { teamId, path: filePath });
+      return { erased: true } as const;
+    }
 
-  // If we have a referenceId, use ON CONFLICT to handle race conditions
-  // where multiple jobs try to create the same inbox item simultaneously
-  if (referenceId) {
-    logger.info("Creating inbox item with referenceId (using ON CONFLICT)", {
-      referenceId,
-      teamId,
-      filePath,
-    });
+    // If we have a referenceId, use ON CONFLICT to handle race conditions
+    // where multiple jobs try to create the same inbox item simultaneously
+    if (referenceId) {
+      logger.info("Creating inbox item with referenceId (using ON CONFLICT)", {
+        referenceId,
+        teamId,
+        filePath,
+      });
 
-    const [result] = await db
+      const [result] = await tx
+        .insert(inbox)
+        .values({
+          displayName,
+          teamId,
+          filePath,
+          fileName,
+          contentType,
+          size,
+          referenceId,
+          website,
+          senderEmail,
+          inboxAccountId,
+          meta,
+          status,
+        })
+        .onConflictDoNothing({
+          target: inbox.referenceId,
+        })
+        .returning({
+          id: inbox.id,
+          fileName: inbox.fileName,
+          filePath: inbox.filePath,
+          displayName: inbox.displayName,
+          transactionId: inbox.transactionId,
+          amount: inbox.amount,
+          currency: inbox.currency,
+          contentType: inbox.contentType,
+          date: inbox.date,
+          status: inbox.status,
+          createdAt: inbox.createdAt,
+          website: inbox.website,
+          senderEmail: inbox.senderEmail,
+          description: inbox.description,
+          referenceId: inbox.referenceId,
+          size: inbox.size,
+          inboxAccountId: inbox.inboxAccountId,
+        });
+
+      // If insert was skipped due to conflict, fetch the existing row
+      if (!result) {
+        logger.info(
+          "Insert skipped due to referenceId conflict, fetching existing row",
+          {
+            referenceId,
+            teamId,
+          },
+        );
+
+        const [existingRow] = await tx
+          .select({
+            id: inbox.id,
+            fileName: inbox.fileName,
+            filePath: inbox.filePath,
+            displayName: inbox.displayName,
+            transactionId: inbox.transactionId,
+            amount: inbox.amount,
+            currency: inbox.currency,
+            contentType: inbox.contentType,
+            date: inbox.date,
+            status: inbox.status,
+            createdAt: inbox.createdAt,
+            website: inbox.website,
+            senderEmail: inbox.senderEmail,
+            description: inbox.description,
+            referenceId: inbox.referenceId,
+            size: inbox.size,
+            inboxAccountId: inbox.inboxAccountId,
+          })
+          .from(inbox)
+          .where(
+            and(eq(inbox.referenceId, referenceId), eq(inbox.teamId, teamId)),
+          )
+          .limit(1);
+
+        logger.info("Fetched existing inbox item", {
+          referenceId,
+          teamId,
+          existingId: existingRow?.id,
+          existingStatus: existingRow?.status,
+        });
+
+        return { erased: false, value: existingRow } as const;
+      }
+
+      logger.info("Successfully created new inbox item", {
+        referenceId,
+        teamId,
+        newId: result.id,
+      });
+
+      return { erased: false, value: result } as const;
+    }
+
+    // No referenceId - regular insert (for manual uploads)
+    const [result] = await tx
       .insert(inbox)
       .values({
         displayName,
@@ -1700,9 +1786,6 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
         inboxAccountId,
         meta,
         status,
-      })
-      .onConflictDoNothing({
-        target: inbox.referenceId,
       })
       .returning({
         id: inbox.id,
@@ -1724,99 +1807,10 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
         inboxAccountId: inbox.inboxAccountId,
       });
 
-    // If insert was skipped due to conflict, fetch the existing row
-    if (!result) {
-      logger.info(
-        "Insert skipped due to referenceId conflict, fetching existing row",
-        {
-          referenceId,
-          teamId,
-        },
-      );
-
-      const [existingRow] = await db
-        .select({
-          id: inbox.id,
-          fileName: inbox.fileName,
-          filePath: inbox.filePath,
-          displayName: inbox.displayName,
-          transactionId: inbox.transactionId,
-          amount: inbox.amount,
-          currency: inbox.currency,
-          contentType: inbox.contentType,
-          date: inbox.date,
-          status: inbox.status,
-          createdAt: inbox.createdAt,
-          website: inbox.website,
-          senderEmail: inbox.senderEmail,
-          description: inbox.description,
-          referenceId: inbox.referenceId,
-          size: inbox.size,
-          inboxAccountId: inbox.inboxAccountId,
-        })
-        .from(inbox)
-        .where(
-          and(eq(inbox.referenceId, referenceId), eq(inbox.teamId, teamId)),
-        )
-        .limit(1);
-
-      logger.info("Fetched existing inbox item", {
-        referenceId,
-        teamId,
-        existingId: existingRow?.id,
-        existingStatus: existingRow?.status,
-      });
-
-      return existingRow;
-    }
-
-    logger.info("Successfully created new inbox item", {
-      referenceId,
-      teamId,
-      newId: result.id,
-    });
-
-    return result;
-  }
-
-  // No referenceId - regular insert (for manual uploads)
-  const [result] = await db
-    .insert(inbox)
-    .values({
-      displayName,
-      teamId,
-      filePath,
-      fileName,
-      contentType,
-      size,
-      referenceId,
-      website,
-      senderEmail,
-      inboxAccountId,
-      meta,
-      status,
-    })
-    .returning({
-      id: inbox.id,
-      fileName: inbox.fileName,
-      filePath: inbox.filePath,
-      displayName: inbox.displayName,
-      transactionId: inbox.transactionId,
-      amount: inbox.amount,
-      currency: inbox.currency,
-      contentType: inbox.contentType,
-      date: inbox.date,
-      status: inbox.status,
-      createdAt: inbox.createdAt,
-      website: inbox.website,
-      senderEmail: inbox.senderEmail,
-      description: inbox.description,
-      referenceId: inbox.referenceId,
-      size: inbox.size,
-      inboxAccountId: inbox.inboxAccountId,
-    });
-
-  return result;
+    return { erased: false, value: result } as const;
+  });
+  if (result.erased) throw new InboxReceiptDeletedError();
+  return result.value;
 }
 
 export type UpdateInboxWithProcessedDataParams = {
@@ -1851,7 +1845,7 @@ export async function updateInboxWithProcessedData(
   const [result] = await db
     .update(inbox)
     .set(updateData)
-    .where(eq(inbox.id, id))
+    .where(and(eq(inbox.id, id), ne(inbox.status, "deleted")))
     .returning({
       id: inbox.id,
       fileName: inbox.fileName,

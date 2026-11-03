@@ -7,6 +7,10 @@ import {
   updateInbox,
   updateInboxWithProcessedData,
 } from "@midday/db/queries";
+import {
+  InboxReceiptDeletedError,
+  isInboxReceiptDeleted,
+} from "@midday/db/queries/inbox-deletion-receipts";
 import { triggerJob } from "@midday/job-client";
 import { createTeamClient } from "@midday/supabase/job";
 import { requireVaultPathForTeam } from "@midday/utils/storage-path";
@@ -33,8 +37,11 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       inboxAccountId,
     } = job.data;
     requireVaultPathForTeam(filePath, teamId);
+    // biome-ignore lint/correctness/useHookAtTopLevel: Worker lifecycle decisions require primary reads.
+    const db = getDb().usePrimaryOnly();
+    const deletionScope = { teamId, referenceId, filePath };
+    if (await isInboxReceiptDeleted(db, deletionScope)) return;
     const supabase = createTeamClient(teamId);
-    const db = getDb();
     await assertInboxUploadScope(db, teamId, [{ filePath, inboxAccountId }]);
 
     const fileName = filePath.join("/");
@@ -85,22 +92,6 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       duration: `${inboxCheckDuration}ms`,
     });
 
-    // Conversion is only an extraction input; the uploaded source stays immutable.
-    if (mimetype === "image/heic") {
-      const { data } = await withTimeout(
-        () => supabase.storage.from("vault").download(fileName),
-        TIMEOUTS.FILE_DOWNLOAD,
-      );
-      if (!data)
-        throw new NonRetryableError("File not found", undefined, "validation");
-      const { buffer: image } = await convertHeicToJpeg(
-        await data.arrayBuffer(),
-        this.logger,
-      );
-      processingDataUrl = "data:image/jpeg;base64," + image.toString("base64");
-      processedMimetype = "image/jpeg";
-    }
-
     // Create inbox item if it doesn't exist (for non-manual uploads)
     // or update existing item status if it was created manually
     if (!inboxData) {
@@ -121,7 +112,11 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         senderEmail,
         inboxAccountId,
         status: "processing", // Set as processing when created by job
+      }).catch((error: unknown) => {
+        if (error instanceof InboxReceiptDeletedError) return null;
+        throw error;
       });
+      if (createdData === null) return;
 
       // Check if this was a duplicate (createInbox returns existing item on conflict)
       // We compare the filePath to see if this is a different job trying to create the same item
@@ -183,6 +178,26 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       throw new Error("Inbox data not found");
     }
 
+    if (await isInboxReceiptDeleted(db, deletionScope)) return;
+
+    // Conversion is only an extraction input; the uploaded source stays immutable.
+    if (mimetype === "image/heic") {
+      const { data } = await withTimeout(
+        () => supabase.storage.from("vault").download(fileName),
+        TIMEOUTS.FILE_DOWNLOAD,
+      );
+      if (!data)
+        throw new NonRetryableError("File not found", undefined, "validation");
+      const { buffer: image } = await convertHeicToJpeg(
+        await data.arrayBuffer(),
+        this.logger,
+      );
+      processingDataUrl = "data:image/jpeg;base64," + image.toString("base64");
+      processedMimetype = "image/jpeg";
+    }
+
+    if (await isInboxReceiptDeleted(db, deletionScope)) return;
+
     // Create signed URL and fetch team data in parallel (they don't depend on each other)
     const preProcessingStartTime = Date.now();
     this.logger.info(
@@ -241,6 +256,8 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       throw new NonRetryableError("File not found", undefined, "validation");
     }
 
+    if (await isInboxReceiptDeleted(db, deletionScope)) return;
+
     try {
       const docProcessingStartTime = Date.now();
       this.logger.info("Starting document processing (OCR/LLM extraction)", {
@@ -264,6 +281,8 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         { timeoutMs: TIMEOUTS.DOCUMENT_PROCESSING },
       );
 
+      if (await isInboxReceiptDeleted(db, deletionScope)) return;
+
       const docProcessingDuration = Date.now() - docProcessingStartTime;
       this.logger.info("Document processing completed", {
         jobId: job.id,
@@ -276,12 +295,13 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
 
       // Check if document is classified as "other" (non-financial document)
       if (result.document_type === "other") {
-        await updateInboxWithProcessedData(db, {
+        const persisted = await updateInboxWithProcessedData(db, {
           id: inboxData.id,
           displayName: result.name ?? inboxData.displayName ?? undefined,
           type: "other",
           status: "other",
         });
+        if (!persisted) return;
 
         this.logger.info(
           "Document classified as other (non-financial), skipping matching",
@@ -295,7 +315,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         return; // Skip embedding and transaction matching for non-financial documents
       }
 
-      await updateInboxWithProcessedData(db, {
+      const persisted = await updateInboxWithProcessedData(db, {
         id: inboxData.id,
         amount: result.amount ?? undefined,
         currency: result.currency ?? undefined,
@@ -309,6 +329,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         invoiceNumber: result.invoice_number ?? undefined,
         status: "analyzing", // Keep analyzing until matching is complete
       });
+      if (!persisted) return;
 
       // Group related inbox items after storing invoice number
       try {
@@ -323,6 +344,8 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         });
         // Don't fail the entire process if grouping fails
       }
+
+      if (await isInboxReceiptDeleted(db, deletionScope)) return;
 
       // Trigger document processing and matching (no inbox embedding dependency).
       const parallelJobsStartTime = Date.now();
@@ -433,6 +456,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         totalDuration: `${totalDuration}ms`,
       });
     } catch (error) {
+      if (await isInboxReceiptDeleted(db, deletionScope)) return;
       this.logger.error("Document processing failed", {
         inboxId: inboxData.id,
         error: error instanceof Error ? error.message : "Unknown error",

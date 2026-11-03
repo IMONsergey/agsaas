@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { InboxDeletedReceiptProof } from "@midday/db/queries/inbox-deletion-receipts";
 import { createReceiptReferenceId } from "@midday/utils/receipt-path";
 import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 
@@ -26,6 +27,7 @@ export type InboxWebhookReceipt = {
   status: string | null;
   senderEmail: string | null;
   meta: unknown;
+  deletionProof?: InboxDeletedReceiptProof;
 };
 
 export type PreparedWebhookReceipt = {
@@ -53,7 +55,10 @@ export type PreparedWebhookReceipt = {
 };
 
 export type WebhookIngestionDependencies = {
-  findReceipt(referenceId: string): Promise<InboxWebhookReceipt | undefined>;
+  findReceipt(
+    referenceId: string,
+    expected: PreparedWebhookReceipt,
+  ): Promise<InboxWebhookReceipt | undefined>;
   upload(
     receipt: PreparedWebhookReceipt,
   ): Promise<{ path?: string; error?: unknown }>;
@@ -203,6 +208,23 @@ function assertReceipt(
   ) {
     throw new ReceiptConflict();
   }
+  if (receipt.status === "deleted") {
+    const proof = receipt.deletionProof;
+    if (
+      !proof ||
+      proof.unavailable !== false ||
+      proof.contentSha256 !== expected.contentSha256 ||
+      proof.contentTypeMatches !== true ||
+      typeof proof.metadataRetained !== "boolean" ||
+      (!legacy && proof.metadataRetained !== true) ||
+      (proof.metadataRetained && proof.metadataMatches !== true)
+    ) {
+      // Historical erasure without an original byte proof remains uncertain.
+      // Neither absence nor a path match is evidence that changed bytes are safe.
+      throw new ReceiptConflict();
+    }
+    return null;
+  }
   const path = requireVaultPathForTeam(receipt.filePath ?? [], expected.teamId);
   if (legacy) {
     // Legacy lookups are scoped by both team and the exact old source key.
@@ -258,19 +280,22 @@ function needsProcessing(receipt: InboxWebhookReceipt) {
   return receipt.status === "new" || receipt.status === "processing";
 }
 
-async function ingestOne(
+async function ingestAttempt(
   deps: WebhookIngestionDependencies,
   expected: PreparedWebhookReceipt,
 ) {
-  let receipt = await deps.findReceipt(expected.referenceId);
+  let receipt = await deps.findReceipt(expected.referenceId, expected);
   let legacy = false;
+  let legacyPath: string | null = null;
   if (!receipt) {
-    receipt = await deps.findReceipt(expected.legacyReferenceId);
+    receipt = await deps.findReceipt(expected.legacyReferenceId, expected);
     legacy = !!receipt;
   }
   if (receipt) {
     const path = assertReceipt(receipt, expected, legacy);
+    if (path === null) return "deleted" as const;
     if (legacy) {
+      legacyPath = path;
       // Historical rows did not retain a content hash. A missing or different
       // object needs explicit reconciliation; never guess or create a duplicate.
       await assertStoredBytes(deps, path, expected);
@@ -280,21 +305,53 @@ async function ingestOne(
   if (!legacy) {
     await ensureImmutableUpload(deps, expected);
     if (!receipt) receipt = await deps.register(expected);
-    assertReceipt(receipt, expected);
+    if (assertReceipt(receipt, expected) === null) return "deleted" as const;
   }
   if (!receipt) throw new Error("Inbox receipt was not retained");
-  // Registration is durable before the first queue write. The returned row,
-  // including on conflict, is the sole authority for the processing payload.
+  // Registration is durable before the first queue write. Re-read primary
+  // after external Storage work so a concurrent erasure is acknowledged from
+  // its exact proof before any further handoff.
+  const retained = await deps.findReceipt(receipt.referenceId!, expected);
+  if (!retained) throw new Error("Inbox registration disappeared");
+  const retainedPath = assertReceipt(retained, expected, legacy);
+  if (retainedPath === null) return "deleted" as const;
+  if (legacy && retainedPath !== legacyPath) throw new ReceiptConflict();
+  receipt = retained;
   if (!needsProcessing(receipt)) return;
   const state = await deps.enqueue(receipt, expected.referenceId);
   if (state === "completed") {
-    const current = await deps.findReceipt(receipt.referenceId!);
+    const current = await deps.findReceipt(receipt.referenceId!, expected);
     if (!current)
       throw new Error("Completed receipt lost its Inbox registration");
-    assertReceipt(current, expected, legacy);
+    if (assertReceipt(current, expected, legacy) === null)
+      return "deleted" as const;
     if (needsProcessing(current)) {
       throw new Error("Completed receipt has no persisted processing outcome");
     }
+  }
+}
+
+async function ingestOne(
+  deps: WebhookIngestionDependencies,
+  expected: PreparedWebhookReceipt,
+) {
+  try {
+    return await ingestAttempt(deps, expected);
+  } catch (error) {
+    if (error instanceof ReceiptConflict) throw error;
+    // Deletion may commit during an upload, registration, download fallback or
+    // queue response. Re-read its durable proof; never infer success from error.
+    let current = await deps.findReceipt(expected.referenceId, expected);
+    let legacy = false;
+    if (!current) {
+      current = await deps.findReceipt(expected.legacyReferenceId, expected);
+      legacy = !!current;
+    }
+    if (current?.status === "deleted") {
+      assertReceipt(current, expected, legacy);
+      return "deleted" as const;
+    }
+    throw error;
   }
 }
 
@@ -306,6 +363,7 @@ export async function ingestWebhookReceipts(
 ) {
   let accepted = 0;
   let failed = 0;
+  let deleted = 0;
   for (let start = 0; start < receipts.length; start += CONCURRENCY) {
     const batch = receipts.slice(start, start + CONCURRENCY);
     const outcomes = await Promise.allSettled(
@@ -313,8 +371,10 @@ export async function ingestWebhookReceipts(
     );
     for (let index = 0; index < outcomes.length; index++) {
       const outcome = outcomes[index]!;
-      if (outcome.status === "fulfilled") accepted++;
-      else {
+      if (outcome.status === "fulfilled") {
+        accepted++;
+        if (outcome.value === "deleted") deleted++;
+      } else {
         failed++;
         const code =
           outcome.reason instanceof ReceiptConflict
@@ -329,5 +389,6 @@ export async function ingestWebhookReceipts(
     attempted: receipts.length,
     accepted,
     failed,
+    deleted,
   };
 }

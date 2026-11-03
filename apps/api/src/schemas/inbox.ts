@@ -410,3 +410,25 @@ export const inboxBlocklistItemResponseSchema = z
 export const inboxBlocklistResponseSchema = z.object({
   entries: z.array(inboxBlocklistItemResponseSchema),
 });
+
+/** Physical erasure command result; no former receipt or transaction fields. */
+export const inboxErasureResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    deleted: z.literal(true),
+    status: z.literal("deleted"),
+    cleanupPending: z
+      .boolean()
+      .describe("Whether retained file cleanup is still pending"),
+    cleanupId: z.string().uuid().nullable(),
+  })
+  .strict()
+  .openapi({
+    description:
+      "The Inbox item was erased. Associated file cleanup may still be pending.",
+  });
+
+export const inboxUpdateResponseSchema = z.union([
+  inboxItemResponseSchema,
+  inboxErasureResponseSchema,
+]);

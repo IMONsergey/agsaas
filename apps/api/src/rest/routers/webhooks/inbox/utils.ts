@@ -7,6 +7,7 @@ import { createReceiptReferenceId } from "@midday/utils/receipt-path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   ingestWebhookReceipts,
+  type PreparedWebhookReceipt,
   prepareWebhookReceipts,
   type WebhookAttachment,
 } from "../../../../services/inbox-webhook-ingestion";
@@ -48,10 +49,11 @@ export async function receiveInboxAttachments(
   // biome-ignore lint/correctness/useHookAtTopLevel: Database primary selection is not a React hook.
   const primary = db.usePrimaryOnly();
   const storage = supabase.storage.from("vault");
-  const findReceipt = (referenceId: string) =>
+  const findReceipt = (referenceId: string, expected: PreparedWebhookReceipt) =>
     getInboxReceiptByReferenceId(primary, {
       teamId: input.teamId,
       referenceId,
+      expectedProof: { contentType: expected.contentType, meta: expected.meta },
     });
   const result = await ingestWebhookReceipts(receipts, {
     findReceipt,
@@ -88,7 +90,7 @@ export async function receiveInboxAttachments(
         senderEmail: senderEmail ?? undefined,
         status: "new",
       });
-      const persisted = await findReceipt(receipt.referenceId);
+      const persisted = await findReceipt(receipt.referenceId, receipt);
       if (!persisted) throw new Error("Inbox registration was not retained");
       return persisted;
     },
@@ -100,7 +102,8 @@ export async function receiveInboxAttachments(
         code,
       }),
   });
-  if (result.success && result.accepted) {
+  const activeAccepted = result.accepted - result.deleted;
+  if (result.success && activeAccepted > 0) {
     const reference = await createReceiptReferenceId({
       teamId: input.teamId.toLowerCase(),
       platform: "postmark-notification",
@@ -113,7 +116,7 @@ export async function receiveInboxAttachments(
       {
         type: "inbox_new",
         teamId: input.teamId,
-        totalCount: result.accepted,
+        totalCount: activeAccepted,
         inboxType: "email",
       },
       "notifications",

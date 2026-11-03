@@ -8,6 +8,7 @@ import {
   inboxItemResponseSchema,
   inboxPreSignedUrlResponseSchema,
   inboxResponseSchema,
+  inboxUpdateResponseSchema,
   updateInboxSchema,
 } from "@api/schemas/inbox";
 import { createAdminClient } from "@api/services/supabase";
@@ -268,7 +269,7 @@ app.openapi(
     operationId: "updateInboxItem",
     "x-speakeasy-name-override": "update",
     description:
-      "Update fields of an inbox item by its unique identifier for the authenticated team.",
+      "Update fields of an inbox item. Setting status to deleted permanently erases the item and returns a deletion command result.",
     tags: ["Inbox"],
     request: {
       params: updateInboxSchema.pick({ id: true }),
@@ -284,10 +285,10 @@ app.openapi(
     responses: {
       200: {
         description:
-          "Update fields of an inbox item by its unique identifier for the authenticated team.",
+          "Update fields of an inbox item. Setting status to deleted permanently erases the item and returns a deletion command result.",
         content: {
           "application/json": {
-            schema: inboxItemResponseSchema,
+            schema: inboxUpdateResponseSchema,
           },
         },
       },
@@ -301,8 +302,10 @@ app.openapi(
     const body = c.req.valid("json");
 
     const result = await updateInbox(db, { ...body, id, teamId });
+    if (!result)
+      throw new HTTPException(404, { message: "Inbox item not found" });
 
-    return c.json(validateResponse(result, inboxItemResponseSchema));
+    return c.json(validateResponse(result, inboxUpdateResponseSchema));
   },
 );
 

@@ -14,6 +14,7 @@ import {
   lockUserMembership,
   requireTeamOwner,
 } from "../utils/team-membership";
+import { lockInboxDeletionScope } from "./inbox-deletion-receipts";
 import { appendSecurityAuditEvent } from "./security-audit";
 import { releaseTeamConnector } from "./team-entitlements";
 
@@ -214,6 +215,10 @@ export async function retainFileCleanup(
 ) {
   const path = cleanupObjectPath(input.teamId, input.path);
   const pathHash = cleanupDigest(`vault:${path}`);
+  await lockInboxDeletionScope(tx, {
+    teamId: input.teamId,
+    filePath: path.split("/"),
+  });
   await tx.execute(
     sql`INSERT INTO public.storage_deletion_tombstones(team_id, object_hash) VALUES (${input.teamId}::uuid, ${pathHash}) ON CONFLICT DO NOTHING`,
   );

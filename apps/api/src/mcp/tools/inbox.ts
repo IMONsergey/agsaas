@@ -4,6 +4,7 @@ import {
   deleteInboxSchema,
   getInboxByIdSchema,
   getInboxSchema,
+  inboxErasureResponseSchema,
   matchTransactionSchema,
   unmatchTransactionSchema,
   updateInboxSchema,
@@ -172,7 +173,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
       {
         title: "Update Inbox Item",
         description:
-          "Update an inbox item's status, display name, currency, or amount. Use this to mark items as done or update extracted data.",
+          "Update an inbox item's status, display name, currency, or amount. Status deleted permanently erases the item and returns a deletion command result; file cleanup may remain pending.",
         inputSchema: {
           id: z.string().uuid().describe("Inbox item ID"),
           status: z
@@ -183,7 +184,7 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
           currency: updateInboxSchema.shape.currency,
           amount: updateInboxSchema.shape.amount,
         },
-        annotations: WRITE_ANNOTATIONS,
+        annotations: DESTRUCTIVE_ANNOTATIONS,
       },
       async (params) => {
         try {
@@ -205,7 +206,10 @@ export const registerInboxTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          const clean = sanitize(mcpInboxDetailSchema, result);
+          const clean =
+            "deleted" in result
+              ? sanitize(inboxErasureResponseSchema, result)
+              : sanitize(mcpInboxDetailSchema, result);
 
           return {
             content: [{ type: "text", text: JSON.stringify(clean) }],

@@ -1,12 +1,17 @@
 import type { CleanupStatus, CleanupTarget } from "@midday/db/cleanup";
 import type { DatabaseOrTransaction } from "@midday/db/client";
 import {
+  getInboxDeletionDigestPlan,
+  retainInboxDeletionDigest,
+} from "@midday/db/queries/inbox-deletion-receipts";
+import {
   finishResourceCleanup,
   openResourceCleanup,
   type ResourceCleanup,
 } from "@midday/db/queries/resource-cleanups";
 import { encrypt } from "@midday/encryption";
 import { createStorageCleanupClient } from "@midday/supabase/cleanup";
+import { readStorageDeletionDigest } from "@midday/supabase/deletion-proof";
 import { createClient } from "@midday/supabase/job";
 import { sql } from "drizzle-orm";
 
@@ -180,6 +185,31 @@ async function hasOtherGrant(db: DatabaseOrTransaction, target: CleanupTarget) {
   return result.rows[0]?.shared === true;
 }
 
+/** Legacy receipts lack an original hash. A bounded best-effort read can retain
+ * one before erasure; unavailable evidence never delays or reverses deletion. */
+async function retainLegacyDeletionProof(
+  db: DatabaseOrTransaction,
+  row: ResourceCleanup,
+  target: CleanupTarget,
+) {
+  try {
+    const plan = await getInboxDeletionDigestPlan(db, row);
+    if (!plan.pending) return;
+    const evidence =
+      plan.maximumBytes > 0
+        ? await readStorageDeletionDigest(
+            { teamId: target.teamId! },
+            target.data.path!,
+            plan.maximumBytes,
+          ).catch(() => ({ failure: "download_unavailable" as const }))
+        : { failure: "size_unverifiable" as const };
+    await retainInboxDeletionDigest(db, row, evidence);
+  } catch {
+    // Keep the ledger's unknown proof. Cleanup must still erase the object even
+    // if the optional proof read/save is unavailable or its lease became stale.
+  }
+}
+
 export async function executeResourceCleanup(
   db: DatabaseOrTransaction,
   row: ResourceCleanup,
@@ -201,6 +231,7 @@ export async function executeResourceCleanup(
     }
   }
   if (target.kind === "storage-object") {
+    await retainLegacyDeletionProof(db, row, target);
     await createStorageCleanupClient({ teamId: target.teamId! }).remove(
       "vault",
       [target.data.path!],

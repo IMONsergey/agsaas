@@ -37,6 +37,7 @@
     "./storage-path": "./src/utils/storage-path.ts",
     "./types": "./src/types/index.ts",
     "./account-matching": "./src/utils/account-matching.ts",
-    "./cleanup": "./src/client/cleanup.ts"
+    "./cleanup": "./src/client/cleanup.ts",
+    "./deletion-proof": "./src/client/deletion-proof.ts"
   }
 }

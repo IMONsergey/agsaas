@@ -96,7 +96,9 @@
     "./invoice-refund-request": "./src/invoice-refund-request.ts",
     "./queries/invoice-refund-requests": "./src/queries/invoice-refund-requests.ts",
     "./bank-consent": "./src/bank-consent.ts",
-    "./queries/hosted-bank-consents": "./src/queries/hosted-bank-consents.ts"
+    "./queries/hosted-bank-consents": "./src/queries/hosted-bank-consents.ts",
+    "./queries/inbox-receipts": "./src/queries/inbox-receipts.ts",
+    "./queries/inbox-deletion-receipts": "./src/queries/inbox-deletion-receipts.ts"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",

@@ -1,12 +1,21 @@
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../client";
 import { inbox } from "../schema";
+import {
+  getInboxDeletedReceiptByReferenceId,
+  type InboxReceiptExpectedProof,
+} from "./inbox-deletion-receipts";
 
-/** Read the authoritative receipt including tombstones. Filtering deleted rows
- * would let an old webhook recreate an intentionally removed document. */
+/** Read active first, then erasure evidence on primary. Deletion commits the
+ * evidence and physical removal atomically: reading in the reverse order could
+ * miss both rows when deletion commits between the two commands. */
 export async function getInboxReceiptByReferenceId(
   db: Database,
-  params: { teamId: string; referenceId: string },
+  params: {
+    teamId: string;
+    referenceId: string;
+    expectedProof?: InboxReceiptExpectedProof;
+  },
 ) {
   // biome-ignore lint/correctness/useHookAtTopLevel: Database primary selection is not a React hook.
   const [receipt] = await db
@@ -31,5 +40,5 @@ export async function getInboxReceiptByReferenceId(
       ),
     )
     .limit(1);
-  return receipt;
+  return receipt ?? getInboxDeletedReceiptByReferenceId(db, params);
 }

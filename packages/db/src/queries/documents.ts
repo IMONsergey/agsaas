@@ -7,6 +7,7 @@ import {
   documentTagAssignments,
   transactionAttachments,
 } from "../schema";
+import { lockInboxDeletionScope } from "./inbox-deletion-receipts";
 import { retainFileCleanup } from "./resource-cleanups";
 
 export type GetDocumentQueryParams = {
@@ -314,7 +315,19 @@ export async function deleteDocument(
   db: Database,
   params: DeleteDocumentParams,
 ) {
-  return db.transaction(async (tx) => {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Primary database routing is not a React hook.
+  return db.usePrimaryOnly().transaction(async (tx) => {
+    const [scope] = await tx
+      .select({ pathTokens: documents.pathTokens })
+      .from(documents)
+      .where(
+        and(eq(documents.id, params.id), eq(documents.teamId, params.teamId)),
+      );
+    if (!scope) return null;
+    await lockInboxDeletionScope(tx, {
+      teamId: params.teamId,
+      filePath: scope.pathTokens,
+    });
     const [result] = await tx
       .select({ id: documents.id, pathTokens: documents.pathTokens })
       .from(documents)
@@ -323,6 +336,11 @@ export async function deleteDocument(
       )
       .for("update");
     if (!result) return null;
+    if (
+      JSON.stringify(result.pathTokens) !== JSON.stringify(scope.pathTokens)
+    ) {
+      throw new Error("Document scope changed; retry deletion");
+    }
     const cleanup = result.pathTokens?.length
       ? await retainFileCleanup(tx, {
           teamId: params.teamId,
