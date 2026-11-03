@@ -234,17 +234,17 @@ describe("synthetic foundation guardrails (no database connection)", () => {
       expect(() => assertKnownFixture(catalog)).toThrow();
     }
   });
-  test("the complete merged baseline and all 33 upgrades match reviewed immutable bytes", () => {
+  test("the complete merged baseline and all 34 upgrades match reviewed immutable bytes", () => {
     const sources = loadSources(ROOT);
-    expect(sources.files).toHaveLength(34);
-    expect(sources.receipts).toHaveLength(35); // explicitly synthetic platform + real application SQL
+    expect(sources.files).toHaveLength(35);
+    expect(sources.receipts).toHaveLength(36); // explicitly synthetic platform + real application SQL
     expect(sources.files[0]?.sha256).toBe(
       "e999657a93946bc8de87cc3a9321757984cfe2e3b3491fa643be58f10b8b32fd",
     );
     expect(
       sources.files
         .at(-1)
-        ?.path.endsWith("20261103111000_plaid_hosted_consent.sql"),
+        ?.path.endsWith("20261103123000_inbox_deletion_receipts.sql"),
     ).toBe(true);
     expect(sources.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
