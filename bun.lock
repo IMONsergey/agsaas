@@ -578,6 +578,7 @@
         "date-fns": "catalog:",
         "jose": "catalog:",
         "qrcode": "^1.5.4",
+        "sharp": "catalog:",
       },
       "devDependencies": {
         "@types/qrcode": "^1.5.6",
