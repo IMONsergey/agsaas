@@ -65,18 +65,56 @@ describe("isolated document lifetime", () => {
         { kind: "classify-document", content: "busy:" + marker },
         { entrypoint, timeoutMs: 3000, signal: controller.signal },
       );
-      const assertion = expect(run).rejects.toThrow("cancelled");
+      // Attach ordinary promise handlers before waiting for the child-ready signal.
+      // Bun matchers must not start waiting for rejection before we issue abort.
+      const outcome = run.then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
       for (let tries = 0; tries < 100 && !existsSync(marker); tries++)
         await Bun.sleep(10);
       expect(existsSync(marker)).toBe(true);
       controller.abort();
-      await assertion;
+      const result = await outcome;
+      expect(result.status).toBe("rejected");
+      if (result.status !== "rejected")
+        throw new Error("Cancelled task published a result");
+      expect(result.error).toBeInstanceOf(Error);
+      expect((result.error as Error).message).toContain("cancelled");
       expect(
         await runDocumentTask(
           { kind: "classify-document", content: "ok" },
           { entrypoint, timeoutMs: 3000 },
         ),
       ).toEqual({ title: "fixture" });
+    } finally {
+      controller.abort();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("terminates an active child when its inherited operation is cancelled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agsaas-parent-cancel-"));
+    const marker = join(dir, "ready");
+    const controller = new AbortController();
+    try {
+      const task = withOperationSignal(controller.signal, () =>
+        runDocumentTask(
+          { kind: "classify-document", content: `busy:${marker}` },
+          { entrypoint, timeoutMs: 3000 },
+        ),
+      );
+      const outcome = task.then(
+        () => ({ cancelled: false, error: undefined }),
+        (error: unknown) => ({ cancelled: true, error }),
+      );
+      for (let tries = 0; tries < 100 && !existsSync(marker); tries++)
+        await Bun.sleep(10);
+      expect(existsSync(marker)).toBe(true);
+      controller.abort();
+      const result = await outcome;
+      expect(result.cancelled).toBe(true);
+      expect(result.error).toBeInstanceOf(Error);
+      expect((result.error as Error).message).toContain("cancelled");
     } finally {
       controller.abort();
       rmSync(dir, { recursive: true, force: true });

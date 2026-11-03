@@ -4,7 +4,13 @@ import { generateFileKey } from "@midday/encryption";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Context } from "../../rest/types";
-import { actorEmail, actorId, signAccessToken, sessionId, sessionState } from "./jwt-fixture";
+import {
+  actorEmail,
+  actorId,
+  sessionId,
+  sessionState,
+  signAccessToken,
+} from "./jwt-fixture";
 
 const teamA = "22222222-2222-4222-8222-222222222222";
 const teamB = "33333333-3333-4333-8333-333333333333";
@@ -21,6 +27,26 @@ let pendingDeletion = false;
 let scopes: string[] = ["users.read"];
 let factors: Array<{ status: "verified" | "unverified" }> = [];
 let factorFailure = false;
+let budgetFailure: "none" | "limited" | "unavailable" = "none";
+class TestBudgetExceededError extends Error {
+  constructor() {
+    super("Request budget exceeded");
+  }
+}
+const consumeRequestBudget = mock(
+  async (
+    _db: Database,
+    _input: { userId: string; teamId?: string | null; cost?: number },
+  ) => {
+    if (budgetFailure === "limited") throw new TestBudgetExceededError();
+    if (budgetFailure === "unavailable")
+      throw new Error("private-db-budget-details");
+  },
+);
+mock.module("@midday/db/queries/resource-admission", () => ({
+  consumeRequestBudget,
+  ResourceBudgetExceededError: TestBudgetExceededError,
+}));
 
 function profile(teamId: string | null = teamA) {
   return {
@@ -149,6 +175,8 @@ beforeEach(() => {
   pendingDeletion = false;
   factors = [];
   factorFailure = false;
+  budgetFailure = "none";
+  consumeRequestBudget.mockClear();
   scopes = ["users.read"];
   for (const fn of [getUserById, hasTeamAccess, listFactors]) fn.mockClear();
 });
@@ -172,11 +200,16 @@ describe("file access revocation and credential scopes", () => {
     expect((await proxyRequest(teamB, { fk })).status).not.toBe(200);
   });
 
-  it("rejects a valid signed file key immediately after the browser session is revoked",async()=>{
-    const fk=await generateFileKey({sessionId,userId:actorId,teamId:teamA,aal:"aal1"});
-    expect((await proxyRequest(teamA,{fk})).status).toBe(200);
-    sessionState.active=false;
-    expect((await proxyRequest(teamA,{fk})).status).toBe(401);
+  it("rejects a valid signed file key immediately after the browser session is revoked", async () => {
+    const fk = await generateFileKey({
+      sessionId,
+      userId: actorId,
+      teamId: teamA,
+      aal: "aal1",
+    });
+    expect((await proxyRequest(teamA, { fk })).status).toBe(200);
+    sessionState.active = false;
+    expect((await proxyRequest(teamA, { fk })).status).toBe(401);
   });
 
   it("rejects deleted profiles and durable pending deletion despite a stale replica", async () => {
@@ -248,6 +281,71 @@ describe("file access revocation and credential scopes", () => {
   it("fails closed on missing or modified capabilities", async () => {
     expect((await proxyRequest(teamA)).status).toBe(401);
     expect((await proxyRequest(teamA, { fk: "invalid-key" })).status).toBe(401);
+  });
+});
+
+describe("file HTTP admission follows verified identity", () => {
+  for (const mode of ["file-key", "browser", "api", "oauth"] as const) {
+    it(`returns 429 and retry guidance before exposing a file for ${mode}`, async () => {
+      scopes = ["documents.read"];
+      budgetFailure = "limited";
+      const options =
+        mode === "file-key"
+          ? {
+              fk: await generateFileKey({
+                sessionId,
+                userId: actorId,
+                teamId: teamA,
+                aal: "aal1",
+              }),
+            }
+          : {
+              bearer:
+                mode === "browser"
+                  ? await signAccessToken({ aal: "aal1" })
+                  : mode === "api"
+                    ? apiToken
+                    : oauthToken,
+            };
+      const teamId = mode === "api" || mode === "oauth" ? teamB : teamA;
+      const response = await proxyRequest(teamId, options);
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("60");
+      expect(await response.json()).toMatchObject({
+        code: "RATE_LIMIT_EXCEEDED",
+      });
+      expect(consumeRequestBudget).toHaveBeenCalledTimes(1);
+      expect(consumeRequestBudget).toHaveBeenCalledWith(replica, {
+        userId: actorId,
+        teamId,
+        cost: 1,
+      });
+    });
+  }
+  it("does not call admission for a revoked signed identity", async () => {
+    const fk = await generateFileKey({
+      sessionId,
+      userId: actorId,
+      teamId: teamA,
+      aal: "aal1",
+    });
+    memberships.delete(teamA);
+    expect((await proxyRequest(teamA, { fk })).status).toBe(401);
+    expect(consumeRequestBudget).not.toHaveBeenCalled();
+  });
+  it("fails closed without exposing the database error when admission is unavailable", async () => {
+    budgetFailure = "unavailable";
+    const fk = await generateFileKey({
+      sessionId,
+      userId: actorId,
+      teamId: teamA,
+      aal: "aal1",
+    });
+    const response = await proxyRequest(teamA, { fk });
+    expect(response.status).toBe(503);
+    const body = await response.text();
+    expect(body).toContain("ADMISSION_UNAVAILABLE");
+    expect(body).not.toContain("private-db-budget-details");
   });
 });
 
