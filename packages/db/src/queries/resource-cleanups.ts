@@ -496,6 +496,12 @@ export async function finishResourceCleanup(
   },
 ) {
   return primary(db).transaction(async (tx) => {
+    // Acquiring an unchanged tuple can wait past the dispatch deadline. Lock
+    // first, then evaluate wall-clock expiry in a separate statement below.
+    const locked = await tx.execute(
+      sql`SELECT id FROM public.resource_cleanups WHERE id = ${row.id}::uuid AND status = 'processing' AND dispatch_token = ${row.dispatchToken}::uuid FOR UPDATE`,
+    );
+    if (!locked.rows.length) return false;
     const status =
       outcome.status === "pending" && row.attempts >= 8 && !outcome.progress
         ? "failed"
@@ -503,7 +509,7 @@ export async function finishResourceCleanup(
     const result =
       await tx.execute(sql`UPDATE public.resource_cleanups SET status = ${status}, reason = ${outcome.reason ?? null}, updated_at = now(), next_attempt_at = now() + interval '1 minute', dispatch_token = NULL, lease_expires_at = NULL,
       attempts = CASE WHEN ${outcome.progress === true} THEN 0 ELSE attempts END, encrypted_payload = CASE WHEN ${status === "completed"} THEN NULL ELSE encrypted_payload END
-      WHERE id = ${row.id}::uuid AND status = 'processing' AND dispatch_token = ${row.dispatchToken}::uuid AND lease_expires_at > now() RETURNING id`);
+      WHERE id = ${row.id}::uuid AND status = 'processing' AND dispatch_token = ${row.dispatchToken}::uuid AND lease_expires_at > clock_timestamp() RETURNING id`);
     if (!result.rows.length) return false;
     if (status === "completed" && row.provider === "composio" && row.teamId) {
       const target = openResourceCleanup(row);
