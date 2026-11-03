@@ -1,5 +1,15 @@
 # Exact-release synthetic acceptance installation
 
+**Launch remains blocked until installed protocol and daemon acceptance pass.**
+Source now implements a shared quarantine in
+`deploy/self-hosted/heavy-slot/`, enforced by the ordinary queue and privileged
+adapter. It has not been installed or tested against the real Docker daemon.
+The current Desktop Commander policy blocks administrative execution; no
+configuration bypass or substitute remote channel is used. Local Python tests
+exercise actual process death/flock/queue admission with an explicit fake Docker
+transport, not a daemon recovery proof. Review the exact installation and
+acceptance in [heavy-slot/README.md](heavy-slot/README.md).
+
 This profile creates **new state only** in `/opt/agsaas/candidate-20261103`.
 It never reads the preview/stage environment, database, Storage, Redis or keys.
 All seventeen services belong to `agsaas-candidate-20261103`, use an internal
@@ -41,7 +51,9 @@ runtime image or repairs a pre-existing database.
 Use the bounded root adapter after review, not sudo inside imon-job. It holds
 the **existing original heavy.lock**, checks its owner/inode, monitors the 8 GiB
 disk reserve and limits runtime. CPU/memory/PIDs must also be bounded by the root
-systemd unit. The root coordinator owns the single heavy slot.
+systemd unit. These unit limits cover the adapter/CLI, not Docker daemon work.
+The root coordinator owns the single heavy slot; the separate builder gate below
+is required before `prepare` can create any new runtime state.
 
 ```sh
 # Replace FULL_MERGED_SHA with the tested exact source commit, not a branch/tag.
@@ -73,12 +85,80 @@ manifest and real catalog determine the next step. `prepare` cannot overwrite
 state or rotate keys. A later source retarget/migration requires a reviewed
 procedure; changing an environment SHA alone is not a deployment.
 
+## Daemon-side build resource gate
+
+`prepare` and each application build inspect the dedicated, single-node local
+`docker-container` builder `agsaas-candidate-20261103`. The container must be
+`buildx_buildkit_agsaas-candidate-202611030`, use an approved **digest-pinned**
+`moby/buildkit` image, its own state volume and bridge network. Actual Docker
+HostConfig must cap memory at 3 GiB, total memory+swap at the same value, CPU at
+2 cores and PIDs at 256. The manifest records its container ID, image ID and
+limits; a replaced or modified builder fails closed. Builds explicitly select
+this builder with `docker compose build --builder`; unsupported local versions
+fail before an application starts.
+
+The builder is **not known to exist on the server**. Its reviewed installation,
+using an approved image digest already available to that host, is an outstanding
+prerequisite. Do not substitute an invented digest or `latest`. Provision its
+Buildx node only in a bounded root administration operation holding the existing
+heavy lock. Relevant driver options are `image`, `memory=3g`,
+`memory-swap=3g`, `cpu-period=100000`, `cpu-quota=200000`, `network=bridge`,
+`default-load=true` and `restart-policy=no`. Buildx does not advertise a
+`pids-limit` driver option: set `docker update --pids-limit 256` on this exact
+new builder container after boot, then inspect all actual limits. It must be
+running for standalone preparation. After a durable quarantine, the reviewed
+adapter starts only the already verified exact container ID for launch/build;
+it never creates or pulls a substitute builder.
+
+The adapter arms the root-owned shared quarantine **before** starting the exact
+builder or candidate child. Both the ordinary queue and privileged adapter
+check that marker after acquiring the original lock. A waiting ordinary job
+releases the lock and stays queued while quarantined, allowing recovery to
+acquire it. Malformed or partially written markers also block admission.
+
+SIGKILL closes the process lock but leaves the durable quarantine, so compatible
+runners cannot admit a competing heavy operation. Normal cleanup and explicit
+`candidate --candidate-action recover-builder` independently inspect the exact
+container/image and confirm it stopped, then update the candidate manifest and
+clear the shared marker. Docker failure, changed container identity or cleanup
+failure retains quarantine. There is no age-based release. Completed recovery
+receipts remain in the root-owned control directory.
+
+Before arming, the adapter verifies the installed queue hash/protocol and refuses
+any pre-protocol queued/running process. Updating the script cannot update an
+already running Python interpreter; existing jobs must finish naturally before
+candidate acceptance. No existing runner is stopped or restarted by installation.
+The TypeScript launch/build paths require the current adapter parent PID and
+operation token plus the exact matching builder receipt.
+
+Real daemon-unavailable, cleanup-exception and SIGKILL tests are still required
+with a harmless synthetic builder job and a competing queued sentinel, proving
+no competing admission until independent recovery. The reviewed source does not
+by itself establish that this protocol is installed or that Docker stop behavior
+was accepted. Actual queue policy, socket access and the original lock ownership
+remain unchanged.
+
+The daemon's image import/export and filesystem cache remain outside the CLI
+cgroup; the shared 8 GiB disk-reserve monitor remains necessary. Measured
+resource acceptance has not been performed.
+
+The current application Dockerfiles still refer to `oven/bun:1.3.11` and
+`node:24.21.0-trixie-slim` by version tags. Application source provenance is exact,
+but base-image digest resolution/pinning is a separate unresolved reproducibility
+gate. A dedicated BuildKit may need approved registry/dependency access for
+those build inputs; preinstalled Docker runtime images do not automatically
+populate its independent cache.
+
+Reference: Docker's [docker-container driver options](https://docs.docker.com/build/builders/drivers/docker-container/)
+and [Compose build options](https://docs.docker.com/reference/cli/docker/compose/build/).
+In particular, Compose `--memory` does not constrain BuildKit.
+
 ## Host ingress
 
 After local readiness and exact release proof pass, the separately selected
 `candidate --candidate-action ingress` adapter operation installs the reviewed
 `nginx.candidate.conf` as its own new host vhost file. It refuses an existing
-different file, requires all seventeen services to be healthy, checks `nginx -t`
+different file, requires all seventeen services running and every defined healthcheck healthy, checks `nginx -t`
 before reload and verifies actual trusted HTTPS/noindex responses on all four
 ports plus the public-image response protections. Failure rolls back only its
 newly created configuration and checks/reloads the prior setup. An unchanged
@@ -94,6 +174,23 @@ not exposed. Public image responses have `nosniff` and
 The actual served certificate, response headers and external browser access
 must be checked after installation; a valid local Nginx configuration alone is
 not proof that a firewall or remote browser can reach it.
+
+The ingress action accepts **neither** `--release` **nor** `--redis-image`.
+Only prepare/launch receive those two arguments. After the runtime/source gates:
+
+```sh
+sudo -n systemd-run --unit=agsaas-candidate-ingress-20261103 --collect --wait \
+  --property=CPUQuota=100% --property=MemoryMax=512M --property=MemorySwapMax=0 \
+  --property=TasksMax=128 --property=TimeoutStartSec=20min --property=TimeoutStopSec=4min \
+  /usr/bin/python3 /opt/agsaas/candidate-20261103/source/scripts/self-hosted-admin-job.py \
+  candidate --candidate-action ingress --timeout 180 --lock-timeout 600
+```
+
+The Node binary in the adapter remains `/opt/imon-runtime/node/bin/node`.
+The candidate fresh-environment rejection now also covers `ENABLE_BANKING_`,
+`COMPOSIO_`, `MISTRAL_`, `LOGO_DEV_`, `R2_`, company enrichment, alternate model
+providers and public analytics configuration. Generated own Supabase and support
+intake secrets remain installation-local and are not provider credentials.
 
 ## Upload contract and acceptance
 
@@ -126,7 +223,7 @@ Run these on the merged branch through the normal queue before launch:
 
 ```sh
 bun --no-env-file test --exit packages/supabase/src/client/cookie-namespace.test.ts
-bun --no-env-file test --exit scripts/self-hosted-candidate.test.ts apps/dashboard/src/utils/public-image-upload.test.ts
+bun --no-env-file test --exit scripts/self-hosted-candidate.test.ts scripts/self-hosted-candidate-resources.test.ts apps/dashboard/src/utils/public-image-upload.test.ts
 bun test --exit packages/db/src/test/mfa-assurance-postgres.test.ts
 bun test --exit packages/db/src/test/storage-document-ingestion-postgres.test.ts
 bun test --exit packages/db/src/test/storage-bucket-access-postgres.test.ts
@@ -160,4 +257,4 @@ been activated. TLS dry-run/observed rotation, an authenticated monitored canary
 with an actual alert route, measured candidate load/resource margins, production
 headers, key lifecycle/rotation recovery and own website 8546 rollout retain
 their explicit operational gates. Native bank/onboarding ownership also remains
-open until its durable runner and provider acceptance are implemented.
+open until the merged durable runners and real provider acceptance pass.

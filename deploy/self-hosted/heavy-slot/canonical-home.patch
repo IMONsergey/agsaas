@@ -1,0 +1,23 @@
+--- imon-job.observed.py
++++ imon-job.canonical-home.py
+@@ -18,7 +18,8 @@
+ import time
+ import uuid
+ 
+-BASE = Path.home() / ".local/state/imon-jobs"
++CANONICAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
++BASE = CANONICAL_HOME / ".local/state/imon-jobs"
+ RESERVE = 8 * 1024**3
+ DISK_CHECK_INTERVAL = 1.0
+ LOG_LIMIT = 20 * 1024**2
+@@ -215,8 +216,8 @@
+             return 130
+         check_disk(request["cwd"])
+         name = pwd.getpwuid(os.getuid()).pw_name
+-        env = {"HOME": str(Path.home()), "USER": name, "LOGNAME": name,
+-               "PATH": f"/opt/imon-runtime/node/bin:{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
++        env = {"HOME": str(CANONICAL_HOME), "USER": name, "LOGNAME": name,
++               "PATH": f"/opt/imon-runtime/node/bin:{CANONICAL_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"}
+         env.update(request["env"])
+         if (path / "environment.json").exists():
+             env.update(read_json(path / "environment.json"))

@@ -6,7 +6,6 @@ import {
   copyFileSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -21,8 +20,8 @@ import {
   copyPublicPlatformSnapshot,
   installPublicOtpTemplate,
   parseEnvironment,
-  serializeEnvironment,
   SUPABASE_COMMIT,
+  serializeEnvironment,
   validateGeneratedSecrets,
 } from "./prepare-self-hosted.mts";
 import { provisioningSql, verificationSql } from "./self-hosted-db.mts";
@@ -46,6 +45,7 @@ export const CANDIDATE = {
   supabase: "https://94.249.186.240:8549",
   website: "https://94.249.186.240:8550",
 } as const;
+export const CANDIDATE_BUILDER = "agsaas-candidate-20261103";
 const DOCKER = ["--host", "unix:///var/run/docker.sock"];
 const LAYERS = [
   "platform.compose.yml",
@@ -82,7 +82,7 @@ const PORTS: Record<string, [number, number]> = {
   website: [13501, 3000],
 };
 const PROVIDER_PREFIX =
-  /^(PLAID_|TELLER_|GOCARDLESS_|ENABLEBANKING_|STRIPE_|POLAR_|RESEND_|GMAIL_|OUTLOOK_|TRIGGER_|PLAIN_|SLACK_|XERO_|QUICKBOOKS_|FORTNOX_|DROPBOX_|OPENAI_|ANTHROPIC_|GOOGLE_GENERATIVE_AI_|SENTRY_)/;
+  /^(PLAID_|TELLER_|GOCARDLESS_|ENABLEBANKING_|ENABLE_BANKING_|COMPOSIO_|MISTRAL_|LOGO_DEV_|R2_|COMPANY_ENRICH_|POSTHOG_|NEXT_PUBLIC_POSTHOG_|NEXT_PUBLIC_SENTRY_|GROQ_|AZURE_OPENAI_|OPENROUTER_|PERPLEXITY_|TAVILY_|STRIPE_|POLAR_|RESEND_|GMAIL_|OUTLOOK_|TRIGGER_|PLAIN_|SLACK_|XERO_|QUICKBOOKS_|FORTNOX_|DROPBOX_|OPENAI_|ANTHROPIC_|GOOGLE_GENERATIVE_AI_|GOOGLE_API_|SENTRY_)/;
 type Environment = Record<string, string>;
 type Manifest = {
   mode: string;
@@ -92,6 +92,7 @@ type Manifest = {
   environmentSha256: string;
   configSha256: Record<string, string>;
   platformImages: Record<string, string>;
+  builder: ReturnType<typeof validateCandidateBuilder>;
   [key: string]: unknown;
 };
 type ComposeService = {
@@ -247,6 +248,185 @@ function compose(args: string[], timeout = 120_000) {
   );
 }
 
+type BuilderContainer = {
+  Id: string;
+  Name: string;
+  Image: string;
+  State: { Running: boolean };
+  Config: { Image: string };
+  HostConfig: {
+    Memory: number;
+    MemorySwap: number;
+    NanoCpus: number;
+    CpuPeriod: number;
+    CpuQuota: number;
+    PidsLimit: number;
+    NetworkMode: string;
+    PortBindings: Record<string, unknown> | null;
+  };
+  Mounts: { Type: string; Name: string; Destination: string }[];
+};
+
+/** Verify the actual daemon-side builder, not the Docker CLI's systemd cgroup.
+ * Inspection never starts/creates a builder and never contacts another daemon. */
+export function validateCandidateBuilder(
+  description: string,
+  info: BuilderContainer,
+) {
+  const names = [...description.matchAll(/^Name:\s+(\S+)\s*$/gm)].map(
+    (match) => match[1],
+  );
+  const endpoints = [...description.matchAll(/^Endpoint:\s+(\S+)\s*$/gm)].map(
+    (match) => match[1],
+  );
+  const drivers = [...description.matchAll(/^Driver:\s+(\S+)\s*$/gm)].map(
+    (match) => match[1],
+  );
+  const node = `${CANDIDATE_BUILDER}0`;
+  assert(
+    names.length === 2 &&
+      names[0] === CANDIDATE_BUILDER &&
+      names[1] === node &&
+      drivers.length === 1 &&
+      drivers[0] === "docker-container" &&
+      endpoints.length === 1 &&
+      endpoints[0] === "unix:///var/run/docker.sock",
+    "Candidate requires its single local docker-container builder",
+  );
+  const limits = info.HostConfig;
+  const cpus =
+    limits.NanoCpus > 0
+      ? limits.NanoCpus / 1_000_000_000
+      : limits.CpuQuota / limits.CpuPeriod;
+  assert(
+    info.Name === `/buildx_buildkit_${node}` &&
+      /^[a-f0-9]{64}$/.test(info.Id) &&
+      info.State.Running &&
+      /^moby\/buildkit@sha256:[a-f0-9]{64}$/.test(info.Config.Image) &&
+      /^sha256:[a-f0-9]{64}$/.test(info.Image),
+    "Candidate builder identity/image is not pinned and running",
+  );
+  assert(
+    Number.isFinite(limits.Memory) &&
+      limits.Memory > 0 &&
+      limits.Memory <= 3 * 1024 ** 3 &&
+      limits.MemorySwap === limits.Memory &&
+      (limits.NanoCpus > 0 || (limits.CpuPeriod > 0 && limits.CpuQuota > 0)) &&
+      Number.isFinite(cpus) &&
+      cpus > 0 &&
+      cpus <= 2 &&
+      Number.isInteger(limits.PidsLimit) &&
+      limits.PidsLimit > 0 &&
+      limits.PidsLimit <= 256,
+    "Candidate builder lacks actual memory/swap/CPU/PID bounds",
+  );
+  assert(
+    ["bridge", "default"].includes(limits.NetworkMode) &&
+      !Object.keys(limits.PortBindings ?? {}).length &&
+      info.Mounts.length === 1 &&
+      info.Mounts[0]?.Type === "volume" &&
+      info.Mounts[0]?.Name === `buildx_buildkit_${node}_state` &&
+      info.Mounts[0]?.Destination === "/var/lib/buildkit",
+    "Candidate builder must use only its own state volume and ordinary bridge",
+  );
+  return {
+    name: CANDIDATE_BUILDER,
+    containerId: info.Id,
+    imageId: info.Image,
+    image: info.Config.Image,
+    memoryBytes: limits.Memory,
+    swapTotalBytes: limits.MemorySwap,
+    cpus,
+    pids: limits.PidsLimit,
+  };
+}
+function boundedBuilder(
+  expected?: ReturnType<typeof validateCandidateBuilder>,
+) {
+  const description = docker([
+    "buildx",
+    "inspect",
+    CANDIDATE_BUILDER,
+    "--timeout",
+    "10s",
+  ]);
+  const info = JSON.parse(
+    docker(["container", "inspect", `buildx_buildkit_${CANDIDATE_BUILDER}0`]),
+  )[0] as BuilderContainer;
+  const receipt = validateCandidateBuilder(description, info);
+  if (expected)
+    assert(
+      JSON.stringify(receipt) === JSON.stringify(expected),
+      "Candidate builder changed since preparation",
+    );
+  return receipt;
+}
+
+export function validateCandidateQuarantine(
+  receipt: unknown,
+  operation: string | undefined,
+  parentPid: number,
+  builder?: { containerId: string; imageId: string; image: string },
+) {
+  assert(
+    receipt && typeof receipt === "object",
+    "Shared candidate quarantine is missing",
+  );
+  const record = receipt as Record<string, unknown>;
+  assert(
+    record.protocol === 1 &&
+      record.project === CANDIDATE.project &&
+      typeof operation === "string" &&
+      /^[a-f0-9]{32}$/.test(operation) &&
+      record.operationId === operation &&
+      record.adapterPid === parentPid &&
+      parentPid > 1,
+    "Candidate build requires its live parent adapter and shared heavy-slot quarantine",
+  );
+  if (builder) {
+    const recorded = record.builder as Record<string, unknown> | undefined;
+    assert(
+      recorded &&
+        recorded.containerId === builder.containerId &&
+        recorded.imageId === builder.imageId &&
+        recorded.image === builder.image,
+      "Quarantine does not cover this exact candidate builder",
+    );
+  }
+}
+function requireCandidateQuarantine(builder?: {
+  containerId: string;
+  imageId: string;
+  image: string;
+}) {
+  const path = "/var/lib/imon-heavy-slot/quarantine.json";
+  const stat = lstatSync(path);
+  assert(
+    stat.isFile() &&
+      !stat.isSymbolicLink() &&
+      stat.uid === 0 &&
+      !(stat.mode & 0o022) &&
+      stat.size <= 65536 &&
+      realpathSync(path) === path,
+    "Unsafe shared candidate quarantine",
+  );
+  validateCandidateQuarantine(
+    JSON.parse(readFileSync(path, "utf8")),
+    process.env.AGSAAS_HEAVY_SLOT_OPERATION,
+    process.ppid,
+    builder,
+  );
+}
+
+export function validateCandidateProviderEnvironment(env: Environment) {
+  assert(
+    !Object.entries(env).some(
+      ([key, value]) => PROVIDER_PREFIX.test(key) && value.trim(),
+    ),
+    "Candidate cannot contain external provider credentials",
+  );
+}
+
 export function validateCandidateEnvironment(env: Environment) {
   assert(
     env.COMPOSE_PROJECT_NAME === CANDIDATE.project &&
@@ -279,12 +459,7 @@ export function validateCandidateEnvironment(env: Environment) {
       env.FUNCTIONS_VERIFY_JWT === "true",
     "Candidate optional feature policy mismatch",
   );
-  assert(
-    !Object.entries(env).some(
-      ([key, value]) => PROVIDER_PREFIX.test(key) && value.trim(),
-    ),
-    "Candidate cannot contain external provider credentials",
-  );
+  validateCandidateProviderEnvironment(env);
   assert(
     ![
       "SMTP_HOST",
@@ -462,6 +637,8 @@ export function prepareCandidate(release: string, redisImage: string) {
   );
   assertCleanVendorDocker(CANDIDATE.vendor);
   imageId(redisImage);
+  // Fail before fresh keys/runtime/database creation if the builder is unbounded.
+  const builder = boundedBuilder();
   assert(
     !docker([
       "ps",
@@ -598,6 +775,8 @@ export function prepareCandidate(release: string, redisImage: string) {
       project: CANDIDATE.project,
       release,
       state: "prepared",
+      builder,
+      builderMayBeActive: false,
       createdAt: new Date().toISOString(),
       supabaseCommit: SUPABASE_COMMIT,
       environmentSha256: digest(raw),
@@ -896,6 +1075,7 @@ export async function runCandidate(
     "Candidate operations require the deployment owner",
   );
   if (action === "launch") {
+    requireCandidateQuarantine();
     assert(
       release && redisImage,
       "Launch requires exact release and installed Redis digest",
@@ -1029,8 +1209,25 @@ export async function runCandidate(
       300_000,
     );
   } else if (action === "build") {
+    requireCandidateQuarantine(state.manifest.builder);
     noApplications();
-    for (const service of APPS) compose(["build", service], 1_800_000);
+    assert(
+      state.manifest.state === "bootstrapped",
+      "Candidate database must be bootstrapped before building",
+    );
+    assert(
+      state.manifest.builderMayBeActive === false,
+      "Previous builder work has not been confirmed stopped",
+    );
+    boundedBuilder(state.manifest.builder);
+    // The root adapter reads this receipt even if this CLI is killed. It stops
+    // the exact recorded builder before giving back the shared heavy slot.
+    state.manifest.builderMayBeActive = true;
+    writeJson(manifestPath(), state.manifest);
+    for (const service of APPS) {
+      boundedBuilder(state.manifest.builder);
+      compose(["build", "--builder", CANDIDATE_BUILDER, service], 1_800_000);
+    }
   } else if (action === "start") {
     assert(
       state.manifest.state === "bootstrapped" ||

@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "connectorHome": "/home/sergey/.desktop-commander-jabba",
+      "resolvedFromPasswd": true
+    },
+    {
+      "connectorHome": "/tmp/imon-home-test",
+      "resolvedFromPasswd": true
+    },
+    {
+      "connectorHome": "/root",
+      "resolvedFromPasswd": true
+    }
+  ],
+  "count": 3,
+  "beforeSha256": "4dd37b124ce67889f6bec1d5c095318f4783ef92cfb7bb827fc3ceba91f3a8f4",
+  "afterSha256": "dae43b73d2d74a5cd090c89f75e1759eb522a08ed2512b43be54114a78f51404",
+  "limits": "Local import under alternate HOME. No server change or queued job executed.",
+  "exactByteRecovery": "Removed one accidental terminal LF; entire observed server diff reviewed."
+}
