@@ -50,8 +50,7 @@ app.use(
   rateLimiter({
     windowMs: 15 * 60 * 1000, // 15 minutes
     limit: 20, // per IP
-    keyGenerator: (c) =>
-      c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown",
+    keyGenerator: (c) => c.get("clientIp") || "unknown",
     statusCode: 429,
     message: "Rate limit exceeded",
   }),
@@ -63,8 +62,7 @@ app.use(
   rateLimiter({
     windowMs: 60 * 60 * 1000, // 1 hour
     limit: 10, // per IP
-    keyGenerator: (c) =>
-      c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown",
+    keyGenerator: (c) => c.get("clientIp") || "unknown",
     statusCode: 429,
     message: "Registration rate limit exceeded",
   }),

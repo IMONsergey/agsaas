@@ -105,6 +105,8 @@ services:
       POLAR_PRO_YEARLY_PRODUCT_ID: "${POLAR_PRO_YEARLY_PRODUCT_ID:-}"
       PLAIN_API_KEY: "${PLAIN_API_KEY:-}"
       ALLOWED_API_ORIGINS: "${AGSAAS_DASHBOARD_URL:?Set the exact dashboard origin}"
+      # Default none. Trust only observed HTTP proxy peer IPs, never a subnet.
+      AGSAAS_TRUSTED_PROXY_IPS: "${AGSAAS_TRUSTED_PROXY_IPS:-}"
     healthcheck:
       test:
         - CMD

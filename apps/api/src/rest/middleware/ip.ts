@@ -3,9 +3,8 @@ import type { Context } from "../types";
 import { getClientIp } from "../utils/ip";
 
 /**
- * Middleware that extracts client IP address and adds it to context
- * Handles proxies/load balancers correctly
- * Uses Hono's getConnInfo helper as fallback
+ * Adds the socket-derived client IP to context. Only explicitly configured
+ * trusted proxies may supply X-Forwarded-For; an empty value means unknown.
  */
 export const withClientIp: MiddlewareHandler<Context> = async (c, next) => {
   const clientIp = getClientIp(c);
