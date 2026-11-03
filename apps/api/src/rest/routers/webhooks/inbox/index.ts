@@ -25,18 +25,21 @@ import {
 
 const app = new OpenAPIHono<Context>();
 
-// HTTP Basic Authentication
-// Postmark supports basic auth by including credentials in the webhook URL:
-// https://username:password@domain.com/webhook/inbox
-if (process.env.INBOX_WEBHOOK_USERNAME && process.env.INBOX_WEBHOOK_PASSWORD) {
-  app.use(
-    "*",
-    basicAuth({
-      username: process.env.INBOX_WEBHOOK_USERNAME,
-      password: process.env.INBOX_WEBHOOK_PASSWORD,
-    }),
-  );
-}
+// Authenticate before IP checks, body parsing or any service-role operation.
+// A missing configuration is retryable; it must never make this route public.
+// Postmark supports credentials in its webhook URL. IP filtering is additional
+// protection and cannot replace authentication at this boundary.
+app.use("*", async (c, next) => {
+  const username = process.env.INBOX_WEBHOOK_USERNAME;
+  const password = process.env.INBOX_WEBHOOK_PASSWORD;
+  if (!username?.trim() || !password?.trim()) {
+    return c.json(
+      { success: false as const, error: "Inbox webhook is not configured" },
+      503,
+    );
+  }
+  return basicAuth({ username, password })(c, next);
+});
 
 // IP address validation
 app.use("*", async (c, next) => {
@@ -130,21 +133,30 @@ app.openapi(
           },
         },
       },
+      401: {
+        description: "Missing or invalid webhook credentials",
+      },
       403: {
         description: "Invalid IP address",
       },
       503: {
         description:
-          "Some attachments still need a durable handoff; retry this delivery",
+          "Webhook configuration or durable attachment handoff is unavailable; retry this delivery",
         content: {
           "application/json": {
-            schema: z.object({
-              success: z.literal(false),
-              error: z.string(),
-              attempted: z.number(),
-              accepted: z.number(),
-              failed: z.number(),
-            }),
+            schema: z.union([
+              z.object({
+                success: z.literal(false),
+                error: z.literal("Inbox webhook is not configured"),
+              }),
+              z.object({
+                success: z.literal(false),
+                error: z.string(),
+                attempted: z.number(),
+                accepted: z.number(),
+                failed: z.number(),
+              }),
+            ]),
           },
         },
       },

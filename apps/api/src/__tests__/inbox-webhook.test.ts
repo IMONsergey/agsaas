@@ -9,6 +9,11 @@ import type {
 } from "../services/inbox-webhook-ingestion";
 
 const teamId = "30000000-0000-4000-8000-000000000003";
+const fixtureUsername = "postmark-fixture";
+const fixturePassword = "synthetic-webhook-secret";
+const fixtureAuthorization = `Basic ${Buffer.from(
+  `${fixtureUsername}:${fixturePassword}`,
+).toString("base64")}`;
 const environmentNames = [
   "NODE_ENV",
   "INBOX_DOMAIN",
@@ -20,8 +25,8 @@ const prior = new Map(environmentNames.map((key) => [key, process.env[key]]));
 process.env.NODE_ENV = "test";
 process.env.INBOX_DOMAIN = "inbox.example.test";
 delete process.env.NEXT_PUBLIC_INBOX_DOMAIN;
-delete process.env.INBOX_WEBHOOK_USERNAME;
-delete process.env.INBOX_WEBHOOK_PASSWORD;
+process.env.INBOX_WEBHOOK_USERNAME = fixtureUsername;
+process.env.INBOX_WEBHOOK_PASSWORD = fixturePassword;
 
 const objects = new Map<string, Uint8Array>();
 const rows = new Map<string, InboxWebhookReceipt>();
@@ -68,8 +73,17 @@ const processing = mock(
   },
 );
 const notify = mock(async () => ({ id: "fixture-notification" }));
+const findTeam = mock(async () => ({ id: teamId, email: null }));
+const adminClient = mock(async () => ({
+  storage: {
+    from: (bucket: string) => {
+      expect(bucket).toBe("vault");
+      return storage;
+    },
+  },
+}));
 mock.module("@midday/db/queries", () => ({
-  getTeamByInboxId: async () => ({ id: teamId, email: null }),
+  getTeamByInboxId: findTeam,
   createInbox: register,
 }));
 mock.module("@midday/db/queries/inbox-receipts", () => ({
@@ -86,14 +100,7 @@ mock.module("../services/inbox-webhook-queue", () => ({
 }));
 mock.module("@midday/job-client", () => ({ triggerJob: notify }));
 mock.module("@api/services/supabase", () => ({
-  createAdminClient: async () => ({
-    storage: {
-      from: (bucket: string) => {
-        expect(bucket).toBe("vault");
-        return storage;
-      },
-    },
-  }),
+  createAdminClient: adminClient,
 }));
 mock.module("@api/services/resend", () => ({
   resend: {
@@ -129,6 +136,8 @@ const db = {
 };
 app.use("*", async (c, next) => {
   c.set("db", db as unknown as Context["Variables"]["db"]);
+  // Deliberately model an allowlisted IP, even when the caller supplied the
+  // forwarded header. Basic authentication must hold independently of proxies.
   c.set("clientIp", clientIp);
   await next();
 });
@@ -143,20 +152,35 @@ function item(content: string): WebhookAttachment {
     ContentID: "",
   };
 }
-function request(attachments = [item("%PDF-one"), item("%PDF-two")]) {
+function request(
+  attachments = [item("%PDF-one"), item("%PDF-two")],
+  {
+    authorization = fixtureAuthorization,
+    body,
+  }: { authorization?: string | null; body?: string } = {},
+) {
   return app.request("/inbound", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      MessageID: "message-http-fixture",
-      OriginalRecipient: "mailbox@inbox.example.test",
-      FromFull: { Name: "Fixture sender", Email: "sender@vendor.test" },
-      Subject: "Fixture invoice",
-      Attachments: attachments,
-    }),
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "3.134.147.250, 192.0.2.1",
+      ...(authorization === null ? {} : { Authorization: authorization }),
+    },
+    body:
+      body ??
+      JSON.stringify({
+        MessageID: "message-http-fixture",
+        OriginalRecipient: "mailbox@inbox.example.test",
+        FromFull: { Name: "Fixture sender", Email: "sender@vendor.test" },
+        Subject: "Fixture invoice",
+        Attachments: attachments,
+      }),
   });
 }
 beforeEach(() => {
+  process.env.NODE_ENV = "test";
+  process.env.INBOX_WEBHOOK_USERNAME = fixtureUsername;
+  process.env.INBOX_WEBHOOK_PASSWORD = fixturePassword;
   objects.clear();
   rows.clear();
   queued.clear();
@@ -168,12 +192,81 @@ beforeEach(() => {
   register.mockClear();
   processing.mockClear();
   notify.mockClear();
+  findTeam.mockClear();
+  adminClient.mockClear();
 });
 afterAll(() => {
   for (const [key, value] of prior) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+});
+
+function expectNoIngestionSideEffects() {
+  expect([objects.size, rows.size, queued.size]).toEqual([0, 0, 0]);
+  expect(findTeam).not.toHaveBeenCalled();
+  expect(adminClient).not.toHaveBeenCalled();
+  expect(register).not.toHaveBeenCalled();
+  expect(processing).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+}
+
+describe("inbound webhook authentication", () => {
+  test("missing or partial configuration refuses a forged trusted IP before body or DB", async () => {
+    const configurations = [
+      [undefined, undefined],
+      [fixtureUsername, undefined],
+      [undefined, fixturePassword],
+      ["", fixturePassword],
+      [fixtureUsername, ""],
+      ["   ", fixturePassword],
+      [fixtureUsername, "   "],
+    ] as const;
+    for (const mode of ["production", "test", "development"]) {
+      process.env.NODE_ENV = mode;
+      for (const [username, password] of configurations) {
+        if (username === undefined) delete process.env.INBOX_WEBHOOK_USERNAME;
+        else process.env.INBOX_WEBHOOK_USERNAME = username;
+        if (password === undefined) delete process.env.INBOX_WEBHOOK_PASSWORD;
+        else process.env.INBOX_WEBHOOK_PASSWORD = password;
+        const response = await request(undefined, { body: "not JSON" });
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({
+          success: false,
+          error: "Inbox webhook is not configured",
+        });
+        expectNoIngestionSideEffects();
+      }
+    }
+  });
+  test("a forged trusted IP cannot bypass absent, malformed or incorrect Basic credentials", async () => {
+    const invalid = [
+      null,
+      "Bearer synthetic-token",
+      "Basic !!!",
+      `Basic ${Buffer.from(`${fixtureUsername}:wrong`).toString("base64")}`,
+      `Basic ${Buffer.from(`wrong:${fixturePassword}`).toString("base64")}`,
+    ];
+    for (const mode of ["production", "test", "development"]) {
+      process.env.NODE_ENV = mode;
+      for (const authorization of invalid) {
+        const response = await request(undefined, {
+          authorization,
+          body: "not JSON",
+        });
+        expect(response.status).toBe(401);
+        expect(response.headers.get("WWW-Authenticate")).toContain("Basic");
+        expectNoIngestionSideEffects();
+      }
+    }
+  });
+  test("fully configured Basic credentials permit the normal durable handoff", async () => {
+    process.env.NODE_ENV = "production";
+    expect((await request()).status).toBe(200);
+    expect([objects.size, rows.size, queued.size]).toEqual([2, 2, 2]);
+    expect(findTeam).toHaveBeenCalledTimes(1);
+    expect(adminClient).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("inbound webhook HTTP handoff", () => {

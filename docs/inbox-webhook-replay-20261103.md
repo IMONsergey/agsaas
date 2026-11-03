@@ -50,7 +50,19 @@ decoded attachments to 50 MiB, and attachment count to 100.
 Postmark documents that inbound deliveries without a 200 response are retried;
 403 stops retries. See its official
 [inbound retry guide](https://postmarkapp.com/support/article/understanding-inbound-webhook-retries-in-postmark).
-The existing IP and Basic Authentication boundaries are unchanged.
+Postmark controls its retry schedule: the `Retry-After` response header does not
+set that schedule. Its documented ten retries span approximately 10.5 hours;
+subsequent recovery requires a manual retry. A 503 is therefore not an unlimited
+delivery guarantee.
+
+The route requires both non-empty `INBOX_WEBHOOK_USERNAME` and
+`INBOX_WEBHOOK_PASSWORD` settings in every environment. Missing, partial or blank
+configuration returns 503. With a complete configuration, Hono Basic Authentication
+always runs first; missing or incorrect request credentials return 401. Both
+outcomes happen before IP validation, JSON parsing, tenant lookup or the
+service-role Storage client. An allowlisted or forged forwarded IP cannot replace
+credentials. The existing IP filter remains an additional boundary; the shared
+trusted-proxy IP extraction is reviewed separately.
 
 Notifications remain a non-critical side effect and use a stable message job ID.
 This is not a permanent exactly-once notification outbox: a very late replay after
@@ -63,7 +75,10 @@ The service tests use fake Storage, authoritative receipt maps and a fake queue 
 exercise simultaneous replay, same-name attachments, tenant scope, payload drift,
 lost responses at each handoff, partial/all failure, legacy adoption, retained job
 failure and completed/deleted states. HTTP tests run the real Hono route and
-ingestion service with fake external boundaries and verify 503/200/400/403 behavior.
+ingestion service with fake external boundaries and verify 503/200/400/401/403
+behavior. Authentication cases use an allowlisted client context and an attacker-
+supplied forwarded header, invalid JSON, missing/partial configuration, and wrong
+credentials; they assert that no database, Storage or queue operation occurs.
 The separate real Redis admission gate is required for native queue race evidence.
 
 No migration or production data is changed by this packet. Own Auth/Storage
