@@ -1,10 +1,11 @@
+import { toPublicApp } from "@midday/db/public-app";
 import {
   createPlatformLinkTokenSchema,
   disconnectAppSchema,
   removeWhatsAppConnectionSchema,
   updateAppSettingsSchema,
 } from "@api/schemas/apps";
-import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+import { createTRPCRouter, ownerProcedure, protectedProcedure } from "@api/trpc/init";
 import { getInstanceCapabilities } from "@api/utils/instance-capabilities";
 import {
   createPlatformLinkToken,
@@ -19,30 +20,30 @@ import { z } from "zod";
 export const appsRouter = createTRPCRouter({
   capabilities: protectedProcedure.query(() => getInstanceCapabilities()),
   get: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
-    return getApps(db, teamId!);
+    return (await getApps(db, teamId!)).map((app) => toPublicApp(app));
   }),
 
-  disconnect: protectedProcedure
+  disconnect: ownerProcedure
     .input(disconnectAppSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
       const { appId } = input;
 
-      return disconnectApp(db, { appId, teamId: teamId! });
+      return toPublicApp(await disconnectApp(db, { appId, teamId: teamId! }));
     }),
 
-  update: protectedProcedure
+  update: ownerProcedure
     .input(updateAppSettingsSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
       const { appId, option } = input;
 
-      return updateAppSettings(db, {
+      return toPublicApp(await updateAppSettings(db, {
         appId,
         teamId: teamId!,
         option,
-      });
+      }));
     }),
 
-  updateSettings: protectedProcedure
+  updateSettings: ownerProcedure
     .input(
       z.object({
         appId: z.string(),
@@ -61,22 +62,23 @@ export const appsRouter = createTRPCRouter({
     .mutation(async ({ ctx: { db, teamId }, input }) => {
       const { appId, settings } = input;
 
-      return updateAppSettingsBulk(db, {
+      return toPublicApp(await updateAppSettingsBulk(db, {
         appId,
         teamId: teamId!,
         settings,
-      });
+      }));
     }),
 
-  removeWhatsAppConnection: protectedProcedure
+  removeWhatsAppConnection: ownerProcedure
     .input(removeWhatsAppConnectionSchema)
     .mutation(async ({ ctx: { db, teamId }, input }) => {
       const { phoneNumber } = input;
 
-      return removeWhatsAppConnection(db, {
+      await removeWhatsAppConnection(db, {
         teamId: teamId!,
         phoneNumber,
       });
+      return { success: true };
     }),
 
   createPlatformLinkToken: protectedProcedure

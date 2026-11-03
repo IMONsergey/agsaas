@@ -22,6 +22,7 @@ import { Textarea } from "@midday/ui/textarea";
 import { useToast } from "@midday/ui/use-toast";
 import { Loader2 } from "lucide-react";
 import { useAction } from "next-safe-action/hooks";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import type { z } from "zod";
 import { sendSupportSchema } from "@/actions/schema";
@@ -29,34 +30,53 @@ import { sendSupportAction } from "@/actions/send-support-action";
 
 export function SupportForm() {
   const { toast } = useToast();
+  const [receipt, setReceipt] = useState<string | null>(null);
 
   const form = useForm<z.infer<typeof sendSupportSchema>>({
     resolver: zodResolver(sendSupportSchema),
     defaultValues: {
+      requestId: crypto.randomUUID(),
       email: "",
       fullName: "",
       subject: "",
-      type: "",
-      priority: "",
+      type: "General",
+      priority: "normal",
       message: "",
     },
   });
 
   const sendSupport = useAction(sendSupportAction, {
-    onSuccess: () => {
+    onSuccess: ({ data }) => {
+      if (!data?.ticketId) {
+        toast({
+          variant: "error",
+          title:
+            "Delivery was not confirmed. Keep your message and contact the administrator.",
+        });
+        return;
+      }
       toast({
         duration: 2500,
-        title: "Support ticket sent.",
+        title: `Support ticket created: ${data.ticketId}`,
         variant: "success",
       });
 
-      form.reset();
+      setReceipt(data.ticketId);
+      form.reset({
+        ...form.getValues(),
+        requestId: crypto.randomUUID(),
+        subject: "",
+        message: "",
+        type: "General",
+        priority: "normal",
+      });
     },
     onError: () => {
       toast({
         duration: 3500,
         variant: "error",
-        title: "Something went wrong pleaase try again.",
+        title:
+          "Support delivery was not confirmed. Your message has been kept. Check with the administrator before retrying.",
       });
     },
   });
@@ -70,11 +90,17 @@ export function SupportForm() {
             Support
           </h1>
           <p className="font-sans text-base text-muted-foreground leading-relaxed">
-            Get help with Midday. Contact our team for assistance with any
+            Get help with AGSaaS. Contact our team for assistance with any
             questions or issues you may have.
           </p>
         </div>
 
+        {receipt && (
+          <p role="status" className="border p-4 mb-6 text-sm break-all">
+            Request received. Reference: {receipt}. The operator will review
+            your request.
+          </p>
+        )}
         {/* Form */}
         <Form {...form}>
           <form

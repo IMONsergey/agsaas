@@ -1,3 +1,4 @@
+import {isSessionActive} from "./auth-session";
 import { withAuth } from "@api/rest/middleware/auth";
 import type { DatabaseWithPrimary } from "@midday/db/client";
 import { getUserById, hasTeamAccess } from "@midday/db/queries";
@@ -48,6 +49,7 @@ export async function requireFileAccess(
   if (
     !user ||
     user.deletionStartedAt ||
+    !(await isSessionActive(authDb,identity.userId,identity.sessionId)) ||
     !(await hasTeamAccess(authDb, identity.teamId, identity.userId))
   ) {
     throw new HTTPException(401, { message: "Invalid or expired file key." });

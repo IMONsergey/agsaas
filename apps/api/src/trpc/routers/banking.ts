@@ -1,3 +1,4 @@
+import { requireVerifiedBankConsent, resolveProviderAccountAccess } from "@api/utils/bank-consent";
 import {
   connectionByReferenceSchema,
   connectionStatusSchema,
@@ -37,6 +38,7 @@ export const bankingRouter = createTRPCRouter({
   plaidLink: protectedProcedure
     .input(plaidLinkSchema)
     .mutation(async ({ input, ctx }) => {
+      requireVerifiedBankConsent();
       const api = new PlaidApi();
 
       try {
@@ -64,6 +66,7 @@ export const bankingRouter = createTRPCRouter({
   plaidExchange: protectedProcedure
     .input(plaidExchangeSchema)
     .mutation(async ({ input }) => {
+      requireVerifiedBankConsent();
       const api = new PlaidApi();
 
       try {
@@ -89,6 +92,7 @@ export const bankingRouter = createTRPCRouter({
   gocardlessLink: protectedProcedure
     .input(gocardlessLinkSchema)
     .mutation(async ({ input }) => {
+      requireVerifiedBankConsent();
       const api = new GoCardLessApi();
 
       try {
@@ -109,6 +113,7 @@ export const bankingRouter = createTRPCRouter({
   gocardlessAgreement: protectedProcedure
     .input(gocardlessAgreementSchema)
     .mutation(async ({ input }) => {
+      requireVerifiedBankConsent();
       const api = new GoCardLessApi();
 
       try {
@@ -129,6 +134,7 @@ export const bankingRouter = createTRPCRouter({
   enablebankingLink: protectedProcedure
     .input(enablebankingLinkSchema)
     .mutation(async ({ input, ctx: { teamId, db } }) => {
+      requireVerifiedBankConsent();
       const institution = await getInstitutionById(db, {
         id: input.institutionId,
       });
@@ -188,6 +194,7 @@ export const bankingRouter = createTRPCRouter({
   enablebankingExchange: protectedProcedure
     .input(enablebankingExchangeSchema)
     .mutation(async ({ input }) => {
+      requireVerifiedBankConsent();
       const api = new EnableBankingApi();
 
       try {
@@ -290,14 +297,15 @@ export const bankingRouter = createTRPCRouter({
 
   getProviderAccounts: protectedOrInternalProcedure
     .input(getProviderAccountsSchema)
-    .query(async ({ input }) => {
-      const api = new Provider({ provider: input.provider });
+    .query(async ({ input, ctx }) => {
+      const access = await resolveProviderAccountAccess(ctx, input);
+      const api = new Provider({ provider: access.provider });
 
       try {
         const data = await api.getAccounts({
-          id: input.id,
-          accessToken: input.accessToken,
-          institutionId: input.institutionId,
+          id: access.id,
+          accessToken: access.accessToken,
+          institutionId: access.institutionId,
         });
 
         // Sort accounts by balance descending (highest first) for display

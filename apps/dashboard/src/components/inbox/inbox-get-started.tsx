@@ -111,7 +111,18 @@ export function InboxGetStarted() {
                       <ConnectWhatsApp />
                       <ConnectIMessage />
                       {user?.team?.inboxId && (
-                        <CopyInput value={getInboxEmail(user.team.inboxId)} />
+                        <div>
+                          {getInboxEmail(user.team.inboxId) ? (
+                            <CopyInput
+                              value={getInboxEmail(user.team.inboxId)!}
+                            />
+                          ) : (
+                            <p className="text-sm text-muted-foreground">
+                              Email forwarding is not configured. You can upload
+                              receipts directly.
+                            </p>
+                          )}
+                        </div>
                       )}
                     </div>
                   </AccordionContent>

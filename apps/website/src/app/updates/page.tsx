@@ -1,70 +1,27 @@
-import Image from "next/image";
 import Link from "next/link";
-import { CustomMDX } from "@/components/mdx";
-import { Pagination } from "@/components/pagination";
-import { PostStatus } from "@/components/post-status";
-import { getBlogPosts } from "@/lib/blog";
+import { InformationPage } from "@/components/information-page";
+
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Updates",
+  title: "Release information",
   description:
-    "The latest updates and improvements to Midday. See what we've been building to help you manage your business finances better.",
+    "The running installation determines which features and integrations are available.",
   path: "/updates",
-  og: { title: "Updates", description: "What we've been building" },
 });
-
-// Force static generation
-export const dynamic = "force-static";
-
-const POSTS_PER_PAGE = 3;
-
-export default function UpdatesPage() {
-  const allPosts = getBlogPosts().sort((a, b) => {
-    if (new Date(a.metadata.publishedAt) > new Date(b.metadata.publishedAt)) {
-      return -1;
-    }
-    return 1;
-  });
-
-  const totalPages = Math.ceil(allPosts.length / POSTS_PER_PAGE);
-  const posts = allPosts.slice(0, POSTS_PER_PAGE);
-
+export default function Page() {
   return (
-    <div className="container flex flex-col items-center">
-      <div className="max-w-[680px] pt-[80px] md:pt-[150px] w-full">
-        {posts.map((post) => (
-          <article key={post.slug} className="mb-20">
-            <PostStatus status={post.metadata.tag} />
-
-            <Link className="mb-6 block" href={`/updates/${post.slug}`}>
-              <h2 className="font-medium text-2xl mb-6">
-                {post.metadata.title}
-              </h2>
-            </Link>
-
-            <div className="updates">
-              {post.metadata.image && (
-                <Image
-                  src={post.metadata.image}
-                  alt={post.metadata.title}
-                  width={680}
-                  height={442}
-                  className="mb-12"
-                />
-              )}
-
-              <CustomMDX source={post.content} />
-            </div>
-          </article>
-        ))}
-
-        <Pagination
-          currentPage={1}
-          totalPages={totalPages}
-          basePath="/updates"
-        />
-      </div>
-    </div>
+    <InformationPage
+      title="Release information"
+      intro="The running installation determines which features and integrations are available."
+    >
+      <p>
+        Use the source page to identify the build and the corresponding source.
+        Integration readiness is available in the workspace's Apps and Billing
+        screens.
+      </p>
+      <Link href="/source" className="underline">
+        Inspect this build
+      </Link>
+    </InformationPage>
   );
 }

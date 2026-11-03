@@ -33,6 +33,10 @@ RUN cd packages/mcp-apps && bun run build
 
 # Runner stage - clean image
 FROM base AS runner
+ARG GIT_COMMIT_SHA=""
+LABEL org.opencontainers.image.source="https://github.com/IMONsergey/agsaas" \
+      org.opencontainers.image.revision=$GIT_COMMIT_SHA \
+      org.opencontainers.image.title="AGSaaS api"
 WORKDIR /app
 
 ENV NODE_ENV=production

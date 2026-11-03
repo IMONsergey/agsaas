@@ -1,0 +1,1 @@
+export const MAX_DOCUMENT_INPUT_BYTES = 25 * 1024 * 1024;

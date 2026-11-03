@@ -68,6 +68,7 @@ export const connectionByReferenceSchema = z.object({
 
 // Account schemas
 export const getProviderAccountsSchema = z.object({
+  connectionId: z.string().uuid().optional(),
   provider: providerSchema,
   accessToken: z.string().optional(),
   institutionId: z.string().optional(),

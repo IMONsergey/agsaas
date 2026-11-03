@@ -1,0 +1,10 @@
+[Unit]
+Description=Recover an interrupted owned AGSaaS maintenance snapshot
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=agsaas-backup-resume.service
+
+[Install]
+WantedBy=timers.target

@@ -1,4 +1,5 @@
 import { createLoggerWithContext } from "@midday/logger";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Database, DatabaseOrTransaction } from "../client";
 import {
   inbox,
@@ -8,6 +9,7 @@ import {
   transactionMatchSuggestions,
   transactions,
 } from "../schema";
+import { assertTeamOwnership } from "../utils/tenant-ownership";
 
 const logger = createLoggerWithContext("inbox");
 
@@ -1781,6 +1783,8 @@ export async function createInbox(db: Database, params: CreateInboxParams) {
     status = "new",
   } = params;
 
+  await assertInboxUploadScope(db, teamId, [{ filePath, inboxAccountId }]);
+
   // If we have a referenceId, use ON CONFLICT to handle race conditions
   // where multiple jobs try to create the same inbox item simultaneously
   if (referenceId) {
@@ -2330,4 +2334,20 @@ export async function updateInboxStatusToNoMatch(
       createdAt: item.createdAt,
     })),
   };
+}
+
+/** Caller-owned paths and linked mailbox IDs are checked before side effects. */
+export async function assertInboxUploadScope(
+  db: DatabaseOrTransaction,
+  teamId: string,
+  uploads: readonly { filePath: readonly string[]; inboxAccountId?: string }[],
+) {
+  for (const upload of uploads)
+    requireVaultPathForTeam(upload.filePath, teamId);
+  await assertTeamOwnership(
+    db,
+    teamId,
+    "inboxAccounts",
+    uploads.map((item) => item.inboxAccountId),
+  );
 }

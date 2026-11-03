@@ -21,7 +21,6 @@ import { Textarea } from "@midday/ui/textarea";
 import { useToast } from "@midday/ui/use-toast";
 import { getInitials } from "@midday/utils/format";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import { useAction } from "next-safe-action/hooks";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -60,79 +59,27 @@ function RowsSkeleton() {
 }
 
 function SupportForm() {
-  const form = useForm({
-    resolver: zodResolver(z.object({ message: z.string() })),
-    defaultValues: {
-      message: "",
-    },
-  });
-
-  const sendSupport = useAction(sendSupportAction, {
-    onSuccess: () => {
-      form.reset();
-    },
-  });
-
-  const handleOnSubmit = form.handleSubmit((values) => {
-    sendSupport.execute({
-      message: values.message,
-      type: "Transactions",
-      priority: "low",
-      subject: "Select bank accounts",
-      url: document.URL,
-    });
-  });
-
-  if (sendSupport.status === "hasSucceeded") {
-    return (
-      <div className="h-[250px] flex items-center justify-center flex-col space-y-1">
-        <p className="font-medium text-sm">Thank you!</p>
-        <p className="text-sm text-[#4C4C4C]">
-          We will be back with you as soon as possible.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <Form {...form}>
-      <form onSubmit={handleOnSubmit}>
-        <FormField
-          control={form.control}
-          name="message"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Message</FormLabel>
-              <FormControl>
-                <Textarea
-                  placeholder="Describe the issue you're facing, along with any relevant information. Please be as detailed and specific as possible."
-                  className="resize-none min-h-[150px]"
-                  autoFocus
-                  {...field}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-
-        <div className="flex justify-end">
-          <Button
-            type="submit"
-            disabled={
-              sendSupport.status === "executing" || !form.formState.isValid
-            }
-            className="mt-4"
-          >
-            {sendSupport.status === "executing" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              "Submit"
-            )}
-          </Button>
-        </div>
-      </form>
-    </Form>
-  );
+ const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
+ const [receipt,setReceipt]=useState<string|null>(null);
+ const [error,setError]=useState<string|null>(null);
+ const form=useForm({resolver:zodResolver(z.object({message:z.string().trim().min(1).max(10000)})),defaultValues:{message:""}});
+ const sendSupport=useAction(sendSupportAction,{
+   onSuccess:({data})=>{
+     if(!data?.accepted||data.id!==requestId){setError("Receipt could not be confirmed. Please retry.");return;}
+     setReceipt(data.id);setError(null);form.reset();setRequestId(crypto.randomUUID());
+   },
+   onError:()=>setError("Receipt could not be confirmed. Your text is preserved; retry."),
+ });
+ return <Form {...form}><form className="space-y-4" onSubmit={form.handleSubmit(values=>{
+   setError(null);sendSupport.execute({requestId,message:values.message,type:"Transactions",priority:"low",subject:"Select bank accounts"});
+ })}>
+   {receipt&&<p role="status" className="text-sm break-all">Request received. Reference: {receipt}. The operator can review it in the support queue.</p>}
+   <FormField control={form.control} name="message" render={({field})=><FormItem><FormLabel>Message</FormLabel><FormControl>
+     <Textarea maxLength={10000} placeholder="Describe the bank account issue." className="resize-none min-h-[150px]" disabled={sendSupport.status==="executing"} {...field}/>
+   </FormControl></FormItem>}/>
+   {error&&<p role="alert" className="text-sm text-destructive">{error}</p>}
+   <Button type="submit" disabled={sendSupport.status==="executing"}>{sendSupport.status==="executing"?"Saving request…":"Submit request"}</Button>
+ </form></Form>;
 }
 
 const formSchema = z.object({

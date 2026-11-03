@@ -8,11 +8,12 @@ describe("instance capabilities", () => {
       Object.values(value.integrations).every((item) => !item.enabled),
     ).toBe(true);
     for (const key of [
+      "enrichment",
+      "ai",
       "banking",
       "connectors",
       "email",
       "billing",
-      "support",
     ] as const)
       expect(value[key].enabled).toBe(false);
   });

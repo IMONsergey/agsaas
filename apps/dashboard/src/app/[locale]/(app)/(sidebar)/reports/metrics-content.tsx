@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
+import { DataSourceStatus } from "@/components/data-source-status";
 import { MetricsView } from "@/components/metrics/metrics-view";
 import type { ChartLayoutItem } from "@/components/metrics/utils/chart-types";
 import { DEFAULT_CHART_LAYOUT } from "@/components/metrics/utils/chart-types";
@@ -25,6 +26,7 @@ export function MetricsContent({ chartLayoutPromise }: MetricsContentProps) {
           onToggleEditing={() => setIsEditing((prev) => !prev)}
         />
       </div>
+      <DataSourceStatus />
       <MetricsView initialLayout={initialLayout} isEditing={isEditing} />
     </div>
   );

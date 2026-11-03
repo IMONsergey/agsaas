@@ -1,24 +1,11 @@
-import { PreAccounting } from "@/components/pre-accounting";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Automated Pre-Accounting & Bookkeeping",
+  title: "Exports",
   description:
-    "Automated bookkeeping that collects transactions, matches receipts, and prepares accountant-ready records. Save hours on manual data entry every month.",
+    "Organize transactions, invoices and supporting files before handing records to your accountant.",
   path: "/pre-accounting",
-  og: {
-    title: "Pre-Accounting",
-    description: "Bookkeeping that prepares itself",
-  },
-  keywords: [
-    "bookkeeping software",
-    "small business bookkeeping",
-    "automated bookkeeping",
-    "pre-accounting",
-    "accountant-ready records",
-  ],
 });
-
 export default function Page() {
-  return <PreAccounting />;
+  return <ProductPage page="pre-accounting" />;
 }

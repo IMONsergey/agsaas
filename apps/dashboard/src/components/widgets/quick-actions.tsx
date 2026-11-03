@@ -1,78 +1,58 @@
 "use client";
 
 import { Icons } from "@midday/ui/icons";
-import { flushSync } from "react-dom";
-import { useChatState } from "@/components/chat/chat-context";
+import Link from "next/link";
 import { useInboxUpload } from "@/hooks/use-inbox-upload";
 
-const CHAT_ACTIONS = [
+const ACTIONS = [
   {
-    label: "Create Invoice",
+    label: "Create invoice",
     icon: Icons.Invoice,
-    message: "Create a new invoice",
+    href: "/invoices?invoiceType=create",
   },
   {
-    label: "Add Transaction",
+    label: "Add transaction",
     icon: Icons.CreateTransaction,
-    message: "Add a new transaction",
+    href: "/transactions?createTransaction=true",
   },
   {
-    label: "Add Customer",
+    label: "Import CSV",
+    icon: Icons.Import,
+    href: "/transactions?step=import&hide=true",
+  },
+  {
+    label: "Add customer",
     icon: Icons.Customers,
-    message: "Add a new customer",
+    href: "/customers?createCustomer=true",
   },
-  {
-    label: "Track Time",
-    icon: Icons.Tracker,
-    message: "Start tracking time",
-  },
+  { label: "Track time", icon: Icons.Tracker, href: "/tracker?create=true" },
 ] as const;
 
 const buttonClassName =
-  "flex items-center gap-1.5 border bg-white border-[#e6e6e6] hover:bg-[#f7f7f7] hover:border-[#d0d0d0] dark:border-[#1d1d1d] dark:bg-[#0c0c0c] dark:hover:bg-[#0f0f0f] dark:hover:border-[#222222] px-3 py-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-all duration-300 cursor-pointer group";
+  "inline-flex min-h-10 items-center gap-2 border border-border bg-background px-3 py-2 text-sm text-foreground hover:bg-accent focus-visible:outline focus-visible:outline-2";
 
-const iconClassName =
-  "text-muted-foreground/40 group-hover:text-foreground transition-colors duration-300";
-
-export function QuickActions({ onChatOpen }: { onChatOpen: () => void }) {
-  const { sendMessage, setMessages, setChatTitle } = useChatState();
+/** Core workflows must be usable without an AI or banking provider. */
+export function QuickActions() {
   const { openFilePicker } = useInboxUpload();
-
-  const handleChatAction = (message: string) => {
-    flushSync(() => {
-      setMessages([]);
-      setChatTitle(null);
-    });
-    sendMessage({ text: message });
-    onChatOpen();
-  };
-
   return (
-    <div className="flex items-center justify-center gap-3 pt-2 pb-12 w-full flex-wrap">
-      {CHAT_ACTIONS.map(({ label, icon: Icon, message }) => (
-        <button
-          key={label}
-          type="button"
-          data-track="Assistant Quick Action"
-          data-action={label}
-          className={buttonClassName}
-          onClick={() => handleChatAction(message)}
-        >
-          <Icon size={13} className={iconClassName} />
+    <nav
+      aria-label="Create workspace records"
+      className="flex items-center justify-center gap-3 pt-2 pb-10 w-full flex-wrap"
+    >
+      {ACTIONS.map(({ label, icon: Icon, href }) => (
+        <Link key={href} href={href} className={buttonClassName}>
+          <Icon size={16} aria-hidden="true" />
           <span>{label}</span>
-        </button>
+        </Link>
       ))}
-
       <button
         type="button"
-        data-track="Assistant Quick Action"
-        data-action="Upload Receipt"
         className={buttonClassName}
         onClick={openFilePicker}
       >
-        <Icons.Inbox2 size={13} className={iconClassName} />
-        <span>Upload Receipt</span>
+        <Icons.Inbox2 size={16} aria-hidden="true" />
+        <span>Upload receipt</span>
       </button>
-    </div>
+    </nav>
   );
 }

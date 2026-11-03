@@ -91,6 +91,7 @@ export function ProfitCard({
                 from={from}
                 to={to}
                 currency={currency}
+                revenueType={revenueType}
               />
             )}
           </div>

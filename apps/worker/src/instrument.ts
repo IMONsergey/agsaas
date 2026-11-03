@@ -1,3 +1,4 @@
+import { sanitizeTelemetryEvent } from "@midday/logger/diagnostics";
 import * as Sentry from "@sentry/bun";
 
 if (process.env.NODE_ENV === "production" && process.env.SENTRY_DSN) {
@@ -12,13 +13,16 @@ if (process.env.NODE_ENV === "production" && process.env.SENTRY_DSN) {
       process.env.NODE_ENV ||
       "production",
 
-    integrations: [Sentry.consoleLoggingIntegration({ levels: ["error"] })],
+    // Console logs are kept locally with explicit metadata redaction.
+    integrations: [],
 
-    sendDefaultPii: true,
-    enableLogs: true,
+    sendDefaultPii: false,
+    enableLogs: false,
 
     // Sample 10% of transactions for performance monitoring
     tracesSampleRate: 0.1,
+
+    beforeSend: sanitizeTelemetryEvent,
 
     // Drop noisy transactions (health checks, admin dashboard)
     beforeSendTransaction(event) {
@@ -28,7 +32,7 @@ if (process.env.NODE_ENV === "production" && process.env.SENTRY_DSN) {
         return null;
       }
 
-      return event;
+      return sanitizeTelemetryEvent(event);
     },
   });
 }

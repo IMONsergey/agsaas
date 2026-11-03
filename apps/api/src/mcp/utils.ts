@@ -1,6 +1,7 @@
 import { createAdminClient } from "@api/services/supabase";
 import { TZDate } from "@date-fns/tz";
 import { download, signedUrl } from "@midday/supabase/storage";
+import { getAppUrl } from "@midday/utils/envs";
 import {
   format,
   getQuarter,
@@ -42,8 +43,7 @@ export function getDateContext(timezone: string | null): DateContext {
   };
 }
 
-export const DASHBOARD_URL =
-  process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
+export const DASHBOARD_URL = getAppUrl();
 
 export const MCP_TEXT_LIMIT = 25_000;
 

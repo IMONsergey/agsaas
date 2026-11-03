@@ -8,7 +8,6 @@ import { getQueryClient, trpc } from "@/trpc/server";
 export const contentType = "image/png";
 
 // Cache the OG image for 1 hour (3600 seconds)
-export const revalidate = 3600;
 
 type Props = {
   params: Promise<{ linkId: string }>;
@@ -141,3 +140,6 @@ function ReportOgTemplate({
     </div>
   );
 }
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;

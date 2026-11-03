@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { getCurrencyMultiplier } from "@midday/invoice/currency";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import type { DatabaseOrTransaction } from "../client";
 import { InvoicePaymentError } from "../errors";
+import { getInvoicePaymentAmount } from "../invoice-money";
+export { getInvoicePaymentAmount } from "../invoice-money";
 import { invoicePaymentReservations, invoices, teams } from "../schema";
+import { financialRequestHash } from "../financial-job";
+import {
+  getInvoiceSettlement,
+  getInvoiceSettlementEntries,
+  recordInvoiceSettlement,
+} from "./invoice-settlements";
 
 export type InvoicePaymentReservation =
   typeof invoicePaymentReservations.$inferSelect;
@@ -12,56 +19,6 @@ export type InvoicePaymentReservation =
 // 23-hour bound measured by the database clock, with a full hour of margin.
 // A backwards clock or expired unknown attempt is never replayed automatically.
 export const INVOICE_PAYMENT_REPLAY_WINDOW_MS = 23 * 60 * 60 * 1000;
-
-export function getInvoicePaymentAmount(
-  amount: number | null,
-  currency: string | null,
-) {
-  if (
-    !currency ||
-    !/^[a-z]{3}$/i.test(currency) ||
-    amount === null ||
-    !Number.isFinite(amount) ||
-    amount <= 0 ||
-    amount > 99_999_999.99
-  ) {
-    throw new InvoicePaymentError(
-      400,
-      "Invalid invoice payment amount or currency",
-    );
-  }
-
-  // Storage is numeric(10,2). Reject fractional minor units instead of silently
-  // rounding e.g. JPY 100.25 down to a different charge amount.
-  const fixed = amount.toFixed(2);
-  if (Number(fixed) !== amount) {
-    throw new InvoicePaymentError(
-      400,
-      "Invoice amount exceeds storage precision",
-    );
-  }
-  const [whole, fraction] = fixed.split(".");
-  const cents = BigInt(whole!) * 100n + BigInt(fraction!);
-  const normalized = currency.toLowerCase();
-  // Stripe's charge API retains two-decimal wire units for ISK and UGX even
-  // though neither currency permits fractional charges. Keep the whole-unit
-  // validation separate from the shared Stripe wire/display conversion.
-  const legacyTwoDecimalWire = normalized === "isk" || normalized === "ugx";
-  if (legacyTwoDecimalWire && cents % 100n !== 0n) {
-    throw new InvoicePaymentError(
-      400,
-      "This currency requires a whole-unit charge",
-    );
-  }
-  const scaled = cents * BigInt(getCurrencyMultiplier(currency));
-  if (scaled % 100n !== 0n || scaled / 100n > 99_999_999n) {
-    throw new InvoicePaymentError(
-      400,
-      "Invoice amount is not supported for this currency",
-    );
-  }
-  return { amountMinor: Number(scaled / 100n), currency: normalized };
-}
 
 export function canReplayInvoicePayment(
   reservation: Pick<InvoicePaymentReservation, "createdAt" | "lastAttemptAt">,
@@ -80,12 +37,11 @@ export function canReplayInvoicePayment(
   );
 }
 
-function isPayable(invoice: typeof invoices.$inferSelect) {
+function isPayable(invoice: typeof invoices.$inferSelect, hasLedger = false) {
   const template = invoice.template as { paymentEnabled?: boolean } | null;
   return (
     (invoice.status === "unpaid" || invoice.status === "overdue") &&
-    !invoice.paidAt &&
-    !invoice.refundedAt &&
+    (hasLedger || (!invoice.paidAt && !invoice.refundedAt)) &&
     template?.paymentEnabled === true
   );
 }
@@ -94,13 +50,14 @@ function matchesReservation(
   reservation: InvoicePaymentReservation,
   invoice: typeof invoices.$inferSelect,
   account: string | null,
+  balanceMinor?: number,
 ) {
   const amount = getInvoicePaymentAmount(invoice.amount, invoice.currency);
   return (
     reservation.invoiceId === invoice.id &&
     reservation.teamId === invoice.teamId &&
     reservation.stripeAccountId === account &&
-    reservation.amountMinor === amount.amountMinor &&
+    reservation.amountMinor === (balanceMinor ?? amount.amountMinor) &&
     reservation.currency === amount.currency
   );
 }
@@ -126,7 +83,15 @@ export async function reserveInvoicePayment(
       )
       .for("update");
     if (!invoice) throw new InvoicePaymentError(404, "Invoice not found");
-    if (!isPayable(invoice)) {
+    const settlement = await getInvoiceSettlement(tx, {
+      invoiceId: invoice.id,
+      teamId: invoice.teamId,
+    });
+    if (
+      settlement.reconciliationRequired ||
+      !settlement.projection ||
+      !isPayable(invoice, settlement.entries.length > 0)
+    ) {
       throw new InvoicePaymentError(400, "Invoice is not payable online");
     }
 
@@ -137,11 +102,24 @@ export async function reserveInvoicePayment(
     if (!team?.stripeAccountId || team.stripeConnectStatus !== "connected") {
       throw new InvoicePaymentError(400, "Payment provider is not available");
     }
-    const amount = getInvoicePaymentAmount(invoice.amount, invoice.currency);
+    const amount = {
+      ...getInvoicePaymentAmount(invoice.amount, invoice.currency),
+      amountMinor: Number(settlement.projection.balanceMinor),
+    };
+    if (amount.amountMinor <= 0 || amount.amountMinor > 99_999_999)
+      throw new InvoicePaymentError(
+        400,
+        "No supported outstanding amount remains",
+      );
     const [existing] = await tx
       .select()
       .from(invoicePaymentReservations)
-      .where(eq(invoicePaymentReservations.invoiceId, invoice.id))
+      .where(
+        and(
+          eq(invoicePaymentReservations.invoiceId, invoice.id),
+          sql`${invoicePaymentReservations.state} <> 'settled'`,
+        ),
+      )
       .for("update");
     const clock = await tx.execute<{ now: string }>(
       sql`SELECT clock_timestamp()::text AS now`,
@@ -154,7 +132,12 @@ export async function reserveInvoicePayment(
         return { blocked: true as const };
       }
       if (
-        !matchesReservation(existing, invoice, team.stripeAccountId) ||
+        !matchesReservation(
+          existing,
+          invoice,
+          team.stripeAccountId,
+          amount.amountMinor,
+        ) ||
         (invoice.paymentIntentId !== null &&
           invoice.paymentIntentId !== existing.paymentIntentId) ||
         (existing.state === "attached" &&
@@ -182,6 +165,18 @@ export async function reserveInvoicePayment(
       return { reservation: reservation! };
     }
 
+    const priorAttempts = await tx
+      .select({ id: invoicePaymentReservations.id })
+      .from(invoicePaymentReservations)
+      .where(eq(invoicePaymentReservations.invoiceId, invoice.id))
+      .limit(1);
+    // The invoice pointer denotes the current attempt; original settled IDs remain in the journal and reservations.
+    if (priorAttempts.length)
+      await tx
+        .update(invoices)
+        .set({ paymentIntentId: null })
+        .where(eq(invoices.id, invoice.id));
+    const legacyIntent = priorAttempts.length ? null : invoice.paymentIntentId;
     const [reservation] = await tx
       .insert(invoicePaymentReservations)
       .values({
@@ -191,8 +186,8 @@ export async function reserveInvoicePayment(
         stripeAccountId: team.stripeAccountId,
         ...amount,
         invoiceNumber: invoice.invoiceNumber ?? "",
-        paymentIntentId: invoice.paymentIntentId,
-        state: invoice.paymentIntentId ? "attached" : "reserved",
+        paymentIntentId: legacyIntent,
+        state: legacyIntent ? "attached" : "reserved",
         createdAt: now,
         lastAttemptAt: now,
       })
@@ -238,36 +233,66 @@ export async function getInvoiceRefundContext(
           eq(invoices.teamId, params.teamId),
         ),
       )
-      .for("share");
+      .for("update");
     if (!invoice) throw new InvoicePaymentError(404, "Invoice not found");
-    if (invoice.status !== "paid" || !invoice.paymentIntentId) {
+    if (
+      !invoice.paymentIntentId ||
+      !["paid", "unpaid", "overdue"].includes(invoice.status)
+    )
       throw new InvoicePaymentError(
         400,
         "Invoice does not have a refundable Stripe payment",
       );
-    }
     const [reservation] = await tx
       .select()
       .from(invoicePaymentReservations)
-      .where(eq(invoicePaymentReservations.invoiceId, invoice.id))
+      .where(
+        and(
+          eq(invoicePaymentReservations.invoiceId, invoice.id),
+          eq(
+            invoicePaymentReservations.paymentIntentId,
+            invoice.paymentIntentId,
+          ),
+        ),
+      )
       .for("share");
     const [team] = await tx
       .select()
       .from(teams)
       .where(eq(teams.id, params.teamId));
+    const ledger = await getInvoiceSettlement(tx, params);
+    const payment = ledger.entries.find(
+      (entry) =>
+        entry.kind === "payment" &&
+        entry.provider === "stripe" &&
+        entry.providerResourceId === invoice.paymentIntentId,
+    );
     const amount = getInvoicePaymentAmount(invoice.amount, invoice.currency);
-    // Historical reservations retain their original connected account even
-    // after the company disconnects or connects another account. A legacy
-    // payment without a reservation must be verified with Stripe before refund.
+    if (payment) {
+      const available = ledger.projection?.paymentBalances.find(
+        (row) => row.paymentId === payment.id,
+      )?.refundableMinor;
+      if (!available || available === "0")
+        throw new InvoicePaymentError(
+          400,
+          "This payment has no refundable balance",
+        );
+    } else if (invoice.status !== "paid")
+      throw new InvoicePaymentError(
+        400,
+        "Invoice does not have a confirmed refundable payment",
+      );
     const stripeAccountId =
-      reservation?.stripeAccountId ?? team?.stripeAccountId;
+      reservation?.stripeAccountId ??
+      payment?.providerAccountId ??
+      team?.stripeAccountId;
     if (
       !stripeAccountId ||
       (reservation &&
         (reservation.state === "reconciliation_required" ||
-          reservation.paymentIntentId !== invoice.paymentIntentId ||
-          reservation.amountMinor !== amount.amountMinor ||
-          reservation.currency !== amount.currency))
+          reservation.currency !== amount.currency ||
+          reservation.amountMinor !==
+            (payment ? Number(payment.amountMinor) : amount.amountMinor)))
     )
       throw new InvoicePaymentError(
         409,
@@ -277,7 +302,10 @@ export async function getInvoiceRefundContext(
       ...params,
       paymentIntentId: invoice.paymentIntentId,
       stripeAccountId,
-      ...amount,
+      currency: amount.currency,
+      amountMinor:
+        reservation?.amountMinor ??
+        (payment ? Number(payment.amountMinor) : amount.amountMinor),
     };
   });
 }
@@ -304,6 +332,7 @@ export async function requireInvoicePaymentReconciliation(
         eq(invoicePaymentReservations.id, reservation.id),
         eq(invoicePaymentReservations.invoiceId, reservation.invoiceId),
         eq(invoicePaymentReservations.teamId, reservation.teamId),
+        sql`${invoicePaymentReservations.state} <> 'settled'`,
       ),
     );
 }
@@ -336,7 +365,7 @@ export async function attachInvoicePayment(
         ),
       )
       .for("update");
-    if (!reservation) return false;
+    if (!reservation || reservation.state === "settled") return false;
     const [team] = await tx
       .select()
       .from(teams)
@@ -354,13 +383,24 @@ export async function attachInvoicePayment(
     )
       return false;
 
+    const settlement = await getInvoiceSettlement(tx, {
+      invoiceId: invoice.id,
+      teamId: invoice.teamId,
+    });
     let valid = false;
     try {
       valid =
         reservation.state !== "reconciliation_required" &&
-        isPayable(invoice) &&
+        !settlement.reconciliationRequired &&
+        !!settlement.projection &&
+        isPayable(invoice, settlement.entries.length > 0) &&
         team?.stripeConnectStatus === "connected" &&
-        matchesReservation(reservation, invoice, team.stripeAccountId) &&
+        matchesReservation(
+          reservation,
+          invoice,
+          team.stripeAccountId,
+          Number(settlement.projection.balanceMinor),
+        ) &&
         (!invoice.paymentIntentId ||
           invoice.paymentIntentId === params.paymentIntentId) &&
         (!reservation.paymentIntentId ||
@@ -404,13 +444,10 @@ export type StripeInvoicePaymentEvent = {
   invoiceId?: string;
   teamId?: string;
   reservationId?: string;
+  refunds?: Array<{ id: string; amountMinor: number; status: string }>;
 };
 
-/**
- * A valid Stripe signature is not invoice authorization: metadata is editable
- * at the connected account. Bind the event to the stored intent/reservation,
- * original account and exact financial snapshot before applying a transition.
- */
+/** Provider signature alone is insufficient: lock and authorize the stored original account and attempt. */
 export async function applyStripeInvoicePaymentEvent(
   db: DatabaseOrTransaction,
   event: StripeInvoicePaymentEvent,
@@ -420,19 +457,59 @@ export async function applyStripeInvoicePaymentEvent(
     !/^acct_[A-Za-z0-9]+$/.test(event.stripeAccountId) ||
     !Number.isSafeInteger(event.amountMinor) ||
     event.amountMinor <= 0 ||
-    !Number.isFinite(Date.parse(event.occurredAt))
+    !Number.isFinite(Date.parse(event.occurredAt)) ||
+    (event.kind === "refunded" && !event.refunds)
   )
     throw new InvoicePaymentError(409, "Invalid payment event binding");
-
+  if (event.refunds) {
+    const seen = new Set<string>();
+    for (const refund of event.refunds) {
+      if (
+        !/^(re|pyr)_[A-Za-z0-9]+$/.test(refund.id) ||
+        seen.has(refund.id) ||
+        !Number.isSafeInteger(refund.amountMinor) ||
+        refund.amountMinor <= 0 ||
+        ![
+          "succeeded",
+          "pending",
+          "requires_action",
+          "failed",
+          "canceled",
+        ].includes(refund.status)
+      )
+        throw new InvoicePaymentError(409, "Invalid confirmed refund list");
+      seen.add(refund.id);
+    }
+  }
   const result = await db.transaction(async (tx) => {
+    let candidateId = event.invoiceId;
+    if (!candidateId || !event.teamId) {
+      const attempts = await tx
+        .select({ invoiceId: invoicePaymentReservations.invoiceId })
+        .from(invoicePaymentReservations)
+        .where(
+          and(
+            eq(
+              invoicePaymentReservations.paymentIntentId,
+              event.paymentIntentId,
+            ),
+            eq(
+              invoicePaymentReservations.stripeAccountId,
+              event.stripeAccountId,
+            ),
+          ),
+        )
+        .limit(2);
+      if (attempts.length === 1) candidateId = attempts[0]!.invoiceId;
+    }
     const candidates = await tx
       .select()
       .from(invoices)
       .where(
-        event.invoiceId && event.teamId
+        candidateId
           ? and(
-              eq(invoices.id, event.invoiceId),
-              eq(invoices.teamId, event.teamId),
+              eq(invoices.id, candidateId),
+              event.teamId ? eq(invoices.teamId, event.teamId) : undefined,
             )
           : eq(invoices.paymentIntentId, event.paymentIntentId),
       )
@@ -442,34 +519,47 @@ export async function applyStripeInvoicePaymentEvent(
     const [reservation] = await tx
       .select()
       .from(invoicePaymentReservations)
-      .where(eq(invoicePaymentReservations.invoiceId, invoice.id))
+      .where(
+        and(
+          eq(invoicePaymentReservations.invoiceId, invoice.id),
+          eq(invoicePaymentReservations.teamId, invoice.teamId),
+          or(
+            eq(
+              invoicePaymentReservations.paymentIntentId,
+              event.paymentIntentId,
+            ),
+            event.reservationId
+              ? and(
+                  eq(invoicePaymentReservations.id, event.reservationId),
+                  sql`${invoicePaymentReservations.paymentIntentId} IS NULL`,
+                )
+              : undefined,
+          ),
+        ),
+      )
       .for("update");
     const [team] = await tx
       .select()
       .from(teams)
       .where(eq(teams.id, invoice.teamId));
-    const ownsStoredPayment =
+    const owns =
       event.stripeAccountId ===
         (reservation?.stripeAccountId ?? team?.stripeAccountId) &&
-      (!invoice.paymentIntentId ||
-        invoice.paymentIntentId === event.paymentIntentId) &&
       (reservation
         ? reservation.paymentIntentId === event.paymentIntentId ||
           (!reservation.paymentIntentId &&
-            event.reservationId === reservation.id)
+            reservation.id === event.reservationId)
         : invoice.paymentIntentId === event.paymentIntentId);
-    // Editable metadata must not be allowed even to block another team's
-    // reservation. Establish provider ownership before any reconciliation write.
-    if (!ownsStoredPayment) return { blocked: true as const };
-    const snapshot = getInvoicePaymentAmount(invoice.amount, invoice.currency);
-    const financialMatches =
-      snapshot.amountMinor === event.amountMinor &&
-      snapshot.currency === event.currency &&
-      (!reservation ||
-        (reservation.amountMinor === event.amountMinor &&
-          reservation.currency === event.currency));
-    if (!financialMatches || invoice.status === "canceled") {
-      if (reservation) {
+    if (!owns) return { blocked: true as const };
+    const amount = getInvoicePaymentAmount(invoice.amount, invoice.currency);
+    const boundAmount = reservation?.amountMinor ?? amount.amountMinor;
+    if (
+      boundAmount !== event.amountMinor ||
+      amount.currency !== event.currency ||
+      (reservation && reservation.currency !== event.currency) ||
+      invoice.status === "canceled"
+    ) {
+      if (reservation)
         await tx
           .update(invoicePaymentReservations)
           .set({
@@ -477,48 +567,148 @@ export async function applyStripeInvoicePaymentEvent(
             failureCode: "webhook_binding_or_state_mismatch",
           })
           .where(eq(invoicePaymentReservations.id, reservation.id));
+      return { blocked: true as const };
+    }
+    if (!["unpaid", "overdue", "paid", "refunded"].includes(invoice.status))
+      return { blocked: true as const };
+    const identity = {
+      invoiceId: invoice.id,
+      teamId: invoice.teamId,
+      provider: "stripe" as const,
+      providerAccountId: event.stripeAccountId,
+      currency: event.currency,
+    };
+    const payment = await recordInvoiceSettlement(tx, {
+      ...identity,
+      operationKey: financialRequestHash(
+        `stripe/${event.stripeAccountId}/${event.paymentIntentId}/payment`,
+      ),
+      kind: "payment",
+      amountMinor: String(event.amountMinor),
+      providerResourceId: event.paymentIntentId,
+      occurredAt: event.occurredAt,
+      reason: "Stripe confirmed payment",
+    });
+    let projection = payment.projection;
+    if (event.refunds) {
+      const history = await getInvoiceSettlementEntries(
+        tx,
+        invoice.teamId,
+        invoice.id,
+      );
+      const knownRefunds = history.filter(
+        (row) => row.kind === "refund" && row.paymentId === payment.entry.id,
+      );
+      const anomalous = knownRefunds.some(
+        (row) =>
+          !event.refunds!.some(
+            (refund) => refund.id === row.providerResourceId,
+          ) ||
+          event.refunds!.some(
+            (refund) =>
+              refund.id === row.providerResourceId &&
+              (["pending", "requires_action"].includes(refund.status) ||
+                String(refund.amountMinor) !== row.amountMinor),
+          ),
+      );
+      if (anomalous)
+        throw new InvoicePaymentError(
+          409,
+          "Previously confirmed refund state requires reconciliation",
+        );
+      for (const refund of event.refunds) {
+        const original = knownRefunds.find(
+          (row) => row.providerResourceId === refund.id,
+        );
+        if (refund.status === "succeeded") {
+          if (
+            original &&
+            history.some(
+              (row) =>
+                row.kind === "refund_reversal" &&
+                row.reversesId === original.id,
+            )
+          )
+            throw new InvoicePaymentError(
+              409,
+              "Reversed refund cannot be silently confirmed again",
+            );
+          projection = (
+            await recordInvoiceSettlement(tx, {
+              ...identity,
+              operationKey: financialRequestHash(
+                `stripe/${event.stripeAccountId}/${refund.id}/refund`,
+              ),
+              kind: "refund",
+              amountMinor: String(refund.amountMinor),
+              paymentId: payment.entry.id,
+              providerResourceId: refund.id,
+              occurredAt: event.occurredAt,
+              reason: "Stripe confirmed refund",
+            })
+          ).projection;
+        } else if (original && ["failed", "canceled"].includes(refund.status)) {
+          projection = (
+            await recordInvoiceSettlement(tx, {
+              ...identity,
+              operationKey: financialRequestHash(
+                `stripe/${event.stripeAccountId}/${refund.id}/reversal`,
+              ),
+              kind: "refund_reversal",
+              amountMinor: original.amountMinor,
+              paymentId: payment.entry.id,
+              reversesId: original.id,
+              providerResourceId: refund.id,
+              occurredAt: event.occurredAt,
+              reason: "Stripe reversed a previously confirmed refund",
+            })
+          ).projection;
+        }
       }
-      return { blocked: true as const };
     }
-    // A late succeeded event must never roll a full refund backwards.
-    if (invoice.status === "refunded" && event.kind === "paid") {
-      return { invoice, notify: false };
-    }
-    if (invoice.status === event.kind) {
-      // Retry notification enqueue after a previous DB commit / Redis failure.
-      // The webhook caller uses a stable provider-event job ID for deduplication.
-      return { invoice, notify: true };
-    }
-    if (!["unpaid", "overdue", "paid"].includes(invoice.status)) {
-      return { blocked: true as const };
-    }
-    const [updated] = await tx
-      .update(invoices)
-      .set({
-        paymentIntentId: event.paymentIntentId,
-        status: event.kind,
-        ...(event.kind === "paid"
-          ? { paidAt: invoice.paidAt ?? event.occurredAt }
-          : { refundedAt: invoice.refundedAt ?? event.occurredAt }),
-      })
-      .where(
-        and(eq(invoices.id, invoice.id), eq(invoices.teamId, invoice.teamId)),
-      )
-      .returning();
-    if (reservation) {
+    if (reservation)
       await tx
         .update(invoicePaymentReservations)
         .set({
           paymentIntentId: event.paymentIntentId,
-          state: "attached",
+          state: "settled",
           failureCode: null,
         })
         .where(eq(invoicePaymentReservations.id, reservation.id));
-    }
-    return { invoice: updated!, notify: true };
+    // A historical event must not replace the current unresolved attempt's pointer.
+    const [unresolved] = await tx
+      .select({ id: invoicePaymentReservations.id })
+      .from(invoicePaymentReservations)
+      .where(
+        and(
+          eq(invoicePaymentReservations.invoiceId, invoice.id),
+          sql`${invoicePaymentReservations.state}<>'settled'`,
+        ),
+      )
+      .limit(1);
+    if (
+      (!unresolved || unresolved.id === reservation?.id) &&
+      (!invoice.paymentIntentId ||
+        invoice.paymentIntentId === event.paymentIntentId)
+    )
+      await tx
+        .update(invoices)
+        .set({ paymentIntentId: event.paymentIntentId })
+        .where(eq(invoices.id, invoice.id));
+    const [updated] = await tx
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, invoice.id));
+    return {
+      invoice: updated!,
+      projection,
+      notify:
+        event.kind === "paid"
+          ? projection.status === "paid"
+          : projection.status === "refunded",
+    };
   });
-  if ("blocked" in result) {
+  if ("blocked" in result)
     throw new InvoicePaymentError(409, "Payment event requires reconciliation");
-  }
   return result;
 }

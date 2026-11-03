@@ -1,24 +1,11 @@
-import { Insights } from "@/components/insights";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Business Insights",
+  title: "Reports",
   description:
-    "Understand your business at a glance. Get weekly summaries, cash flow analysis, and clear explanations of revenue and spending trends.",
+    "Review revenue, spending and activity from the records held in your workspace.",
   path: "/insights",
-  og: {
-    title: "Insights",
-    description: "Understand your business at a glance",
-  },
-  keywords: [
-    "business insights",
-    "business analytics",
-    "cash flow analysis",
-    "revenue tracking",
-    "spending analysis",
-  ],
 });
-
 export default function Page() {
-  return <Insights />;
+  return <ProductPage page="insights" />;
 }

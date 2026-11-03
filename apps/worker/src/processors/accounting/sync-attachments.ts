@@ -14,7 +14,7 @@ import {
   getTransactionAttachmentsForSync,
   updateSyncedAttachmentMapping,
 } from "@midday/db/queries";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import type { Job } from "bullmq";
 import type { AccountingAttachmentSyncPayload } from "../../schemas/accounting";
 import { AccountingProcessorBase, type AccountingProviderId } from "./base";
@@ -73,7 +73,7 @@ export class SyncAttachmentsProcessor extends AccountingProcessorBase<Accounting
       addHistoryNote,
     } = job.data;
 
-    const supabase = createClient(); // Only for storage access (unavoidable)
+    const supabase = createTeamClient(teamId); // Only for storage access (unavoidable)
 
     this.logger.info("Starting attachment sync", {
       teamId,
@@ -368,7 +368,7 @@ export class SyncAttachmentsProcessor extends AccountingProcessorBase<Accounting
       path: string[] | null;
       type: string | null;
     },
-    supabase: ReturnType<typeof createClient>,
+    supabase: ReturnType<typeof createTeamClient>,
     provider: AccountingProvider,
     orgId: string,
     providerTransactionId: string,

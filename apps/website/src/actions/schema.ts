@@ -12,10 +12,11 @@ export const featureRequestSchema = z.object({
 });
 
 export const sendSupportSchema = z.object({
-  email: z.string().email(),
-  fullName: z.string(),
-  subject: z.string(),
-  priority: z.string(),
-  type: z.string(),
-  message: z.string(),
+  requestId: z.string().uuid(),
+  email: z.string().email().max(254),
+  fullName: z.string().trim().min(1).max(120),
+  subject: z.string().trim().min(3).max(200),
+  priority: z.enum(["low", "normal", "high", "urgent"]),
+  type: z.string().trim().min(1).max(80),
+  message: z.string().trim().min(10).max(10000),
 });

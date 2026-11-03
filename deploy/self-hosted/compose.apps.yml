@@ -25,6 +25,7 @@ x-app-environment: &app-environment
   # Server-only transport override. Public SDK URLs/cookie identity stay canonical.
   SUPABASE_INTERNAL_URL: http://api-gw:8000
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?Generate the matched publishable key}"
+  NEXT_PUBLIC_AUTH_COOKIE_NAME: "${NEXT_PUBLIC_AUTH_COOKIE_NAME:-}"
   SUPABASE_SECRET_KEY: "${SUPABASE_SECRET_KEY:?Generate the matched server key}"
   NEXT_PUBLIC_URL: "${AGSAAS_DASHBOARD_URL:?Set the canonical dashboard URL}"
   NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the canonical API URL}"
@@ -70,6 +71,7 @@ services:
       SUPABASE_JWT_SECRET: "${JWT_SECRET:?Use the matching Supabase legacy signing secret}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"
+      AGSAAS_SUPPORT_INGEST_KEY: "${AGSAAS_SUPPORT_INGEST_KEY:-}"
       GMAIL_CLIENT_ID: "${GMAIL_CLIENT_ID:-}"
       GMAIL_CLIENT_SECRET: "${GMAIL_CLIENT_SECRET:-}"
       GMAIL_REDIRECT_URI: "${GMAIL_REDIRECT_URI:-}"
@@ -163,6 +165,7 @@ services:
         GIT_COMMIT_SHA: "${AGSAAS_RELEASE:?Set the exact application commit}"
         NEXT_PUBLIC_SUPABASE_URL: "${SUPABASE_PUBLIC_URL:?Set the canonical Supabase URL before building}"
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?Generate the matched publishable key}"
+        NEXT_PUBLIC_AUTH_COOKIE_NAME: "${NEXT_PUBLIC_AUTH_COOKIE_NAME:-}"
         NEXT_PUBLIC_URL: "${AGSAAS_DASHBOARD_URL:?Set the canonical dashboard URL before building}"
         NEXT_PUBLIC_API_URL: "${AGSAAS_API_URL:?Set the canonical API URL before building}"
         NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: "${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:?Generate and retain a canonical base64-encoded 32-byte key}"

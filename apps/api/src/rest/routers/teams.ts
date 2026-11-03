@@ -1,3 +1,4 @@
+import { requireTeamOwner, TeamOwnerRequiredError } from "@api/utils/team-owner";
 import type { Context } from "@api/rest/types";
 import {
   getTeamByIdSchema,
@@ -147,6 +148,11 @@ app.openapi(
       throw new Error("Team not found or access denied");
     }
 
+    try { await requireTeamOwner(db, teamId, session.user.id); }
+    catch (error) {
+      if (error instanceof TeamOwnerRequiredError) throw new HTTPException(403, { message: error.message });
+      throw error;
+    }
     const result = await updateTeamById(db, {
       id: teamId,
       data: params,

@@ -19,7 +19,7 @@ import React, {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import useClickOutside from "./useClickOutside";
+import useClickOutside from "@/components/motion-primitives/useClickOutside";
 
 export type MorphingDialogContextType = {
   isOpen: boolean;

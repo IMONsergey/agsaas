@@ -18,6 +18,8 @@ import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   getCustomerById,
+  issueInvoice as persistInvoiceIssue,
+  scheduleInvoice as persistInvoiceSchedule,
   getInvoiceById,
   getInvoiceSummary,
   getInvoices,
@@ -27,7 +29,7 @@ import {
   isInvoiceNumberUsed,
   deleteInvoice as persistInvoiceDelete,
   draftInvoice as persistInvoiceDraft,
-  updateInvoice as persistInvoiceUpdate,
+  updateInvoiceWithIntent as persistInvoiceUpdate,
 } from "@midday/db/queries";
 import {
   getInvoiceSnapshotAmounts,
@@ -35,14 +37,10 @@ import {
   InvoiceFinancialStateError,
 } from "@midday/invoice/calculate";
 import { transformCustomerToContent } from "@midday/invoice/utils";
-import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
-import { createLoggerWithContext } from "@midday/logger";
 import { addDays } from "date-fns";
 import { HTTPException } from "hono/http-exception";
 import { v4 as uuidv4 } from "uuid";
 import { withRequiredScope } from "../middleware";
-
-const logger = createLoggerWithContext("rest:invoices");
 
 async function draftInvoice(...args: Parameters<typeof persistInvoiceDraft>) {
   try {
@@ -67,6 +65,27 @@ async function updateInvoice(...args: Parameters<typeof persistInvoiceUpdate>) {
     if (error instanceof InvoiceFinancialStateError) {
       throw new HTTPException(409, { message: error.message });
     }
+    throw error;
+  }
+}
+
+async function issueInvoice(...args: Parameters<typeof persistInvoiceIssue>) {
+  try {
+    return await persistInvoiceIssue(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError)
+      throw new HTTPException(409, { message: error.message });
+    throw error;
+  }
+}
+async function scheduleInvoice(
+  ...args: Parameters<typeof persistInvoiceSchedule>
+) {
+  try {
+    return await persistInvoiceSchedule(...args);
+  } catch (error) {
+    if (error instanceof InvoiceFinancialStateError)
+      throw new HTTPException(409, { message: error.message });
     throw error;
   }
 }
@@ -466,121 +485,25 @@ app.openapi(
       throw new HTTPException(500, { message: "Failed to create invoice" });
     }
 
-    let finalResult = result;
-
-    if (
-      input.deliveryType === "create" ||
-      input.deliveryType === "create_and_send"
-    ) {
-      // Update invoice status to unpaid (similar to tRPC)
-      const updatedInvoice = await updateInvoice(db, {
-        id: result.id,
-        status: "unpaid",
-        teamId,
-        userId,
-      });
-
-      if (updatedInvoice) {
-        finalResult = updatedInvoice;
-      }
-
-      // Trigger invoice generation (and sending if create_and_send)
-      await triggerJob(
-        "generate-invoice",
-        {
-          invoiceId: result.id,
-          deliveryType: input.deliveryType,
-        },
-        "invoices",
-      );
-    } else if (input.deliveryType === "scheduled") {
-      // Handle scheduled invoices
-      if (!input.scheduledAt) {
-        throw new HTTPException(400, {
-          message: "scheduledAt is required for scheduled delivery",
-        });
-      }
-
-      // Convert to Date object and validate it's in the future
-      const scheduledDate = new Date(input.scheduledAt);
-      const now = new Date();
-
-      if (scheduledDate <= now) {
-        throw new HTTPException(400, {
-          message: "scheduledAt must be in the future",
-        });
-      }
-
-      // Calculate delay in milliseconds from now
-      const delayMs = scheduledDate.getTime() - now.getTime();
-
-      // Create a scheduled job with delay
-      const scheduledRun = await triggerJob(
-        "schedule-invoice",
-        {
-          invoiceId: result.id,
-        },
-        "invoices",
-        {
-          delay: delayMs,
-        },
-      );
-
-      if (!scheduledRun?.id) {
-        throw new HTTPException(500, {
-          message: "Failed to create scheduled job - no job ID returned",
-        });
-      }
-
-      // Update the invoice with scheduling information
-      const updatedInvoice = await updateInvoice(db, {
-        id: result.id,
-        status: "scheduled",
-        scheduledAt: input.scheduledAt,
-        scheduledJobId: scheduledRun.id,
-        teamId,
-        userId,
-      });
-
-      if (!updatedInvoice) {
-        // Clean up the orphaned job before throwing
-        try {
-          const queue = getQueue("invoices");
-          const { jobId: rawJobId } = decodeJobId(scheduledRun.id);
-          const job = await queue.getJob(rawJobId);
-          if (job) {
-            await job.remove();
-          }
-        } catch {
-          // Best effort cleanup - log but don't fail on cleanup errors
-          logger.error("Failed to clean up orphaned scheduled job", {
-            jobId: scheduledRun.id,
-          });
-        }
-
-        throw new HTTPException(404, {
-          message: "Invoice not found",
-        });
-      }
-
-      finalResult = updatedInvoice;
-
-      // Send notification (fire and forget)
-      triggerJob(
-        "notification",
-        {
-          type: "invoice_scheduled",
-          teamId,
-          invoiceId: result.id,
-          invoiceNumber: finalResult.invoiceNumber!,
-          scheduledAt: input.scheduledAt,
-          customerName: finalResult.customerName ?? undefined,
-        },
-        "notifications",
-      ).catch(() => {
-        // Ignore notification errors - invoice was scheduled successfully
-      });
-    }
+    const finalResult =
+      input.deliveryType === "scheduled"
+        ? await scheduleInvoice(db, {
+            id: result.id,
+            teamId,
+            userId,
+            scheduledAt: input.scheduledAt ?? "",
+          })
+        : input.deliveryType === "create" ||
+            input.deliveryType === "create_and_send"
+          ? await issueInvoice(db, {
+              id: result.id,
+              teamId,
+              userId,
+              deliveryType: input.deliveryType,
+            })
+          : result;
+    if (!finalResult)
+      throw new HTTPException(404, { message: "Invoice not found" });
 
     // Add PDF download and preview URLs and serialize objects like tRPC does with superjson
     const { token, ...resultWithoutToken } = finalResult;
@@ -656,14 +579,16 @@ app.openapi(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
 
-    await updateInvoice(db, {
+    const changed = await updateInvoice(db, {
       id,
       teamId,
       userId,
       ...input,
     });
+    if (!changed)
+      throw new HTTPException(404, { message: "Invoice not found" });
 
-    const result = await getInvoiceById(db, { id, teamId });
+    const result = await getInvoiceById(db.usePrimaryOnly(), { id, teamId });
 
     if (!result) {
       throw new HTTPException(404, { message: "Invoice not found" });
@@ -672,6 +597,7 @@ app.openapi(
     const { token, ...resultWithoutToken } = result;
     const response = {
       ...resultWithoutToken,
+      ...("operation" in changed ? { operation: changed.operation } : {}),
       paymentDetails: result.paymentDetails
         ? JSON.stringify(result.paymentDetails)
         : null,

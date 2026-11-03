@@ -208,14 +208,16 @@ describe("tRPC: invoice.searchInvoiceNumber", () => {
 
 describe("tRPC: invoice.update", () => {
   beforeEach(() => {
-    mocks.updateInvoice.mockReset();
-    mocks.updateInvoice.mockImplementation(() => ({
+    mocks.updateInvoiceWithIntent.mockReset();
+    mocks.updateInvoice.mockClear();
+    mocks.triggerJob.mockClear();
+    mocks.updateInvoiceWithIntent.mockImplementation(() => ({
       id: INVOICE_ID,
       status: "paid",
     }));
   });
 
-  test("updates invoice via updateInvoice", async () => {
+  test("updates invoice through the atomic public command", async () => {
     const caller = createCaller(createTestContext());
     const result = await caller.update({
       id: INVOICE_ID,
@@ -223,7 +225,7 @@ describe("tRPC: invoice.update", () => {
     });
 
     expect(result).toMatchObject({ id: INVOICE_ID, status: "paid" });
-    expect(mocks.updateInvoice).toHaveBeenCalledWith(
+    expect(mocks.updateInvoiceWithIntent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         id: INVOICE_ID,
@@ -232,6 +234,37 @@ describe("tRPC: invoice.update", () => {
         status: "paid",
       }),
     );
+  });
+  test("generic unpaid status returns its durable receipt without primitive or Redis fallback", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => ({
+      id: INVOICE_ID,
+      status: "unpaid",
+      operation: {
+        id: "11111111-1111-4111-8111-111111111111",
+        status: "pending",
+      },
+    }));
+    const result = await createCaller(createTestContext()).update({
+      id: INVOICE_ID,
+      status: "unpaid",
+    });
+    expect(result).toMatchObject({ operation: { status: "pending" } });
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("a failed generic schedule command cannot fall back to split writes", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => {
+      throw new Error("atomic fixture failure");
+    });
+    await expect(
+      createCaller(createTestContext()).update({
+        id: INVOICE_ID,
+        status: "scheduled",
+        scheduledAt: new Date(Date.now() + 3600000).toISOString(),
+      }),
+    ).rejects.toThrow("atomic fixture failure");
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
   });
 });
 
@@ -506,40 +539,67 @@ describe("tRPC: invoice.remind acceptance semantics", () => {
 
 describe("tRPC: invoice.create", () => {
   beforeEach(() => {
+    mocks.issueInvoice.mockReset();
+    mocks.scheduleInvoice.mockReset();
     mocks.updateInvoice.mockReset();
     mocks.triggerJob.mockReset();
-    mocks.triggerJob.mockImplementation(() => ({ id: "job-123" }));
-    mocks.updateInvoice.mockImplementation(() => ({
+    mocks.issueInvoice.mockImplementation(() => ({
       id: INVOICE_ID,
       invoiceNumber: "INV-100",
+      operation: { id: "intent-1", status: "pending" },
     }));
   });
-
-  test("finalizes draft: updateInvoice to unpaid and enqueue generate-invoice", async () => {
-    const caller = createCaller(createTestContext());
-    const result = await caller.create({
+  test("returns the durable operation without direct Redis or split status writes", async () => {
+    const result = await createCaller(createTestContext()).create({
       id: INVOICE_ID,
       deliveryType: "create",
     });
-
-    expect(result).toMatchObject({ id: INVOICE_ID, invoiceNumber: "INV-100" });
-    expect(mocks.updateInvoice).toHaveBeenCalledWith(
+    expect(result?.operation).toEqual({ id: "intent-1", status: "pending" });
+    expect(mocks.issueInvoice).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         id: INVOICE_ID,
-        status: "unpaid",
+        deliveryType: "create",
         teamId: "test-team-id",
         userId: "test-user-id",
       }),
     );
-    expect(mocks.triggerJob).toHaveBeenCalledWith(
-      "generate-invoice",
-      expect.objectContaining({
-        invoiceId: INVOICE_ID,
-        deliveryType: "create",
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("a failed SQL command never falls back to a Redis-only send", async () => {
+    mocks.issueInvoice.mockImplementation(() => {
+      throw new Error("SQL fixture failure");
+    });
+    await expect(
+      createCaller(createTestContext()).create({
+        id: INVOICE_ID,
+        deliveryType: "create_and_send",
       }),
-      "invoices",
+    ).rejects.toThrow("SQL fixture failure");
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("a scheduled request persists its schedule through the shared command", async () => {
+    const scheduledAt = new Date(Date.now() + 3600000).toISOString();
+    mocks.scheduleInvoice.mockImplementation(() => ({
+      id: INVOICE_ID,
+      status: "scheduled",
+    }));
+    await createCaller(createTestContext()).create({
+      id: INVOICE_ID,
+      deliveryType: "scheduled",
+      scheduledAt,
+    });
+    expect(mocks.scheduleInvoice).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: INVOICE_ID,
+        scheduledAt,
+        teamId: "test-team-id",
+      }),
     );
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
   });
 });
 

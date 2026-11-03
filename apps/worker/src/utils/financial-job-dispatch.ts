@@ -29,6 +29,11 @@ export async function dispatchFinancialJob(
     financialRequestHash(row.payload) !== row.payloadHash
   )
     throw new Error("Invalid persisted financial job");
+  const notBefore = row.payload.notBefore;
+  const dueAt =
+    notBefore === undefined ? undefined : Date.parse(String(notBefore));
+  if (dueAt !== undefined && !Number.isFinite(dueAt))
+    throw new Error("Invalid financial job schedule");
   const jobId = financialJobId(row.id);
   const existing = await queue.getJob(jobId);
   if (existing) {
@@ -45,6 +50,7 @@ export async function dispatchFinancialJob(
   }
   const created = await queue.add(row.jobName, row.payload, {
     jobId,
+    ...(dueAt === undefined ? {} : { delay: Math.max(0, dueAt - Date.now()) }),
     attempts: 5,
     backoff: { type: "exponential", delay: 5000 },
     removeOnComplete: false,

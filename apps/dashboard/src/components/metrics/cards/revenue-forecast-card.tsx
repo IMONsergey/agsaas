@@ -124,6 +124,7 @@ export function RevenueForecastCard({
                 from={from}
                 to={to}
                 currency={currency}
+                revenueType={revenueType}
               />
             )}
           </div>

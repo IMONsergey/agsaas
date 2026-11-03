@@ -26,6 +26,7 @@ import { FormatAmount } from "./format-amount";
 import { InvoiceActivity } from "./invoice/activity";
 import { InvoiceActions } from "./invoice-actions";
 import { InvoiceDetailsSkeleton } from "./invoice-details-skeleton";
+import { InvoiceSettlementPanel } from "./invoice-settlement-panel";
 import { InvoiceNote } from "./invoice-note";
 import { InvoiceStatus } from "./invoice-status";
 import { OpenURL } from "./open-url";
@@ -457,6 +458,8 @@ export function InvoiceDetails() {
               </div>
             </div>
           )}
+
+        <InvoiceSettlementPanel key={id} invoiceId={id} />
 
         <Accordion
           type="multiple"

@@ -1,14 +1,12 @@
-import {
-  createSafeActionClient,
-  DEFAULT_SERVER_ERROR_MESSAGE,
-} from "next-safe-action";
-
+import { createSafeActionClient } from "next-safe-action";
 export const actionClient = createSafeActionClient({
-  handleReturnedServerError(e) {
-    if (e instanceof Error) {
-      return e.message;
-    }
-
-    return DEFAULT_SERVER_ERROR_MESSAGE;
+  handleServerError(error) {
+    // Action errors are authored public messages; transports never include secrets.
+    return error instanceof Error &&
+      /^(Support messaging|Too many requests|Receipt could not)/.test(
+        error.message,
+      )
+      ? error.message
+      : "Request could not be confirmed. Your text is preserved; please try again.";
   },
 });

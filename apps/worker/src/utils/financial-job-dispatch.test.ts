@@ -33,6 +33,7 @@ function fixture() {
   let failBefore = false;
   let failAfter = false;
   let calls = 0;
+  let delay: number | undefined;
   let saved: Awaited<ReturnType<FinancialDispatchQueue["getJob"]>> = null;
   const queue: FinancialDispatchQueue = {
     async getJob() {
@@ -40,6 +41,7 @@ function fixture() {
     },
     async add(name, data, options) {
       calls++;
+      delay = options.delay;
       if (failBefore) throw new Error("queue unavailable");
       expect(options.removeOnComplete).toBe(false);
       expect(options.removeOnFail).toBe(false);
@@ -75,6 +77,7 @@ function fixture() {
       saved = null;
     },
     calls: () => calls,
+    delay: () => delay,
     exists: () => Boolean(saved),
   };
 }
@@ -143,6 +146,38 @@ describe("durable financial queue handoff", () => {
         f.queue,
       ),
     ).rejects.toThrow("Invalid persisted");
+    expect(f.calls()).toBe(0);
+  });
+});
+
+describe("persisted financial schedules", () => {
+  test("Redis loss rebuilds the delay from the committed timestamp, including an overdue handoff", async () => {
+    const f = fixture();
+    const dueAt = Date.now() + 3600000;
+    f.row.payload = {
+      ...f.row.payload,
+      notBefore: new Date(dueAt).toISOString(),
+    };
+    f.row.payloadHash = financialRequestHash(f.row.payload);
+    await dispatchFinancialJob(f.row, f.queue);
+    expect(f.delay()).toBeGreaterThan(3500000);
+    expect(f.delay()).toBeLessThanOrEqual(3600000);
+    f.loseRedis();
+    f.row.payload = {
+      ...f.row.payload,
+      notBefore: new Date(Date.now() - 1000).toISOString(),
+    };
+    f.row.payloadHash = financialRequestHash(f.row.payload);
+    await dispatchFinancialJob(f.row, f.queue);
+    expect(f.delay()).toBe(0);
+  });
+  test("an invalid persisted timestamp never reaches Queue.add", async () => {
+    const f = fixture();
+    f.row.payload = { ...f.row.payload, notBefore: "invalid-fixture" };
+    f.row.payloadHash = financialRequestHash(f.row.payload);
+    await expect(dispatchFinancialJob(f.row, f.queue)).rejects.toThrow(
+      "schedule",
+    );
     expect(f.calls()).toBe(0);
   });
 });

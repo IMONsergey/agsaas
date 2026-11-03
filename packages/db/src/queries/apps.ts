@@ -1,10 +1,11 @@
+import { toPublicApp } from "../public-app";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type {
   AppConfigFor,
   TelegramConnection,
   WhatsAppConnection,
 } from "../app-config";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   TelegramAlreadyConnectedToAnotherTeamError,
   WhatsAppAlreadyConnectedToAnotherTeamError,
@@ -28,7 +29,7 @@ export type CreateAppParams<TAppId extends string = string> = {
 };
 
 export const createApp = async <TAppId extends string>(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: CreateAppParams<TAppId>,
 ): Promise<AppRecord<TAppId> | undefined> => {
   const [result] = await db
@@ -68,7 +69,7 @@ export const getApps = async (db: Database, teamId: string) => {
     .from(apps)
     .where(eq(apps.teamId, teamId));
 
-  return result;
+  return result.map((app) => toPublicApp(app));
 };
 
 export type GetAppByAppIdParams<TAppId extends string = string> = {

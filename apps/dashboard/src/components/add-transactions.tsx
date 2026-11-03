@@ -22,7 +22,7 @@ export function AddTransactions() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="icon">
+        <Button variant="outline" size="icon" aria-label="Add transactions">
           <Icons.Add size={17} />
         </Button>
       </DropdownMenuTrigger>

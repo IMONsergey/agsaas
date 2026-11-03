@@ -9,7 +9,6 @@ import { PublicMetricView } from "@/components/public-metric-view";
 import { getQueryClient, trpc } from "@/trpc/server";
 
 // Cache the page for 1 hour (3600 seconds)
-export const revalidate = 3600;
 
 type Props = {
   params: Promise<{ linkId: string }>;
@@ -129,3 +128,6 @@ export default async function Page({ params }: Props) {
     </div>
   );
 }
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;

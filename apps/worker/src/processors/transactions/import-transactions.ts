@@ -3,7 +3,8 @@ import { mapTransactions } from "@midday/import/mappings";
 import { createTransactionTransformer } from "@midday/import/transform";
 import { validateTransactions } from "@midday/import/validate";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import Papa from "papaparse";
 import {
@@ -42,7 +43,8 @@ export class ImportTransactionsProcessor extends BaseProcessor<ImportTransaction
       parseProfile,
     } = job.data;
     const db = getDb();
-    const supabase = createClient();
+    requireVaultPathForTeam(filePath ?? [], teamId);
+    const supabase = createTeamClient(teamId);
 
     this.logger.info("Starting import-transactions job", {
       jobId: job.id,
@@ -60,7 +62,7 @@ export class ImportTransactionsProcessor extends BaseProcessor<ImportTransaction
 
     // Download file from Supabase storage with timeout
     const { data: fileData } = await withTimeout(
-      supabase.storage.from("vault").download(filePath.join("/")),
+      () => supabase.storage.from("vault").download(filePath.join("/")),
       TIMEOUTS.FILE_DOWNLOAD,
       `File download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
     );
@@ -140,7 +142,7 @@ export class ImportTransactionsProcessor extends BaseProcessor<ImportTransaction
 
             if (invalidTransactions.length > 0) {
               this.logger.error("Invalid transactions", {
-                invalidTransactions,
+                invalidCount: invalidTransactions.length,
               });
             }
 

@@ -677,5 +677,55 @@ describe.skipIf(!isTestDatabaseAvailable())(
       expect(await current()).toEqual(original);
       expect(await notices()).toHaveLength(0);
     });
+    test("updated plan and uncanceled state are ordered; repeated past-due metadata creates no duplicate notice", async () => {
+      await apply(event("current-subscription", 1));
+      await apply(
+        event("current-subscription", 2, "subscription.updated", {
+          productId: "own-starter",
+          cancelAtPeriodEnd: true,
+        }),
+      );
+      expect(await current()).toMatchObject({
+        plan: "starter",
+        subscriptionStatus: "active",
+      });
+      await apply(
+        event("current-subscription", 3, "subscription.uncanceled", {
+          productId: "own-starter",
+        }),
+      );
+      expect((await current()).canceledAt).toBeNull();
+      await apply(
+        event("current-subscription", 4, "subscription.updated", {
+          status: "past_due",
+        }),
+      );
+      await apply(
+        event("current-subscription", 5, "subscription.updated", {
+          status: "past_due",
+        }),
+      );
+      expect(await notices()).toHaveLength(1);
+      expect(
+        (
+          await apply(
+            event("current-subscription", 2, "subscription.updated", {
+              cancelAtPeriodEnd: true,
+            }),
+          )
+        ).state,
+      ).toBe("stale");
+      expect((await current()).canceledAt).toBeNull();
+    });
+    test("reconciliation cannot restore a subscription replaced during the provider GET", async () => {
+      await apply(event("new-subscription", 4));
+      const result = await applyBillingSubscriptionEvent(db, {
+        event: event("old-subscription", 9, "subscription.updated"),
+        products,
+        expectedBinding: { teamId, subscriptionId: "old-subscription" },
+      });
+      expect(result.state).toBe("foreign_subscription");
+      expect((await current()).billingSubscriptionId).toBe("new-subscription");
+    });
   },
 );

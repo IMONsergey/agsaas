@@ -1,20 +1,12 @@
-import { getSlackInstaller } from "./client";
-
-const SLACK_OAUTH_REDIRECT_URL = process.env.SLACK_OAUTH_REDIRECT_URL;
-
-export const getInstallUrl = ({
-  teamId,
-  userId,
-}: {
-  teamId: string;
-  userId: string;
-}) => {
+export const getInstallUrl = ({ state }: { state: string }) => {
+  const SLACK_OAUTH_REDIRECT_URL = process.env.SLACK_OAUTH_REDIRECT_URL;
+  const clientId = process.env.SLACK_CLIENT_ID;
+  if (!clientId || !/^[A-Za-z0-9_-]{43}$/.test(state)) throw new Error("Slack OAuth is not configured");
   if (!SLACK_OAUTH_REDIRECT_URL) {
     throw new Error("SLACK_OAUTH_REDIRECT_URL is required");
   }
 
-  return getSlackInstaller().generateInstallUrl({
-    scopes: [
+  const scopes = [
       "app_mentions:read", // Required for @mentions that start assistant threads
       "assistant:write", // Required for Slack assistant status and titles
       "incoming-webhook", // Fallback for private channels when bot can't post
@@ -33,8 +25,8 @@ export const getInstallUrl = ({
       "reactions:read", // Required to react to and inspect thread state
       "reactions:write", // Required to add/remove emoji reactions to messages
       "users:read", // Required for views.publish to publish App Home views
-    ],
-    redirectUri: SLACK_OAUTH_REDIRECT_URL,
-    metadata: JSON.stringify({ teamId, userId }),
-  });
+  ];
+  const url = new URL("https://slack.com/oauth/v2/authorize");
+  url.search = new URLSearchParams({ client_id: clientId, scope: scopes.join(","), redirect_uri: SLACK_OAUTH_REDIRECT_URL, state }).toString();
+  return url.toString();
 };

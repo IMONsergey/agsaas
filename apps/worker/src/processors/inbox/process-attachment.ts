@@ -1,4 +1,5 @@
 import {
+  assertInboxUploadScope,
   createInbox,
   getInboxByFilePath,
   getTeamById,
@@ -6,12 +7,13 @@ import {
   updateInbox,
   updateInboxWithProcessedData,
 } from "@midday/db/queries";
-import { DocumentClient } from "@midday/documents";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { ProcessAttachmentPayload } from "../../schemas/inbox";
 import { getDb } from "../../utils/db";
+import { runDocumentTask } from "../../utils/document-isolation";
 import { NonRetryableError } from "../../utils/error-classification";
 import { convertHeicToJpeg } from "../../utils/image-processing";
 import { TIMEOUTS, withTimeout } from "../../utils/timeout";
@@ -30,12 +32,15 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       senderEmail,
       inboxAccountId,
     } = job.data;
-    const supabase = createClient();
+    requireVaultPathForTeam(filePath, teamId);
+    const supabase = createTeamClient(teamId);
     const db = getDb();
+    await assertInboxUploadScope(db, teamId, [{ filePath, inboxAccountId }]);
 
     const fileName = filePath.join("/");
     const filename = filePath.at(-1);
     let processedMimetype = mimetype;
+    let processingDataUrl: string | undefined;
 
     this.logger.info("Starting process-attachment job", {
       jobId: job.id,
@@ -80,63 +85,20 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       duration: `${inboxCheckDuration}ms`,
     });
 
-    // Convert HEIC to JPEG if needed (do this after inbox check so we can update contentType immediately)
+    // Conversion is only an extraction input; the uploaded source stays immutable.
     if (mimetype === "image/heic") {
-      const heicStartTime = Date.now();
-      this.logger.info("Converting HEIC to JPEG", {
-        filePath: fileName,
-        jobId: job.id,
-      });
-
       const { data } = await withTimeout(
-        supabase.storage.from("vault").download(fileName),
+        () => supabase.storage.from("vault").download(fileName),
         TIMEOUTS.FILE_DOWNLOAD,
-        `File download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
       );
-
-      if (!data) {
+      if (!data)
         throw new NonRetryableError("File not found", undefined, "validation");
-      }
-
-      const buffer = await data.arrayBuffer();
-
-      // Convert HEIC to JPEG using shared utility
-      const { buffer: image } = await convertHeicToJpeg(buffer, this.logger);
-
-      // Upload the converted image
-      const { data: uploadedData } = await withTimeout(
-        supabase.storage.from("vault").upload(fileName, image, {
-          contentType: "image/jpeg",
-          upsert: true,
-        }),
-        TIMEOUTS.FILE_UPLOAD,
-        `File upload timed out after ${TIMEOUTS.FILE_UPLOAD}ms`,
+      const { buffer: image } = await convertHeicToJpeg(
+        await data.arrayBuffer(),
+        this.logger,
       );
-
-      if (!uploadedData) {
-        throw new Error("Failed to upload converted image");
-      }
-
+      processingDataUrl = "data:image/jpeg;base64," + image.toString("base64");
       processedMimetype = "image/jpeg";
-      const heicDuration = Date.now() - heicStartTime;
-      this.logger.info("HEIC conversion completed", {
-        filePath: fileName,
-        jobId: job.id,
-        duration: `${heicDuration}ms`,
-      });
-
-      // Update contentType immediately if item exists (so frontend can show image sooner)
-      if (inboxData && inboxData.contentType === "image/heic") {
-        await updateInbox(db, {
-          id: inboxData.id,
-          teamId,
-          contentType: "image/jpeg",
-        });
-        this.logger.info("Updated contentType to jpeg", {
-          inboxId: inboxData.id,
-          jobId: job.id,
-        });
-      }
     }
 
     // Create inbox item if it doesn't exist (for non-manual uploads)
@@ -152,7 +114,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
         teamId,
         filePath,
         fileName: filename ?? "Unknown",
-        contentType: processedMimetype, // Use processed mimetype (jpeg if converted from heic)
+        contentType: mimetype, // Stored original MIME type
         size,
         referenceId,
         website,
@@ -240,7 +202,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       (async () => {
         const signedUrlStartTime = Date.now();
         const { data: signedUrlData } = await withTimeout(
-          supabase.storage.from("vault").createSignedUrl(fileName, 600),
+          () => supabase.storage.from("vault").createSignedUrl(fileName, 600),
           TIMEOUTS.EXTERNAL_API,
           `Signed URL creation timed out after ${TIMEOUTS.EXTERNAL_API}ms`,
         );
@@ -280,8 +242,6 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
     }
 
     try {
-      const document = new DocumentClient();
-
       const docProcessingStartTime = Date.now();
       this.logger.info("Starting document processing (OCR/LLM extraction)", {
         jobId: job.id,
@@ -292,14 +252,16 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       });
 
       // Process document with timeout
-      const result = await withTimeout(
-        document.getInvoiceOrReceipt({
-          documentUrl: signedUrlResult.signedUrl,
-          mimetype: processedMimetype,
-          companyName: teamData?.name,
-        }),
-        TIMEOUTS.DOCUMENT_PROCESSING,
-        `Document processing timed out after ${TIMEOUTS.DOCUMENT_PROCESSING}ms`,
+      const result = await runDocumentTask(
+        {
+          kind: "extract",
+          request: {
+            documentUrl: processingDataUrl ?? signedUrlResult.signedUrl,
+            mimetype: processedMimetype,
+            companyName: teamData?.name,
+          },
+        },
+        { timeoutMs: TIMEOUTS.DOCUMENT_PROCESSING },
       );
 
       const docProcessingDuration = Date.now() - docProcessingStartTime;
@@ -374,7 +336,7 @@ export class ProcessAttachmentProcessor extends BaseProcessor<ProcessAttachmentP
       const documentJobPromise = triggerJob(
         "process-document",
         {
-          mimetype: processedMimetype,
+          mimetype,
           filePath,
           teamId,
         },

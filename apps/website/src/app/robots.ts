@@ -1,13 +1,14 @@
-import { baseUrl } from "./sitemap";
-
-export default function robots() {
+import type { MetadataRoute } from "next";
+import { site } from "@/lib/site";
+export default function robots(): MetadataRoute.Robots {
   return {
-    rules: [
-      {
-        userAgent: "*",
-      },
-    ],
-    sitemap: `${baseUrl}/sitemap.xml`,
-    host: `${baseUrl}`,
+    rules: {
+      userAgent: "*",
+      ...(site.indexable
+        ? { allow: "/", disallow: ["/api/"] }
+        : { disallow: "/" }),
+    },
+    ...(site.indexable ? { sitemap: `${site.websiteUrl}/sitemap.xml` } : {}),
+    host: site.websiteUrl,
   };
 }

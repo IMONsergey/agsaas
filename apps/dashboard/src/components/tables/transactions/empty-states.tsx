@@ -2,6 +2,7 @@
 
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
+import Link from "next/link";
 import { AddAccountButton } from "@/components/add-account-button";
 import { useTransactionFilterParamsWithPersistence } from "@/hooks/use-transaction-filter-params-with-persistence";
 
@@ -33,12 +34,21 @@ export function NoTransactions() {
       <div className="text-center max-w-sm mx-auto flex flex-col items-center justify-center">
         <h2 className="text-xl font-medium mb-2">No transactions</h2>
         <p className="text-sm text-[#878787] mb-6">
-          Connect your bank account to automatically import transactions and
-          unlock powerful financial insights to help you make smarter money
-          decisions.
+          Add your first transaction manually or import a CSV file. You can also
+          connect a supported bank when bank sync is configured.
         </p>
 
-        <AddAccountButton />
+        <div className="flex flex-wrap justify-center gap-3">
+          <Button asChild>
+            <Link href="/transactions?createTransaction=true">
+              Add transaction
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/transactions?step=import&hide=true">Import CSV</Link>
+          </Button>
+          <AddAccountButton />
+        </div>
       </div>
     </div>
   );

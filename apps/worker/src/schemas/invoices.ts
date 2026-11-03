@@ -49,7 +49,15 @@ export type InvoiceRecurringSchedulerPayload = z.infer<
  * Generate invoice job schema
  * Handles PDF generation and optionally sending the invoice
  */
+const approvedInvoiceRecipientsSchema = z.object({
+  recipient: z.string().email().max(320),
+  bcc: z.array(z.string().email().max(320)).max(100),
+  customerName: z.string().min(1),
+  replyTo: z.string().email().max(320).optional(),
+});
+
 export const generateInvoiceSchema = z.object({
+  approvedRecipients: approvedInvoiceRecipientsSchema.optional(),
   invoiceId: z.string().uuid(),
   deliveryType: z.enum(["create", "create_and_send"]),
   // Optional for manual/recurring generation; required on a delayed handoff.
@@ -68,6 +76,7 @@ export type GenerateInvoicePayload = z.infer<typeof generateInvoiceSchema>;
  * Handles sending the invoice email with optional PDF attachment
  */
 export const sendInvoiceEmailSchema = z.object({
+  approvedRecipients: approvedInvoiceRecipientsSchema.optional(),
   invoiceId: z.string().uuid(),
   filename: z.string(),
   fullPath: z.string(),

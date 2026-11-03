@@ -1,3 +1,4 @@
+import { AccountSessions } from "@/components/account-sessions";
 import type { Metadata } from "next";
 import { ChangePassword } from "@/components/change-password";
 import { MfaSettingsList } from "@/components/mfa-settings-list";
@@ -13,6 +14,7 @@ export default async function Security() {
     <div className="space-y-12">
       {getPasswordCapabilities().passwordChange.enabled && <ChangePassword />}
       <MfaSettingsList />
+      <AccountSessions />
       <AddNewDeviceModal />
     </div>
   );

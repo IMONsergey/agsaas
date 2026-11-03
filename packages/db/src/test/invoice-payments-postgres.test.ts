@@ -598,6 +598,17 @@ describe.skipIf(!isTestDatabaseAvailable())(
             currency: "usd",
             occurredAt: "2026-11-01T00:00:00.000Z",
             kind,
+            ...(kind === "refunded"
+              ? {
+                  refunds: [
+                    {
+                      id: "re_fixture",
+                      amountMinor: 12005,
+                      status: "succeeded",
+                    },
+                  ],
+                }
+              : {}),
           });
           const [before] = await tx
             .select()
@@ -614,7 +625,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
             .from(invoicePaymentReservations)
             .where(eq(invoicePaymentReservations.id, r.id));
           expect(after).toEqual(before);
-          expect(after?.state).toBe("attached");
+          expect(after?.state).toBe("settled");
         });
       });
     }
@@ -643,6 +654,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
         const refund = await applyStripeInvoicePaymentEvent(tx, {
           ...event,
           kind: "refunded",
+          refunds: [
+            { id: "re_fixture", amountMinor: 12005, status: "succeeded" },
+          ],
         });
         expect(refund.invoice.status).toBe("refunded");
         const late = await applyStripeInvoicePaymentEvent(tx, event);
@@ -772,6 +786,9 @@ describe.skipIf(!isTestDatabaseAvailable())(
               currency: "usd",
               occurredAt: "2026-11-01T00:00:00.000Z",
               kind: "refunded",
+              refunds: [
+                { id: "re_fixture", amountMinor: 12005, status: "succeeded" },
+              ],
             }),
           ).rejects.toMatchObject({ status: 409 });
           const [afterInvoice] = await tx

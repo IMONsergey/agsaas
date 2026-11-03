@@ -1,0 +1,20 @@
+[Unit]
+Description=Resume an interrupted owned AGSaaS backup after a killed job or reboot
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/etc/agsaas/backup.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/agsaas/preview-20261101/source/scripts/self-hosted-backup.py resume --if-idle --config /etc/agsaas/backup.json
+UMask=0077
+CPUQuota=50%
+MemoryMax=256M
+TasksMax=64
+TimeoutStartSec=30min
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

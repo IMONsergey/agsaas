@@ -45,6 +45,8 @@ type ExportResult = {
   fullPath: string;
   fileName: string;
   totalItems: number;
+  status?: "complete" | "partial" | "failed";
+  missingFiles?: number;
 };
 
 function DownloadButton({
@@ -233,7 +235,7 @@ export function ExportStatus() {
       completionHandledRef.current = true;
 
       // Play success sound
-      playSuccessSound();
+      if (exportResult?.status === "complete") playSuccessSound();
 
       // Invalidate queries for file exports
       queryClient.invalidateQueries({
@@ -249,12 +251,22 @@ export function ExportStatus() {
           // File export completion with download/share options
           update(toastId, {
             id: toastId,
-            title: "Export completed",
-            description:
-              exportData?.exportType === "team-data"
-                ? `Your export is ready with ${exportResult.totalItems} items across transactions, invoices, customers, documents, tracker entries and inbox. It's stored in your Vault.`
-                : `Your export is ready based on ${exportResult.totalItems} transactions. It's stored in your Vault.`,
-            variant: "success",
+            title:
+              exportResult.status === "partial"
+                ? "Export is incomplete"
+                : exportResult.status === "failed"
+                  ? "Export failed"
+                  : exportResult.status === "complete"
+                    ? "Export completed"
+                    : "Export result is unverified",
+            description: !exportResult.status
+              ? "This archive has no completeness receipt. Retry the export to verify that all required data and files are included."
+              : exportResult.status !== "complete"
+                ? `The archive contains ${exportResult.totalItems} data items, but required rows or ${exportResult.missingFiles ?? 0} files are missing or invalid. Read manifest.json before using it. Incomplete transactions remain in review.`
+                : exportData?.exportType === "team-data"
+                  ? `Your export is ready with ${exportResult.totalItems} items across transactions, invoices, customers, documents, tracker entries and inbox. It's stored in your Vault.`
+                  : `Your export is ready based on ${exportResult.totalItems} transactions. It's stored in your Vault.`,
+            variant: exportResult.status !== "complete" ? "error" : "success",
             footer: (
               <div className="mt-4 flex space-x-4">
                 <DropdownMenu>
@@ -294,12 +306,13 @@ export function ExportStatus() {
             ),
           });
         } else {
-          // Simple completion toast if result isn't available
+          // Queue completion without a receipt does not prove that an archive exists.
           update(toastId, {
             id: toastId,
-            title: "Export completed",
-            description: "Your export is ready. It's stored in your Vault.",
-            variant: "success",
+            title: "Export result is unavailable",
+            description:
+              "The job finished without a verified archive receipt. Please retry the export.",
+            variant: "error",
           });
         }
 

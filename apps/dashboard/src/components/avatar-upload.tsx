@@ -1,9 +1,14 @@
 "use client";
 
+import {
+  PUBLIC_IMAGE_ACCEPT,
+  PUBLIC_IMAGE_NOTICE,
+  publicImagePath,
+} from "@/utils/public-image-upload";
+
 import { Avatar, AvatarFallback, AvatarImage } from "@midday/ui/avatar";
 import { cn } from "@midday/ui/cn";
 import { Icons } from "@midday/ui/icons";
-import { stripSpecialCharacters } from "@midday/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { forwardRef, useRef, useState } from "react";
@@ -24,6 +29,7 @@ export const AvatarUpload = forwardRef<HTMLInputElement, Props>(
     ref,
   ) => {
     const [avatar, setAvatar] = useState(initialAvatarUrl);
+    const [uploadError, setUploadError] = useState<string | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const trpc = useTRPC();
     const queryClient = useQueryClient();
@@ -44,54 +50,72 @@ export const AvatarUpload = forwardRef<HTMLInputElement, Props>(
       const { files } = evt.target;
       const selectedFile = files as FileList;
 
-      const filename = stripSpecialCharacters(selectedFile[0]?.name ?? "");
+      const file = selectedFile[0];
+      if (!file) return;
+      setUploadError(null);
+      try {
+        const { url } = await uploadFile({
+          bucket: "avatars",
+          path: publicImagePath(file, userId, "user-avatar"),
+          file,
+        });
 
-      const { url } = await uploadFile({
-        bucket: "avatars",
-        path: [userId, filename],
-        file: selectedFile[0] as File,
-      });
-
-      if (url) {
-        updateUserMutation.mutate({ avatarUrl: url });
-        setAvatar(url);
-        onUpload?.(url);
+        if (url) {
+          updateUserMutation.mutate({ avatarUrl: url });
+          setAvatar(url);
+          onUpload?.(url);
+        }
+      } catch {
+        setUploadError(
+          "Upload failed. Choose a PNG, JPEG, WebP or GIF up to 5 MiB and verify your session.",
+        );
       }
     };
 
     const fileInputRef = ref || inputRef;
 
     return (
-      <Avatar
-        className={cn(
-          "rounded-full flex items-center justify-center bg-accent cursor-pointer border border-border",
-          className,
+      <div className="space-y-2">
+        <Avatar
+          className={cn(
+            "rounded-full flex items-center justify-center bg-accent cursor-pointer border border-border",
+            className,
+          )}
+          style={{ width: size, height: size }}
+          onClick={() => {
+            if ("current" in fileInputRef && fileInputRef.current) {
+              fileInputRef.current.click();
+            }
+          }}
+        >
+          {isLoading ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <>
+              <AvatarImage src={avatar ?? undefined} />
+              <AvatarFallback>
+                <Icons.AccountCircle className="size-5" />
+              </AvatarFallback>
+            </>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={PUBLIC_IMAGE_ACCEPT}
+            style={{ display: "none" }}
+            multiple={false}
+            onChange={handleUpload}
+          />
+        </Avatar>
+        <p className="max-w-xs text-xs text-muted-foreground">
+          {PUBLIC_IMAGE_NOTICE}
+        </p>
+        {uploadError && (
+          <p role="alert" className="text-xs text-destructive">
+            {uploadError}
+          </p>
         )}
-        style={{ width: size, height: size }}
-        onClick={() => {
-          if ("current" in fileInputRef && fileInputRef.current) {
-            fileInputRef.current.click();
-          }
-        }}
-      >
-        {isLoading ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <>
-            <AvatarImage src={avatar ?? undefined} />
-            <AvatarFallback>
-              <Icons.AccountCircle className="size-5" />
-            </AvatarFallback>
-          </>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          style={{ display: "none" }}
-          multiple={false}
-          onChange={handleUpload}
-        />
-      </Avatar>
+      </div>
     );
   },
 );

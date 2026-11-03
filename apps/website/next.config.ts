@@ -1,55 +1,35 @@
-/** @type {import("next").NextConfig} */
-const config = {
+import path from "node:path";
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: path.join(process.cwd(), "../.."),
   poweredByHeader: false,
   reactStrictMode: true,
   trailingSlash: true,
   transpilePackages: [
     "@midday/ui",
+    "@midday/utils",
     "@midday/tailwind",
     "@midday/app-store",
     "next-mdx-remote",
   ],
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  experimental: {
-    inlineCss: true,
-    optimizePackageImports: [
-      "react-icons",
-      "motion",
-      "@midday/ui",
-      "@radix-ui/react-icons",
-      "lucide-react",
-    ],
-  },
-  images: {
-    loader: "custom",
-    loaderFile: "./image-loader.ts",
-    // Limit max image size to 1200px (displayed size is ~1248px)
-    // Default: [640, 750, 828, 1080, 1200, 1920, 2048, 3840]
-    deviceSizes: [640, 750, 828, 1080, 1200],
-    qualities: [50, 80],
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "**",
-      },
-    ],
-  },
-  async redirects() {
+  images: { unoptimized: true },
+  async headers() {
     return [
       {
-        source: "/en/(.*)",
-        destination: "/",
-        permanent: true,
-      },
-      {
-        source: "/insights",
-        destination: "/",
-        permanent: true,
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=()",
+          },
+          { key: "X-Frame-Options", value: "DENY" },
+        ],
       },
     ];
   },
 };
-
 export default config;

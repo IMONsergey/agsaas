@@ -258,6 +258,7 @@ describe("tRPC: reports.taxSummary", () => {
 
 describe("tRPC: reports.create", () => {
   beforeEach(() => {
+    mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("owner"));
     mocks.createReport.mockReset();
     mocks.createReport.mockImplementation(() =>
       Promise.resolve({
@@ -318,5 +319,78 @@ describe("tRPC: reports.getByLinkId (public)", () => {
       expect.anything(),
       "abc",
     );
+  });
+});
+
+describe("shared report owner boundary and serialized filters", () => {
+  beforeEach(() => {
+    mocks.getTeamMemberRole.mockReset();
+    mocks.createReport.mockReset();
+    mocks.revokeSharedReport.mockReset();
+    mocks.listSharedReports.mockReset();
+  });
+  test("members cannot publish or revoke a public financial report and perform no business write", async () => {
+    mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("member"));
+    const caller = createCaller(createTestContext());
+    await expect(
+      caller.create({
+        type: "revenue",
+        from: "2026-01-01",
+        to: "2026-01-31",
+        revenueType: "gross",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      caller.revoke({ id: "40000000-0000-4000-8000-000000000001" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.createReport).not.toHaveBeenCalled();
+    expect(mocks.revokeSharedReport).not.toHaveBeenCalled();
+  });
+  test("owners preserve gross mode, currency, date and forecast filters", async () => {
+    mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("owner"));
+    mocks.createReport.mockImplementation(() =>
+      Promise.resolve({ id: "report", linkId: "shared" }),
+    );
+    await createCaller(createTestContext()).create({
+      type: "revenue_forecast",
+      from: "2026-01-01",
+      to: "2026-03-31",
+      currency: "EUR",
+      revenueType: "gross",
+      forecastMonths: 12,
+    });
+    expect(mocks.createReport).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: "revenue_forecast",
+        from: "2026-01-01",
+        to: "2026-03-31",
+        currency: "EUR",
+        revenueType: "gross",
+        forecastMonths: 12,
+        teamId: "test-team-id",
+      }),
+    );
+  });
+  test("management query is tenant scoped and a missing/foreign revoke is not reported as success", async () => {
+    mocks.getTeamMemberRole.mockImplementation(() => Promise.resolve("owner"));
+    mocks.listSharedReports.mockImplementation(() => ({
+      data: [],
+      hasNextPage: false,
+    }));
+    mocks.revokeSharedReport.mockImplementation(() => undefined);
+    const caller = createCaller(createTestContext());
+    await caller.listShared({ pageSize: 10, offset: 20 });
+    expect(mocks.listSharedReports).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        teamId: "test-team-id",
+        pageSize: 10,
+        offset: 20,
+      }),
+    );
+    await expect(
+      caller.revoke({ id: "40000000-0000-4000-8000-000000000001" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

@@ -9,7 +9,7 @@ import {
   recordInvoiceEmailAccepted,
 } from "@midday/db/queries";
 import { Notifications } from "@midday/notifications";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import type { Job } from "bullmq";
 import type { SendInvoiceEmailPayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
@@ -110,7 +110,7 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
     const template = invoice.template as Record<string, unknown> | null;
     if (template?.includePdf) {
       // No storage/provider client is constructed for an already terminal job.
-      const supabase = createClient();
+      const supabase = createTeamClient(invoice.teamId);
       const { data: attachmentData, error: attachmentError } =
         await supabase.storage.from("vault").download(fullPath);
 
@@ -159,8 +159,9 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
       }
     }
 
-    const customerEmail = invoice.customer?.email;
-    const customerName = invoice.customer?.name;
+    const approvedRecipients = job.data.approvedRecipients;
+    const customerEmail = approvedRecipients?.recipient ?? invoice.customer?.email;
+    const customerName = approvedRecipients?.customerName ?? invoice.customer?.name;
     const invoiceNumber = invoice.invoiceNumber;
     const userEmail = invoice.user?.email;
     const shouldSendCopy = template?.sendCopy;
@@ -174,7 +175,7 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
       : [];
 
     // Build BCC list
-    const bcc = [
+    const bcc = approvedRecipients?.bcc ?? [
       ...billingEmails,
       ...(shouldSendCopy && userEmail ? [userEmail] : []),
     ];
@@ -232,7 +233,7 @@ export class SendInvoiceEmailProcessor extends BaseProcessor<SendInvoiceEmailPay
             },
             bcc,
             attachments,
-            replyTo: invoice.team?.email ?? undefined,
+            replyTo: approvedRecipients ? approvedRecipients.replyTo : invoice.team?.email ?? undefined,
           },
         ),
       (acceptedAt) =>

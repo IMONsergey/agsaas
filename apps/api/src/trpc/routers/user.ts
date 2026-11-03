@@ -7,6 +7,8 @@ import { withTeamMembershipErrors } from "@api/utils/team-membership";
 import { teamCache } from "@midday/cache/team-cache";
 import {
   deleteUser,
+  getOwnAuthSessions,
+  revokeAuthSessions,
   getUserById,
   getUserInvites,
   switchUserTeam,
@@ -31,20 +33,31 @@ export const userRouter = createTRPCRouter({
 
     return {
       ...result,
-      fileKey: result.teamId
+      fileKey: result.teamId && session.sessionId
         ? await generateFileKey({
             teamId: result.teamId,
+            sessionId: session.sessionId,
             userId: session.user.id,
             aal: session.aal ?? "aal1",
           })
         : null,
       // Conservative browser deadline prevents reusing cached expired URLs
       // after a suspended tab wakes up, while user.me refreshes its key.
-      fileKeyExpiresAt: result.teamId
+      fileKeyExpiresAt: result.teamId && session.sessionId
         ? Date.now() + (FILE_KEY_TTL_SECONDS - 5) * 1000
         : null,
     };
   }),
+
+  sessions: protectedProcedure.query(({ctx:{db,session}})=>{
+    if(!session.sessionId)throw new TRPCError({code:"UNAUTHORIZED",message:"A current browser session is required."});
+    return getOwnAuthSessions(db,session.user.id,session.sessionId);
+  }),
+  revokeSessions: protectedProcedure.input(z.object({scope:z.enum(["all","others"])}))
+    .mutation(({ctx:{db,session},input})=>{
+      if(!session.sessionId)throw new TRPCError({code:"UNAUTHORIZED",message:"A current browser session is required."});
+      return revokeAuthSessions(db,session.user.id,session.sessionId,input.scope);
+    }),
 
   update: protectedProcedure
     .input(updateUserSchema)

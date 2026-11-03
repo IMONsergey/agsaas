@@ -10,6 +10,7 @@ import { ChatProvider } from "@/components/chat/chat-context";
 import { ChatTitle } from "@/components/chat/chat-title";
 import { ChatView } from "@/components/chat/chat-view";
 import { NewChatButton } from "@/components/chat/new-chat-button";
+import { useInstanceCapabilities } from "@/hooks/use-instance-capabilities";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { AskMidday } from "./ask-midday";
 import { McpBanner } from "./mcp-banner";
@@ -23,7 +24,8 @@ export function OverviewView() {
   const { track } = useOpenPanel();
   const { setParams: setInvoiceParams } = useInvoiceParams();
 
-  const isChat = assistant === true;
+  const { data: capabilities } = useInstanceCapabilities();
+  const isChat = assistant === true && capabilities?.ai.enabled === true;
 
   const openChat = useCallback(() => {
     track(LogEvents.AssistantOpened.name);
@@ -42,7 +44,12 @@ export function OverviewView() {
           <ChatView
             header={
               <>
-                <Button variant="outline" size="icon" onClick={goBack}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={goBack}
+                  aria-label="Back to overview"
+                >
                   <Icons.ArrowBack className="size-4" />
                 </Button>
                 <ChatTitle />
@@ -61,8 +68,8 @@ export function OverviewView() {
               <WelcomeSummary />
             </Suspense>
           </div>
-          <AskMidday onChatOpen={openChat} />
-          <QuickActions onChatOpen={openChat} />
+          {capabilities?.ai.enabled && <AskMidday onChatOpen={openChat} />}
+          <QuickActions />
           <Suspense fallback={<WidgetCardsSkeleton />}>
             <WidgetCards />
           </Suspense>

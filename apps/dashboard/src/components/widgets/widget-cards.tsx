@@ -2,6 +2,7 @@
 
 import { useSuspenseQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { describeSource } from "@/components/data-source-status";
 import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
 import { formatAmount, secondsToHoursAndMinutes } from "@/utils/format";
@@ -37,17 +38,16 @@ export function WidgetCards() {
   const locale = user?.locale;
 
   const cashValue =
-    formatAmount({
-      amount: data.cashBalance.totalBalance,
-      currency: data.cashBalance.currency,
-      maximumFractionDigits: 0,
-      locale,
-    }) ?? "$0";
+    data.cashBalance.accountCount === 0
+      ? "No accounts"
+      : (formatAmount({
+          amount: data.cashBalance.totalBalance,
+          currency: data.cashBalance.currency,
+          maximumFractionDigits: 0,
+          locale,
+        }) ?? "$0");
 
-  const cashDetail =
-    data.cashBalance.accountCount > 0
-      ? `across ${data.cashBalance.accountCount} ${data.cashBalance.accountCount === 1 ? "account" : "accounts"}`
-      : undefined;
+  const cashDetail = describeSource(data.sources.banking, "bank");
 
   const openValue = String(data.openInvoices.count);
   const openAmount = formatAmount({
@@ -57,7 +57,9 @@ export function WidgetCards() {
     locale,
   });
   const openDetail =
-    data.openInvoices.count > 0 ? `${openAmount} outstanding` : "All paid";
+    data.openInvoices.count > 0
+      ? `${openAmount} outstanding`
+      : "No open invoices";
 
   const hasUnbilledAmount = data.unbilledTime.totalAmount > 0;
   const unbilledTimeStr = secondsToHoursAndMinutes(
@@ -91,20 +93,25 @@ export function WidgetCards() {
       : "-";
   const runwayDetail = data.runway > 0 ? "at current burn rate" : "No data yet";
 
-  const reviewValue = String(data.transactionsToReview.count);
+  const reviewValue =
+    data.sources.transactions.recordCount === 0
+      ? "No transactions"
+      : String(data.transactionsToReview.count);
   const reviewDetail =
-    data.transactionsToReview.count === 0
-      ? "All up to date"
-      : "Ready to export";
+    data.sources.transactions.recordCount === 0
+      ? "Add manually or import CSV"
+      : `${data.sources.transactions.recordCount} stored · ${data.transactionsToReview.count} ready to export`;
 
-  const inboxValue = String(data.inboxPending.count);
-  const inboxDetail =
-    data.inboxPending.count === 0 ? "All caught up" : "To review";
+  const inboxValue =
+    data.sources.inbox.recordCount === 0
+      ? "No documents"
+      : String(data.inboxPending.count);
+  const inboxDetail = describeSource(data.sources.inbox, "inbox");
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 w-full">
       <WidgetCard
-        label="Cash Balance"
+        label="Recorded Cash Balance"
         href="/reports?scrollTo=cash-balance"
         value={cashValue}
         detail={cashDetail}

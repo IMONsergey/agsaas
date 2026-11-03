@@ -243,11 +243,7 @@ export function OAuthConsentScreen() {
             <span className="flex items-center justify-center gap-1 text-[#878787] text-sm mb-8">
               Built by{" "}
               <a
-                href={
-                  applicationInfo.website ||
-                  knownClient?.website ||
-                  "https://midday.ai"
-                }
+                href={applicationInfo.website || knownClient?.website || "/"}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 underline"

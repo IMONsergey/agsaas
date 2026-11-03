@@ -16,7 +16,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   bankConnections,
   invoices,
@@ -119,7 +119,7 @@ type UpdateTeamParams = {
 };
 
 export const updateTeamById = async (
-  db: Database,
+  db: DatabaseOrTransaction,
   params: UpdateTeamParams,
 ) => {
   const { id, data } = params;

@@ -33,22 +33,28 @@ export function UserMenu({ onlySignOut }: Props) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Avatar className="rounded-full w-8 h-8 cursor-pointer bg-accent">
-          {user?.avatarUrl && (
-            <AvatarImageNext
-              src={user?.avatarUrl}
-              alt={user?.fullName ?? ""}
-              width={32}
-              height={32}
-              quality={100}
-            />
-          )}
-          <AvatarFallback>
-            <span className="text-xs">
-              {user?.fullName?.charAt(0)?.toUpperCase()}
-            </span>
-          </AvatarFallback>
-        </Avatar>
+        <button
+          type="button"
+          aria-label="Account menu"
+          className="rounded-full focus-visible:outline focus-visible:outline-2"
+        >
+          <Avatar className="rounded-full w-8 h-8 cursor-pointer bg-accent">
+            {user?.avatarUrl && (
+              <AvatarImageNext
+                src={user?.avatarUrl}
+                alt={user?.fullName ?? ""}
+                width={32}
+                height={32}
+                quality={100}
+              />
+            )}
+            <AvatarFallback>
+              <span className="text-xs">
+                {user?.fullName?.charAt(0)?.toUpperCase()}
+              </span>
+            </AvatarFallback>
+          </Avatar>
+        </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-[240px]" sideOffset={10} align="end">
         {!onlySignOut && (
@@ -75,6 +81,12 @@ export function UserMenu({ onlySignOut }: Props) {
 
               <Link href="/account/support">
                 <DropdownMenuItem className="text-xs">Support</DropdownMenuItem>
+              </Link>
+
+              <Link href="/source">
+                <DropdownMenuItem className="text-xs">
+                  Source and notices
+                </DropdownMenuItem>
               </Link>
 
               <Link href="/account/teams">
@@ -114,12 +126,12 @@ export function UserMenu({ onlySignOut }: Props) {
 
               {!isDesktopApp() && (
                 <Link
-                  href="https://midday.ai/api/download"
+                  href="/apps?q=desktop"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
                   <DropdownMenuItem className="text-xs flex items-center justify-between">
-                    <span>Download Mac app</span>
+                    <span>Desktop availability</span>
                     <div
                       className="size-4 rounded overflow-hidden user-menu-mcp-icon mr-1 animate-in fade-in duration-500"
                       style={{

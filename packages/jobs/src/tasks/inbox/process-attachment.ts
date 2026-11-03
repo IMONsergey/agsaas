@@ -1,6 +1,7 @@
 import { getDb } from "@jobs/init";
 import { processAttachmentSchema } from "@jobs/schema";
 import {
+  assertInboxUploadScope,
   createInbox,
   getInboxByFilePath,
   getTeamById,
@@ -9,7 +10,8 @@ import {
   updateInboxWithProcessedData,
 } from "@midday/db/queries";
 import { DocumentClient } from "@midday/documents";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import { logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { convertHeic } from "../document/convert-heic";
 import { processDocument } from "../document/process-document";
@@ -38,7 +40,11 @@ export const processAttachment = schemaTask({
     senderEmail,
     inboxAccountId,
   }) => {
-    const supabase = createClient();
+    requireVaultPathForTeam(filePath, teamId);
+    await assertInboxUploadScope(getDb(), teamId, [
+      { filePath, inboxAccountId },
+    ]);
+    const supabase = createTeamClient(teamId);
     const filename = filePath.at(-1);
 
     // Check if inbox item already exists (for retry scenarios or manual uploads)
@@ -59,7 +65,7 @@ export const processAttachment = schemaTask({
     let effectiveMimetype = mimetype;
     if (mimetype === "image/heic") {
       logger.info("Converting HEIC to JPEG", { filePath: filePath.join("/") });
-      await convertHeic.triggerAndWait({ filePath });
+      await convertHeic.triggerAndWait({ filePath, teamId });
       effectiveMimetype = "image/jpeg";
 
       // Update contentType immediately if item exists (so frontend can show image sooner)

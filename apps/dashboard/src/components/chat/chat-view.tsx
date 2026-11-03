@@ -8,6 +8,7 @@ import type React from "react";
 import { useCallback, useEffect } from "react";
 import type { ConnectedApp } from "@/components/chat/chat-context";
 import { useChatState } from "@/components/chat/chat-context";
+import { ChatActionApprovals } from "@/components/chat/chat-action-approvals";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatInvoiceCanvas } from "@/components/chat/chat-invoice-canvas";
 import { ChatMessages } from "@/components/chat/chat-messages";
@@ -158,6 +159,7 @@ export function ChatView({ header }: { header?: React.ReactNode }) {
                 status={status}
                 onInvoiceUpdate={handleInvoiceUpdate}
               />
+              <ChatActionApprovals isStreaming={isStreaming} messageCount={messages.length} />
             </div>
           </ConversationContent>
           <ConversationScrollButton

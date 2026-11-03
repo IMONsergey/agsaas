@@ -26,8 +26,9 @@ import {
   getTrackerProjectById,
   getTrackerRecordsByRange,
   isInvoiceNumberUsed,
+  issueInvoice,
   searchInvoiceNumber,
-  updateInvoice,
+  updateInvoiceWithIntent as updateInvoice,
 } from "@midday/db/queries";
 import { DEFAULT_TEMPLATE, PdfTemplate, renderToStream } from "@midday/invoice";
 import { calculateTotal } from "@midday/invoice/calculate";
@@ -1128,24 +1129,19 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
 
           const delivery = params.deliveryType ?? "draft";
 
-          if (delivery !== "draft") {
-            await updateInvoice(db, {
-              id: result.id,
-              status: "unpaid",
-              teamId,
-              userId,
-              sentTo:
-                delivery === "create_and_send"
-                  ? (customer.email ?? null)
-                  : null,
-            });
-
-            await triggerJob(
-              "generate-invoice",
-              { invoiceId: result.id, deliveryType: delivery },
-              "invoices",
-            );
-          }
+          const issued =
+            delivery !== "draft"
+              ? await issueInvoice(db, {
+                  id: result.id,
+                  teamId,
+                  userId,
+                  deliveryType: delivery,
+                  sentTo:
+                    delivery === "create_and_send"
+                      ? (customer.email ?? null)
+                      : null,
+                })
+              : undefined;
 
           const fresh = await getInvoiceById(db, {
             id: result.id,
@@ -1161,6 +1157,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
 
           const clean = sanitize(mcpInvoiceDetailSchema, {
             ...(fresh ?? result),
+            operation: issued?.operation,
             pdfUrl,
             previewUrl,
           });
@@ -1543,7 +1540,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
       {
         title: "Send Invoice",
         description:
-          "Send a draft invoice to the customer via email. Generates the PDF and emails it. Only works on invoices in draft status — use invoices_create with deliveryType 'draft' first, then invoices_send to send after review.",
+          "Send a draft invoice to the customer via email. Generates the PDF and emails it. Use invoices_create with deliveryType 'draft' first, then invoices_send after review. Retrying the same invoice reuses its durable delivery operation.",
         inputSchema: {
           id: z.string().uuid().describe("ID of the draft invoice to send"),
           sentTo: z
@@ -1567,18 +1564,6 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          if (existing.status !== "draft") {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Cannot send invoice with status "${existing.status}". Only draft invoices can be sent. Use invoices_create with deliveryType 'create_and_send' for new invoices.`,
-                },
-              ],
-              isError: true,
-            };
-          }
-
           const recipientEmail =
             sentTo ?? existing.sentTo ?? existing.customer?.email ?? null;
 
@@ -1594,19 +1579,13 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
             };
           }
 
-          await updateInvoice(db, {
+          const issued = await issueInvoice(db, {
             id,
             teamId,
             userId,
-            status: "unpaid",
+            deliveryType: "create_and_send",
             sentTo: recipientEmail,
           });
-
-          await triggerJob(
-            "generate-invoice",
-            { invoiceId: id, deliveryType: "create_and_send" },
-            "invoices",
-          );
 
           const previewUrl = existing.token
             ? `${DASHBOARD_URL}/i/${existing.token}`
@@ -1615,6 +1594,7 @@ export const registerInvoiceTools: RegisterTools = (server, ctx) => {
           const response = {
             message: `Invoice ${existing.invoiceNumber} is being sent to ${recipientEmail}`,
             invoiceId: id,
+            operation: issued?.operation,
             sentTo: recipientEmail,
             previewUrl,
           };

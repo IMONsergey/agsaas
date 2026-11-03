@@ -9,6 +9,7 @@ import { Icons } from "@midday/ui/icons";
 import { Skeleton } from "@midday/ui/skeleton";
 import { Spinner } from "@midday/ui/spinner";
 import { SubmitButton } from "@midday/ui/submit-button";
+import { getApiUrl } from "@midday/utils/envs";
 import {
   Elements,
   PaymentElement,
@@ -338,7 +339,7 @@ export function PaymentModal({
     setError(null);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://api.midday.ai";
+      const apiUrl = getApiUrl();
 
       const response = await fetch(
         `${apiUrl}/invoice-payments/payment-intent`,

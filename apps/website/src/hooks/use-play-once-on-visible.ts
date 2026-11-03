@@ -29,7 +29,7 @@ interface UsePlayOnceOnVisibleOptions {
 export function usePlayOnceOnVisible<T extends HTMLElement = HTMLDivElement>(
   callback: () => void,
   options: UsePlayOnceOnVisibleOptions = {},
-): [React.RefObject<T>, boolean] {
+): [React.RefObject<T | null>, boolean] {
   const {
     threshold = 0.5,
     rootMargin = "0px",
@@ -73,7 +73,7 @@ export function usePlayOnceOnVisible<T extends HTMLElement = HTMLDivElement>(
       (entries) => {
         const entry = entries[0];
         if (
-          entry.isIntersecting &&
+          entry?.isIntersecting &&
           entry.intersectionRatio >= threshold &&
           !hasTriggeredRef.current
         ) {

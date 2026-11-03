@@ -1,11 +1,12 @@
 import { limitWords, mapLanguageCodeToPostgresConfig } from "@midday/documents";
-import { DocumentClassifier } from "@midday/documents/classifier";
 import { triggerJob } from "@midday/job-client";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { ClassifyDocumentPayload } from "../../schemas/documents";
 import { getDb } from "../../utils/db";
+import { runDocumentTask } from "../../utils/document-isolation";
 import { updateDocumentWithRetry } from "../../utils/document-update";
-import { TIMEOUTS, withTimeout } from "../../utils/timeout";
+import { TIMEOUTS } from "../../utils/timeout";
 import { BaseProcessor } from "../base";
 
 /**
@@ -27,6 +28,7 @@ interface ClassificationResult {
 export class ClassifyDocumentProcessor extends BaseProcessor<ClassifyDocumentPayload> {
   async process(job: Job<ClassifyDocumentPayload>): Promise<void> {
     const { content, fileName, teamId } = job.data;
+    requireVaultPathForTeam(fileName, teamId);
     const db = getDb();
 
     // fileName is the full path (e.g., "teamId/filename.pdf")
@@ -45,11 +47,9 @@ export class ClassifyDocumentProcessor extends BaseProcessor<ClassifyDocumentPay
     let classificationFailed = false;
 
     try {
-      const classifier = new DocumentClassifier();
-      classificationResult = await withTimeout(
-        classifier.classifyDocument({ content }),
-        TIMEOUTS.AI_CLASSIFICATION,
-        `Document classification timed out after ${TIMEOUTS.AI_CLASSIFICATION}ms`,
+      classificationResult = await runDocumentTask(
+        { kind: "classify-document", content },
+        { timeoutMs: TIMEOUTS.AI_CLASSIFICATION },
       );
     } catch (error) {
       // Log error but don't fail - we'll complete with fallback
@@ -138,7 +138,7 @@ export class ClassifyDocumentProcessor extends BaseProcessor<ClassifyDocumentPay
           classificationResult?.language,
         ),
         // Always mark as completed - even if AI failed, document is usable
-        processingStatus: "completed",
+        processingStatus: classificationFailed ? "failed" : "completed",
       },
       this.logger,
     );

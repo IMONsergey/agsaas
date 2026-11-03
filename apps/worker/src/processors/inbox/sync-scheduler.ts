@@ -12,7 +12,7 @@ import {
   isInboxAuthError,
 } from "@midday/inbox/errors";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import type { Job } from "bullmq";
 import { unregisterDynamicScheduler } from "../../schedulers/registry";
 import {
@@ -85,7 +85,7 @@ export class SyncSchedulerProcessor extends BaseProcessor<InboxProviderSyncAccou
         throw new NonRetryableError("Inbox account changed during sync");
       }
     };
-    const supabase = createClient();
+    const supabase = createTeamClient(accountRow.teamId);
 
     const connector = new InboxConnector(accountRow.provider, db);
 

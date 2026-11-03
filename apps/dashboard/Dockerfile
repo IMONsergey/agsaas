@@ -42,6 +42,7 @@ COPY --from=builder /app/out/full/ .
 # Build-time NEXT_PUBLIC_ env vars (Railway passes these as build args)
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_AUTH_COOKIE_NAME
 ARG NEXT_PUBLIC_SUPABASE_ID
 ARG NEXT_PUBLIC_URL
 ARG NEXT_PUBLIC_API_URL
@@ -82,6 +83,10 @@ RUN GIT_COMMIT_SHA=$(cat /tmp/git-sha.txt 2>/dev/null || echo ""); \
 
 # Runner stage - native Node plus Bun health/test tools, no turbo
 FROM base AS runner
+ARG GIT_COMMIT_SHA=""
+LABEL org.opencontainers.image.source="https://github.com/IMONsergey/agsaas" \
+      org.opencontainers.image.revision=$GIT_COMMIT_SHA \
+      org.opencontainers.image.title="AGSaaS dashboard"
 WORKDIR /app
 
 ENV NODE_ENV=production

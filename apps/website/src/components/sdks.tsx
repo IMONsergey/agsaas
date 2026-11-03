@@ -49,8 +49,9 @@ function ScrambledText() {
   const scrambledChars = useMemo(() => {
     return Array.from({ length: charCount }, (_, i) => {
       // Each character scrambles at different rates based on its seed
-      const charTick = Math.floor(tick / (1 + (charSeeds[i] % 3)));
-      const charIndex = (i * 7 + charTick * 11 + charSeeds[i]) % chars.length;
+      const charTick = Math.floor(tick / (1 + ((charSeeds[i] ?? 0) % 3)));
+      const charIndex =
+        (i * 7 + charTick * 11 + (charSeeds[i] ?? 0)) % chars.length;
       return chars[charIndex];
     });
   }, [tick, charCount, charSeeds, chars]);

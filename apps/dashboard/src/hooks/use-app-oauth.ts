@@ -71,6 +71,8 @@ export function useAppOAuth({
     cleanupRef.current = cleanup;
 
     const messageListener = (e: MessageEvent) => {
+      if (e.origin && e.origin !== window.location.origin) return;
+      if (e.source && e.source !== popup) return;
       if (isOAuthMessage(e.data)) {
         if (e.data.type === "app_oauth_completed") {
           handleOAuthComplete();
@@ -109,21 +111,14 @@ export function useAppOAuth({
       }
 
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const isInboxHandshake =
-        installUrlEndpoint === "/apps/gmail/install-url" ||
-        installUrlEndpoint === "/apps/outlook/install-url";
       const response = await fetch(`${apiUrl}${installUrlEndpoint}`, {
-        ...(isInboxHandshake
-          ? {
-              method: "POST",
-              credentials: "include" as const,
-              cache: "no-store" as const,
-              body: JSON.stringify({ source: "apps" }),
-            }
-          : {}),
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ source: "apps" }),
         headers: {
           Authorization: `Bearer ${session.access_token}`,
-          ...(isInboxHandshake ? { "Content-Type": "application/json" } : {}),
+          "Content-Type": "application/json",
         },
       });
 

@@ -1,24 +1,11 @@
-import { Inbox } from "@/components/inbox";
+import { ProductPage } from "@/components/product-page";
 import { createPageMetadata } from "@/lib/metadata";
-
 export const metadata = createPageMetadata({
-  title: "Automatic Receipt Matching & Management",
+  title: "Inbox",
   description:
-    "Capture receipts and invoices automatically. Match documents to transactions, search your records, and stay organized. Built for small business owners.",
+    "Upload receipts directly and review them alongside your transactions.",
   path: "/inbox",
-  og: {
-    title: "Inbox",
-    description: "Receipts matched to transactions, automatically",
-  },
-  keywords: [
-    "receipt management",
-    "receipt scanner",
-    "invoice management",
-    "document management",
-    "expense receipts",
-  ],
 });
-
 export default function Page() {
-  return <Inbox />;
+  return <ProductPage page="inbox" />;
 }

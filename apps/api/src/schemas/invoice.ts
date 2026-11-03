@@ -1249,6 +1249,12 @@ export const draftInvoiceRequestSchema = createInvoiceRequestSchema.openapi({
 
 export const draftInvoiceResponseSchema = z
   .object({
+    operation: z
+      .object({
+        id: z.string().uuid(),
+        status: z.enum(["pending", "accepted", "completed", "failed"]),
+      })
+      .optional(),
     id: z.string().uuid().openapi({
       description: "Unique identifier for the draft invoice",
       example: "b3b7e6e2-8c2a-4e2a-9b1a-2e4b5c6d7f8a",
@@ -1282,6 +1288,12 @@ export const draftInvoiceResponseSchema = z
 
 export const invoiceResponseSchema = z
   .object({
+    operation: z
+      .object({
+        id: z.string().uuid(),
+        status: z.enum(["pending", "accepted", "completed", "failed"]),
+      })
+      .optional(),
     id: z.string().uuid().openapi({
       description: "Unique identifier for the invoice",
       example: "b3b7e6e2-8c2a-4e2a-9b1a-2e4b5c6d7f8a",

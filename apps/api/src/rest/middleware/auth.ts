@@ -75,6 +75,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
     const session = {
       aal: supabaseSession.aal,
+      sessionId: supabaseSession.sessionId,
       teamId: user.teamId,
       user: {
         id: user.id,
@@ -87,6 +88,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
     c.set("teamId", session.teamId);
     c.set("user", user);
     c.set("scopes", expandScopes(["apis.all"]));
+    c.set("authType", "session");
 
     await next();
     return;
@@ -128,6 +130,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
     c.set("teamId", session.teamId);
     c.set("user", user);
     c.set("scopes", expandScopes(tokenData.scopes ?? []));
+    c.set("authType", "oauth");
 
     await next();
     return;
@@ -167,6 +170,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
   c.set("teamId", session.teamId);
   c.set("user", user);
   c.set("scopes", expandScopes(apiKey.scopes ?? []));
+  c.set("authType", "api-key");
 
   // Update last used at
   updateApiKeyLastUsedAt(db, apiKey.id);

@@ -185,7 +185,7 @@ export function InvoiceActions({
         toast({
           title: "Refund requested",
           description:
-            "The invoice will be marked refunded after the payment provider confirms completion.",
+            "The payment history and remaining balance update after the provider confirms the refund.",
         });
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.getById.queryKey({ id }),
@@ -296,9 +296,10 @@ export function InvoiceActions({
         <AlertDialogHeader>
           <AlertDialogTitle>Refund payment</AlertDialogTitle>
           <AlertDialogDescription>
-            This requests a full refund for this invoice. Its status changes
-            after the payment provider confirms completion, which may take time.
-            A completed refund cannot be undone.
+            This requests the remaining full refund of the current Stripe
+            payment. Its history changes after the payment provider confirms
+            completion, which may take time. Other payments on this invoice
+            remain in its history.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

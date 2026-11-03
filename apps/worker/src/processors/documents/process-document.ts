@@ -1,23 +1,23 @@
-import { loadDocument } from "@midday/documents/loader";
 import {
   getContentSample,
   isMimeTypeSupportedForProcessing,
 } from "@midday/documents/utils";
 import { triggerJob, triggerJobAndWait } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { ProcessDocumentPayload } from "../../schemas/documents";
 import { getDb } from "../../utils/db";
 import { detectFileTypeFromBlob } from "../../utils/detect-file-type";
+import {
+  documentInputBase64,
+  runDocumentTask,
+} from "../../utils/document-isolation";
 import { updateDocumentWithRetry } from "../../utils/document-update";
 import {
   NonRetryableError,
   UnsupportedFileTypeError,
 } from "../../utils/error-classification";
-import {
-  convertHeicToJpeg,
-  MAX_HEIC_FILE_SIZE,
-} from "../../utils/image-processing";
 import { TIMEOUTS, withTimeout } from "../../utils/timeout";
 import { BaseProcessor } from "../base";
 
@@ -29,7 +29,8 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
   async process(job: Job<ProcessDocumentPayload>): Promise<void> {
     const processStartTime = Date.now();
     const { mimetype, filePath, teamId } = job.data;
-    const supabase = createClient();
+    requireVaultPathForTeam(filePath, teamId);
+    const supabase = createTeamClient(teamId);
     const db = getDb();
     const fileName = filePath.join("/");
 
@@ -67,168 +68,14 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
       let fileData: Blob | null = null;
       let processedMimetype = mimetype;
 
-      // Download file once and reuse for all operations
-      // For HEIC files, we'll convert and reuse the converted data
-      if (mimetype === "image/heic") {
-        this.logger.info("Converting HEIC to JPG", { filePath: fileName });
-
-        const { data } = await withTimeout(
-          supabase.storage.from("vault").download(fileName),
-          TIMEOUTS.FILE_DOWNLOAD,
-          `File download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
-        );
-
-        if (!data) {
-          throw new NonRetryableError(
-            "File not found",
-            undefined,
-            "validation",
-          );
-        }
-
-        await this.updateProgress(
-          job,
-          this.ProgressMilestones.FETCHED,
-          "HEIC file downloaded",
-        );
-
-        const buffer = await data.arrayBuffer();
-
-        // Log file size for debugging memory issues
-        const fileSizeMB = (buffer.byteLength / (1024 * 1024)).toFixed(2);
-        this.logger.info("HEIC file size", {
-          fileName,
-          sizeBytes: buffer.byteLength,
-          sizeMB: fileSizeMB,
-        });
-
-        // Skip AI classification for very large HEIC files to prevent OOM
-        // 15MB HEIC ≈ 24MP ≈ ~100MB decoded. Complete with filename instead.
-        if (buffer.byteLength > MAX_HEIC_FILE_SIZE) {
-          this.logger.warn(
-            "HEIC file too large for AI classification - completing with filename",
-            {
-              fileName,
-              teamId,
-              sizeBytes: buffer.byteLength,
-              maxSizeBytes: MAX_HEIC_FILE_SIZE,
-            },
-          );
-
-          await updateDocumentWithRetry(
-            db,
-            {
-              pathTokens: filePath,
-              teamId,
-              title: filePath.at(-1) ?? "Large HEIC Image",
-              summary: `Large image (${fileSizeMB}MB) - AI classification skipped`,
-              processingStatus: "completed",
-            },
-            this.logger,
-          );
-          return;
-        }
-
-        // Try to convert HEIC to JPEG - use graceful degradation if it fails (e.g., OOM)
-        try {
-          const { buffer: image } = await convertHeicToJpeg(
-            buffer,
-            this.logger,
-          );
-
-          await this.updateProgress(
-            job,
-            this.ProgressMilestones.PROCESSING,
-            "HEIC converted to JPEG",
-          );
-
-          // Upload the converted image
-          const { data: uploadedData } = await withTimeout(
-            supabase.storage.from("vault").upload(fileName, image, {
-              contentType: "image/jpeg",
-              upsert: true,
-            }),
-            TIMEOUTS.FILE_UPLOAD,
-            `File upload timed out after ${TIMEOUTS.FILE_UPLOAD}ms`,
-          );
-
-          if (!uploadedData) {
-            throw new Error("Failed to upload converted image");
-          }
-
-          await this.updateProgress(
-            job,
-            this.ProgressMilestones.HALFWAY,
-            "Converted image uploaded",
-          );
-
-          // Create Blob from converted image for reuse
-          fileData = new Blob([image], { type: "image/jpeg" });
-          processedMimetype = "image/jpeg";
-        } catch (conversionError) {
-          // HEIC conversion failed (possibly OOM) - complete with fallback
-          // User can still see the file and retry later
-          this.logger.error(
-            "HEIC conversion failed - completing with fallback",
-            {
-              fileName,
-              teamId,
-              fileSizeMB,
-              error:
-                conversionError instanceof Error
-                  ? conversionError.message
-                  : "Unknown error",
-            },
-          );
-
-          await updateDocumentWithRetry(
-            db,
-            {
-              pathTokens: filePath,
-              teamId,
-              title: filePath.at(-1) ?? "HEIC Image",
-              summary: "HEIC conversion failed - original file preserved",
-              processingStatus: "completed",
-            },
-            this.logger,
-          );
-          return;
-        }
-      } else {
-        // Download file for non-HEIC files
-        const downloadStartTime = Date.now();
-        this.logger.info("Downloading file from storage", {
-          jobId: job.id,
-          fileName,
-          teamId,
-          mimetype: processedMimetype,
-        });
-
-        const { data } = await withTimeout(
-          supabase.storage.from("vault").download(fileName),
-          TIMEOUTS.FILE_DOWNLOAD,
-          `File download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
-        );
-
-        const downloadDuration = Date.now() - downloadStartTime;
-        this.logger.info("File downloaded", {
-          jobId: job.id,
-          fileName,
-          teamId,
-          fileSize: data?.size,
-          duration: `${downloadDuration}ms`,
-        });
-
-        if (!data) {
-          throw new NonRetryableError(
-            "File not found",
-            undefined,
-            "validation",
-          );
-        }
-
-        fileData = data;
-      }
+      // Preserve the uploaded object. Conversion is read-only and isolated.
+      const { data } = await withTimeout(
+        () => supabase.storage.from("vault").download(fileName),
+        TIMEOUTS.FILE_DOWNLOAD,
+      );
+      if (!data)
+        throw new NonRetryableError("File not found", undefined, "validation");
+      fileData = data;
 
       // Detect actual file type for application/octet-stream by checking magic bytes
       if (processedMimetype === "application/octet-stream" && fileData) {
@@ -283,7 +130,7 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
           // If detection fails, try to process as PDF (most common case)
           // Re-download the file since we may have consumed the buffer
           const { data: redownloadedData } = await withTimeout(
-            supabase.storage.from("vault").download(fileName),
+            () => supabase.storage.from("vault").download(fileName),
             TIMEOUTS.FILE_DOWNLOAD,
             `File re-download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
           );
@@ -297,7 +144,10 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
       }
 
       // Check if file type is supported - throw error for queue config to handle
-      if (!isMimeTypeSupportedForProcessing(processedMimetype)) {
+      if (
+        !isMimeTypeSupportedForProcessing(processedMimetype) &&
+        processedMimetype !== "image/heic"
+      ) {
         throw new UnsupportedFileTypeError(processedMimetype, fileName);
       }
 
@@ -346,13 +196,13 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
         });
 
         // 60 second timeout for document parsing - prevents hanging on corrupt/problematic files
-        const loadedDoc = await withTimeout(
-          loadDocument({
-            content: fileData,
-            metadata: { mimetype: processedMimetype },
-          }),
-          60_000,
-          "Document parsing timed out after 60000ms",
+        const loadedDoc = await runDocumentTask(
+          {
+            kind: "parse",
+            base64: documentInputBase64(await fileData.arrayBuffer()),
+            mimetype: processedMimetype,
+          },
+          { timeoutMs: 60_000 },
         );
 
         if (!loadedDoc) {
@@ -401,7 +251,7 @@ export class ProcessDocumentProcessor extends BaseProcessor<ProcessDocumentPaylo
             teamId,
             title: undefined, // null - UI will show filename + retry option
             summary: undefined,
-            processingStatus: "completed",
+            processingStatus: "failed",
           },
           this.logger,
         );

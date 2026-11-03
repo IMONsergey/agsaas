@@ -1,5 +1,5 @@
 import type { Context } from "@api/rest/types";
-import { getConfirmedFullInvoiceRefund } from "@api/services/invoice-refund-request";
+import { getConfirmedInvoiceRefunds } from "@api/services/invoice-refund-request";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   applyStripeInvoicePaymentEvent,
@@ -192,20 +192,10 @@ app.openapi(
             timeout: 5_000,
             maxNetworkRetries: 0,
           });
-          const confirmation = await getConfirmedFullInvoiceRefund(stripe, {
+          const confirmation = await getConfirmedInvoiceRefunds(stripe, {
             paymentIntentId,
             stripeAccountId: event.account,
           });
-          if (!confirmation) {
-            logger.info(
-              "Full refund is not currently confirmed; partial, pending or reversed refunds require ledger reconciliation",
-              {
-                paymentIntentId,
-                eventId: event.id,
-              },
-            );
-            break;
-          }
           const refundedAt = new Date(event.created * 1000).toISOString();
           // A full refund can reach us before either checkout attachment or the
           // paid webhook. Fresh intent metadata can locate its reservation but
@@ -220,6 +210,7 @@ app.openapi(
             paymentIntentId,
             stripeAccountId: event.account,
             amountMinor: confirmation.amountMinor,
+            refunds: confirmation.refunds,
             currency: confirmation.currency,
             kind: "refunded",
             occurredAt: refundedAt,

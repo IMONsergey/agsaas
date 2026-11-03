@@ -139,7 +139,7 @@ type RefundStateProvider = Pick<RefundProvider, "paymentIntents"> & {
  * complete refund list, including asynchronous refund.updated notifications.
  * This is current provider state, not irreversible settlement or a local ledger.
  */
-export async function getConfirmedFullInvoiceRefund(
+export async function getConfirmedInvoiceRefunds(
   stripe: RefundStateProvider,
   params: { paymentIntentId: string; stripeAccountId: string },
 ) {
@@ -164,6 +164,8 @@ export async function getConfirmedFullInvoiceRefund(
   let startingAfter: string | undefined;
   let succeeded = 0;
   const seen = new Set<string>();
+  const records: Array<{ id: string; amountMinor: number; status: string }> =
+    [];
   for (let page = 0; page < 5; page++) {
     if (performance.now() - started > 15_000) {
       throw new InvoicePaymentError(
@@ -200,7 +202,25 @@ export async function getConfirmedFullInvoiceRefund(
           "Refund list does not match the payment",
         );
       }
+      if (
+        ![
+          "succeeded",
+          "pending",
+          "requires_action",
+          "failed",
+          "canceled",
+        ].includes(refund.status ?? "")
+      )
+        throw new InvoicePaymentError(
+          409,
+          "Unknown refund state requires reconciliation",
+        );
       seen.add(refund.id);
+      records.push({
+        id: refund.id,
+        amountMinor: refund.amount,
+        status: refund.status!,
+      });
       if (refund.status === "succeeded") succeeded += refund.amount;
     }
     if (succeeded > intent.amount_received) {
@@ -210,21 +230,18 @@ export async function getConfirmedFullInvoiceRefund(
       );
     }
     if (!refunds.has_more) {
-      return succeeded === intent.amount_received
-        ? {
-            paymentIntentId: intent.id,
-            amountMinor: succeeded,
-            currency: intent.currency,
-            // These editable provider fields identify a candidate only. The
-            // webhook must validate UUID shape and the DB must authorize the
-            // exact original account/intent/reservation before any mutation.
-            candidateIdentity: {
-              invoiceId: intent.metadata?.invoice_id,
-              teamId: intent.metadata?.team_id,
-              reservationId: intent.metadata?.payment_reservation_id,
-            },
-          }
-        : null;
+      return {
+        paymentIntentId: intent.id,
+        amountMinor: intent.amount_received,
+        refundedMinor: succeeded,
+        currency: intent.currency,
+        refunds: records,
+        candidateIdentity: {
+          invoiceId: intent.metadata?.invoice_id,
+          teamId: intent.metadata?.team_id,
+          reservationId: intent.metadata?.payment_reservation_id,
+        },
+      };
     }
     startingAfter = refunds.data.at(-1)?.id;
     if (!startingAfter)
@@ -234,4 +251,19 @@ export async function getConfirmedFullInvoiceRefund(
     409,
     "Refund history exceeds automatic reconciliation limits",
   );
+}
+
+/** Compatibility view for callers that only ask whether the whole payment was refunded. */
+export async function getConfirmedFullInvoiceRefund(
+  stripe: RefundStateProvider,
+  params: { paymentIntentId: string; stripeAccountId: string },
+) {
+  const result = await getConfirmedInvoiceRefunds(stripe, params);
+  if (result.refundedMinor !== result.amountMinor) return null;
+  return {
+    paymentIntentId: result.paymentIntentId,
+    amountMinor: result.amountMinor,
+    currency: result.currency,
+    candidateIdentity: result.candidateIdentity,
+  };
 }

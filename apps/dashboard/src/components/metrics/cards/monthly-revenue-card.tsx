@@ -82,6 +82,7 @@ export function MonthlyRevenueCard({
                 from={from}
                 to={to}
                 currency={currency}
+                revenueType={revenueType}
               />
             )}
           </div>

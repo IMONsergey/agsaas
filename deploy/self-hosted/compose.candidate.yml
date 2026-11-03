@@ -1,0 +1,78 @@
+# LAST layer after the pinned public platform, platform.compose.yml,
+# compose.apps.yml and compose.public.yml. Fresh synthetic state ONLY.
+name: agsaas-candidate-20261103
+services:
+  studio:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-studio
+  api-gw:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-envoy
+    ports: !override ["127.0.0.1:14000:8000/tcp"]
+  auth:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-auth
+    environment:
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_SMTP_HOST: ""
+      GOTRUE_SMTP_USER: ""
+      GOTRUE_SMTP_PASS: ""
+      GOTRUE_SMTP_ADMIN_EMAIL: ""
+      GOTRUE_SMTP_SENDER_NAME: ""
+  rest:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-rest
+  realtime:
+    restart: "no"
+    container_name: realtime-dev.agsaas-candidate-20261103-realtime
+  storage:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-storage
+  imgproxy:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-imgproxy
+  meta:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-meta
+  functions:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-edge-functions
+  db:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-db
+  supavisor:
+    restart: "no"
+    container_name: agsaas-candidate-20261103-pooler
+  api:
+    restart: "no"
+    image: "agsaas-api:candidate-${AGSAAS_RELEASE:?Set exact candidate release}"
+    ports: !override ["127.0.0.1:13503:8080/tcp"]
+    environment:
+      AGSAAS_SUPPORT_INGEST_KEY: "${AGSAAS_SUPPORT_INGEST_KEY:?Generate a candidate-only support key}"
+  dashboard:
+    restart: "no"
+    image: "agsaas-dashboard:candidate-${AGSAAS_RELEASE:?Set exact candidate release}"
+    ports: !override ["127.0.0.1:13500:3000/tcp"]
+    environment:
+      AUTH_ENABLED_PROVIDERS: password
+      AUTH_PASSWORD_RECOVERY_ENABLED: "false"
+  worker:
+    restart: "no"
+    image: "agsaas-worker:candidate-${AGSAAS_RELEASE:?Set exact candidate release}"
+  website:
+    restart: "no"
+    image: "agsaas-website:candidate-${AGSAAS_RELEASE:?Set exact candidate release}"
+    ports: !override ["127.0.0.1:13501:3000/tcp"]
+  redis-cache:
+    restart: "no"
+  redis-queue:
+    restart: "no"
+networks:
+  default:
+    name: agsaas-candidate-20261103_default
+    # No runtime egress to email, banking, billing, OAuth or AI providers.
+    internal: true

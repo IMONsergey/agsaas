@@ -1,5 +1,7 @@
 import { protectedMiddleware, publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
+import { consumeIntegrationOAuth, startIntegrationOAuth, completeIntegrationOAuth } from "@api/utils/integration-oauth";
+import { requireTeamOwner, TeamOwnerRequiredError } from "@api/utils/team-owner";
 import { prepareInvoicePaymentSession } from "@api/services/invoice-payment-session";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { InvoicePaymentError } from "@midday/db/errors";
@@ -10,35 +12,12 @@ import {
   reserveInvoicePayment,
   updateTeamById,
 } from "@midday/db/queries";
-import { decryptOAuthState, encryptOAuthState } from "@midday/encryption";
 import { verify as verifyInvoiceToken } from "@midday/invoice/token";
 import { logger } from "@midday/logger";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
 
 const app = new OpenAPIHono<Context>();
-
-// ============================================================================
-// OAuth State Types
-// ============================================================================
-
-interface InvoicePaymentOAuthState {
-  teamId: string;
-  userId: string;
-  source: "invoice-settings";
-}
-
-function isValidOAuthState(
-  parsed: unknown,
-): parsed is InvoicePaymentOAuthState {
-  return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    typeof (parsed as Record<string, unknown>).teamId === "string" &&
-    typeof (parsed as Record<string, unknown>).userId === "string" &&
-    (parsed as Record<string, unknown>).source === "invoice-settings"
-  );
-}
 
 // ============================================================================
 // Connect Stripe Endpoint
@@ -52,7 +31,7 @@ app.use("/connect-stripe", ...protectedMiddleware);
 
 app.openapi(
   createRoute({
-    method: "get",
+    method: "post",
     path: "/connect-stripe",
     summary: "Get Stripe Connect URL",
     operationId: "getStripeConnectUrl",
@@ -94,16 +73,7 @@ app.openapi(
       });
     }
 
-    // Encrypt state to prevent tampering
-    const state = encryptOAuthState({
-      teamId: session.teamId,
-      userId: session.user.id,
-      source: "invoice-settings",
-    });
-
-    const _dashboardUrl =
-      process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
-    const redirectUri = `${process.env.MIDDAY_API_URL || "https://api.midday.ai"}/invoice-payments/connect-stripe/callback`;
+    const { state, redirectUri } = await startIntegrationOAuth(c, "stripe");
 
     // Build Stripe Connect OAuth URL (Standard accounts)
     const params = new URLSearchParams({
@@ -126,25 +96,25 @@ app.openapi(
 
 const callbackParamsSchema = z.object({
   code: z
-    .string()
+    .string().min(1).max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "code", required: false },
       description: "OAuth authorization code from Stripe",
     }),
-  state: z.string().openapi({
+  state: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/).openapi({
     param: { in: "query", name: "state", required: true },
     description: "OAuth state parameter for CSRF protection",
   }),
   error: z
-    .string()
+    .string().min(1).max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "error", required: false },
       description: "OAuth error code if authorization failed",
     }),
   error_description: z
-    .string()
+    .string().min(1).max(8192)
     .optional()
     .openapi({
       param: { in: "query", name: "error_description", required: false },
@@ -184,8 +154,8 @@ app.openapi(
   async (c) => {
     const db = c.get("db");
     const { code, state, error, error_description } = c.req.valid("query");
-    const dashboardUrl =
-      process.env.MIDDAY_DASHBOARD_URL || "https://app.midday.ai";
+    const parsedState = await consumeIntegrationOAuth(c, "stripe", state);
+    const { dashboardUrl } = parsedState;
 
     // Handle OAuth errors
     if (error || !code) {
@@ -199,17 +169,8 @@ app.openapi(
       );
     }
 
-    // Decrypt and validate state
-    const parsedState = decryptOAuthState(state, isValidOAuthState);
-
-    if (!parsedState) {
-      throw new HTTPException(400, {
-        message: "Invalid or expired state. Please try connecting again.",
-      });
-    }
-
     try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { timeout: 15_000, maxNetworkRetries: 0 });
 
       // Exchange authorization code for connected account ID
       const response = await stripe.oauth.token({
@@ -233,13 +194,13 @@ app.openapi(
       }
 
       // Update team with Stripe account info
-      await updateTeamById(db, {
+      await completeIntegrationOAuth(c, parsedState, (tx) => updateTeamById(tx, {
         id: parsedState.teamId,
         data: {
           stripeAccountId,
           stripeConnectStatus: connectStatus,
         },
-      });
+      }));
 
       logger.info("Stripe Connect integration created", {
         teamId: parsedState.teamId,
@@ -299,12 +260,21 @@ app.openapi(
       throw new HTTPException(401, { message: "Unauthorized" });
     }
 
+    if (c.get("authType") !== "session") throw new HTTPException(403, { message: "Sign in as a team owner to manage payment connections" });
+
+    try {
+      await requireTeamOwner(db, session.teamId, session.user.id);
+    } catch (error) {
+      if (error instanceof TeamOwnerRequiredError) throw new HTTPException(403, { message: error.message });
+      throw error;
+    }
+
     // Get current team to check if they have a Stripe account
     const team = await getTeamById(db, session.teamId);
 
     if (team?.stripeAccountId) {
       try {
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { timeout: 15_000, maxNetworkRetries: 0 });
 
         // Deauthorize the connected account
         await stripe.oauth.deauthorize({

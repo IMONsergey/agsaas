@@ -1,10 +1,14 @@
 import { limitWords, mapLanguageCodeToPostgresConfig } from "@midday/documents";
-import { DocumentClassifier } from "@midday/documents/classifier";
 import { triggerJob } from "@midday/job-client";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
+import { requireVaultPathForTeam } from "@midday/utils/storage-path";
 import type { Job } from "bullmq";
 import type { ClassifyImagePayload } from "../../schemas/documents";
 import { getDb } from "../../utils/db";
+import {
+  documentInputBase64,
+  runDocumentTask,
+} from "../../utils/document-isolation";
 import { updateDocumentWithRetry } from "../../utils/document-update";
 import { NonRetryableError } from "../../utils/error-classification";
 import { resizeImage } from "../../utils/image-processing";
@@ -31,7 +35,8 @@ interface ImageClassificationResult {
 export class ClassifyImageProcessor extends BaseProcessor<ClassifyImagePayload> {
   async process(job: Job<ClassifyImagePayload>): Promise<void> {
     const { teamId, fileName } = job.data;
-    const supabase = createClient();
+    requireVaultPathForTeam(fileName, teamId);
+    const supabase = createTeamClient(teamId);
     const db = getDb();
 
     // fileName is the full path (e.g., "teamId/filename.jpg")
@@ -45,7 +50,7 @@ export class ClassifyImageProcessor extends BaseProcessor<ClassifyImagePayload> 
 
     // Download file - this is a hard failure if it fails (file doesn't exist)
     const { data: fileData } = await withTimeout(
-      supabase.storage.from("vault").download(fileName),
+      () => supabase.storage.from("vault").download(fileName),
       TIMEOUTS.FILE_DOWNLOAD,
       `File download timed out after ${TIMEOUTS.FILE_DOWNLOAD}ms`,
     );
@@ -69,13 +74,11 @@ export class ClassifyImageProcessor extends BaseProcessor<ClassifyImagePayload> 
     let classificationFailed = false;
 
     try {
-      const classifier = new DocumentClassifier();
       // Convert Buffer to ArrayBuffer for classifier
       const arrayBuffer = new Uint8Array(imageContent).buffer;
-      classificationResult = await withTimeout(
-        classifier.classifyImage({ content: arrayBuffer }),
-        TIMEOUTS.AI_CLASSIFICATION,
-        `Image classification timed out after ${TIMEOUTS.AI_CLASSIFICATION}ms`,
+      classificationResult = await runDocumentTask(
+        { kind: "classify-image", base64: documentInputBase64(arrayBuffer) },
+        { timeoutMs: TIMEOUTS.AI_CLASSIFICATION },
       );
     } catch (error) {
       // Log error but don't fail - we'll complete with fallback
@@ -172,7 +175,7 @@ export class ClassifyImageProcessor extends BaseProcessor<ClassifyImagePayload> 
           classificationResult?.language,
         ),
         // Always mark as completed - even if AI failed, document is usable
-        processingStatus: "completed",
+        processingStatus: classificationFailed ? "failed" : "completed",
       },
       this.logger,
     );

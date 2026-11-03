@@ -244,3 +244,60 @@ describe("REST: DELETE /invoices/:id", () => {
     );
   });
 });
+
+describe("REST: PUT /invoices/:id durable status changes", () => {
+  const app = createApp();
+  const id = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const operation = {
+    id: "11111111-1111-4111-8111-111111111111",
+    status: "pending",
+  };
+  beforeEach(() => {
+    mocks.updateInvoiceWithIntent.mockReset();
+    mocks.updateInvoice.mockClear();
+    mocks.triggerJob.mockClear();
+    mocks.getInvoiceById.mockReset();
+    mocks.getInvoiceById.mockImplementation(() => ({
+      ...createValidInvoiceForRest(),
+      status: "unpaid",
+    }));
+  });
+  test("uses the atomic command and preserves its receipt", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => ({
+      id,
+      status: "unpaid",
+      operation,
+    }));
+    const response = await app.request(`/invoices/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "unpaid" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id,
+      status: "unpaid",
+      operation,
+    });
+    expect(mocks.updateInvoiceWithIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id, teamId: "test-team-id", status: "unpaid" }),
+    );
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+  test("command failure never returns a successful unchanged detail or queues fallback work", async () => {
+    mocks.updateInvoiceWithIntent.mockImplementation(() => {
+      throw new Error("atomic fixture failure");
+    });
+    const response = await app.request(`/invoices/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "unpaid" }),
+    });
+    expect(response.status).toBe(500);
+    expect(mocks.getInvoiceById).not.toHaveBeenCalled();
+    expect(mocks.updateInvoice).not.toHaveBeenCalled();
+    expect(mocks.triggerJob).not.toHaveBeenCalled();
+  });
+});

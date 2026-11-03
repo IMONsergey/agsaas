@@ -25,7 +25,7 @@ function slugify(str: string): string {
 function createHeading(level: number) {
   const Heading = ({ children }: { children: ReactNode }) => {
     const slug = slugify(children as string);
-    const Tag = `h${level}` as keyof JSX.IntrinsicElements;
+    const Tag = `h${level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
     return (
       <Tag id={slug} className="group flex items-baseline scroll-mt-24">

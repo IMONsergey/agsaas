@@ -748,19 +748,30 @@ export const createReportSchema = z
       description: "Type of report/chart to share",
       example: "burn_rate",
     }),
-    from: z.string().openapi({
-      description: "Start date (ISO 8601 format)",
-      example: "2023-01-01",
-    }),
-    to: z.string().openapi({
-      description: "End date (ISO 8601 format)",
-      example: "2023-12-31",
-    }),
+    from: z
+      .string()
+      .refine(
+        (value) => Number.isFinite(Date.parse(value)),
+        "Invalid start date",
+      )
+      .openapi({
+        description: "Start date (ISO 8601 format)",
+        example: "2023-01-01",
+      }),
+    to: z
+      .string()
+      .refine((value) => Number.isFinite(Date.parse(value)), "Invalid end date")
+      .openapi({
+        description: "End date (ISO 8601 format)",
+        example: "2023-12-31",
+      }),
     currency: z.string().optional().openapi({
       description: "Currency code (ISO 4217)",
       example: "USD",
     }),
-    expireAt: z.string().optional().openapi({
+    revenueType: z.enum(["net", "gross"]).default("net"),
+    forecastMonths: z.number().int().min(1).max(24).default(6),
+    expireAt: z.string().datetime().optional().openapi({
       description: "Expiration date for the shared link (ISO 8601 format)",
       example: "2024-12-31",
     }),
@@ -974,3 +985,10 @@ export const getBalanceSheetSchema = z
       }),
   })
   .openapi("GetBalanceSheetSchema");
+
+export const listSharedReportsSchema = z.object({
+  type: reportTypeSchema.optional(),
+  pageSize: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+});
+export const revokeSharedReportSchema = z.object({ id: z.string().uuid() });

@@ -106,6 +106,7 @@ let duringUpload: (() => void) | undefined;
 let rendered = 0;
 let uploaded = 0;
 let queueFailure = false;
+let intentFailure = false;
 let durableReceipt: "pending" | "accepted" | "completed" | null = null;
 let durableFinalizations = 0;
 let durableRecoveries = 0;
@@ -129,6 +130,7 @@ const writes: Array<{
 }> = [];
 
 mock.module("@midday/db/queries", () => ({
+  reserveGeneratedStorage: async () => {},
   INVOICE_EMAIL_ENVELOPE_MAX_BYTES: 4 * 1024 * 1024,
   deferInvoiceEmailFinalization: async () => undefined,
   canSendInvoiceEmail,
@@ -208,6 +210,24 @@ mock.module("@midday/db/queries", () => ({
     };
   },
 }));
+mock.module("@midday/db/queries/financial-job-dispatches", () => ({
+  ensureFinancialJobDispatch: async (
+    _db: unknown,
+    input: { jobName: string; source: string; payload: unknown },
+  ) => {
+    if (intentFailure) throw new Error("Fixture SQL intent unavailable");
+    if (
+      !queued.some(
+        (job) =>
+          job.name === input.jobName &&
+          JSON.stringify(job.payload) === JSON.stringify(input.payload),
+      )
+    ) {
+      queued.push({ name: input.jobName, payload: input.payload });
+    }
+    return { id: "intent-fixture", status: "pending" };
+  },
+}));
 mock.module("@midday/db/worker-client", () => ({ getWorkerDb: () => ({}) }));
 mock.module("@midday/job-client", () => ({ decodeJobId }));
 mock.module("../../queues/invoices", () => ({
@@ -271,7 +291,7 @@ mock.module("@midday/notifications", () => ({
   },
 }));
 mock.module("@midday/supabase/job", () => ({
-  createClient: () => {
+  createTeamClient: () => {
     storageConstructed += 1;
     return {
       storage: {
@@ -396,6 +416,7 @@ beforeEach(() => {
   rendered = 0;
   uploaded = 0;
   queueFailure = false;
+  intentFailure = false;
   durableReceipt = null;
   durableFinalizations = 0;
   durableRecoveries = 0;
@@ -441,6 +462,7 @@ describe("scheduled invoice handoff", () => {
     expect(invoice.status).toBe("scheduled");
     expect(invoice.scheduledJobId).toBe("invoices:schedule-fixture-1");
     queueFailure = false;
+    intentFailure = false;
     await scheduleProcessor.handle(scheduleJob());
     expect(queued).toHaveLength(1);
   });
@@ -953,5 +975,82 @@ describe("invoice reminder processor", () => {
     expect(notificationCalls).toHaveLength(2);
     expect(writes).toHaveLength(2);
     expect(invoice.reminderSentAt).toBe(delivery.acceptedAt!);
+  });
+});
+
+describe("generation durable email handoff", () => {
+  test("SQL intent failure keeps generation retryable and no email intent is invented", async () => {
+    invoice.status = "unpaid";
+    intentFailure = true;
+    const job = generateJob({
+      invoiceId,
+      deliveryType: "create_and_send",
+      deliveryKey: "a".repeat(64),
+    });
+    await expect(generateProcessor.handle(job)).rejects.toThrow(
+      "SQL intent unavailable",
+    );
+    expect(
+      queued.filter((item) => item.name === "send-invoice-email"),
+    ).toHaveLength(0);
+    expect(notificationCalls).toHaveLength(0);
+    intentFailure = false;
+    await generateProcessor.handle(job);
+    await generateProcessor.handle(job);
+    expect(
+      queued.filter((item) => item.name === "send-invoice-email"),
+    ).toHaveLength(1);
+    expect(notificationCalls).toHaveLength(0);
+  });
+});
+
+describe("approved invoice recipient fence", () => {
+  const approvedRecipients = {
+    recipient: "approved@example.test",
+    bcc: ["approved-bcc@example.test"],
+    customerName: "Approved name",
+    replyTo: "approved-reply@example.test",
+  };
+  test("generation preserves the exact approved recipient envelope in its durable email intent", async () => {
+    invoice.status = "unpaid";
+    await generateProcessor.handle(
+      generateJob({
+        invoiceId,
+        deliveryType: "create_and_send",
+        approvedRecipients,
+      }),
+    );
+    expect(
+      queued.find((item) => item.name === "send-invoice-email")?.payload,
+    ).toMatchObject({ approvedRecipients });
+  });
+  test("later customer, billing-copy and reply-to changes cannot redirect an approved send", async () => {
+    invoice.status = "unpaid";
+    invoice.customer.email = "changed@example.test";
+    invoice.customer.billingEmail = "changed-bcc@example.test";
+    invoice.user = { email: "changed-author@example.test" };
+    invoice.team.email = "changed-reply@example.test";
+    const job = sendJob();
+    job.data.approvedRecipients = approvedRecipients;
+    await sendProcessor.handle(job);
+    expect(notificationCalls).toHaveLength(1);
+    expect(notificationCalls[0]!.payload).toMatchObject({
+      customerEmail: "approved@example.test",
+      customerName: "Approved name",
+    });
+    expect(notificationCalls[0]!.options).toMatchObject({
+      bcc: ["approved-bcc@example.test"],
+      replyTo: "approved-reply@example.test",
+    });
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed@example.test",
+    );
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed-bcc@example.test",
+    );
+    expect(JSON.stringify(notificationCalls)).not.toContain(
+      "changed-author@example.test",
+    );
+    expect(writes[0]!.recipient).toBe("approved@example.test");
   });
 });

@@ -101,38 +101,44 @@ export type GetTopRevenueClientParams = {
   teamId: string;
 };
 
+/** Net confirmed cash received during the last 30 days, in one reporting currency. */
 export async function getTopRevenueClient(
   db: Database,
   params: GetTopRevenueClientParams,
 ) {
-  const { teamId } = params;
-
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-  const result = await db
-    .select({
-      customerId: customers.id,
-      customerName: customers.name,
-      totalRevenue: sql<number>`SUM(${invoices.amount})::float`,
-      currency: invoices.currency,
-      invoiceCount: sql<number>`COUNT(${invoices.id})::int`,
-    })
-    .from(customers)
-    .innerJoin(
-      invoices,
-      and(
-        eq(invoices.customerId, customers.id),
-        gte(invoices.createdAt, thirtyDaysAgo.toISOString()),
-        inArray(invoices.status, ["paid", "unpaid", "overdue"]), // Exclude drafts
-      ),
-    )
-    .where(eq(customers.teamId, teamId))
-    .groupBy(customers.id, customers.name, invoices.currency)
-    .orderBy(sql`SUM(${invoices.amount}) DESC`)
-    .limit(1);
-
-  return result[0] || null;
+  type Row = {
+    customerId: string | null;
+    customerName: string | null;
+    totalRevenue: number | null;
+    currency: string | null;
+    invoiceCount: number;
+    incomplete: boolean;
+  };
+  const result = await db.execute<Row>(sql`WITH flows AS (
+    SELECT i.customer_id, i.id invoice_id, upper(i.currency) currency,
+      e.amount_minor::numeric * CASE WHEN e.kind='refund' THEN -1 ELSE 1 END * i.amount /
+      NULLIF((s.projection->>'invoiceAmountMinor')::numeric,0) amount
+    FROM invoice_settlement_entries e JOIN invoices i ON i.id=e.invoice_id AND i.team_id=e.team_id
+    LEFT JOIN invoice_settlement_state s ON s.invoice_id=i.id AND s.team_id=i.team_id
+    WHERE e.team_id=${params.teamId}::uuid AND e.occurred_at>=clock_timestamp()-interval '30 days' AND e.occurred_at<=clock_timestamp()
+    UNION ALL
+    SELECT i.customer_id,i.id,upper(i.currency),i.amount FROM invoices i
+    WHERE i.team_id=${params.teamId}::uuid AND i.status='paid' AND i.paid_at>=clock_timestamp()-interval '30 days'
+      AND i.paid_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM invoice_settlement_entries e WHERE e.invoice_id=i.id)
+  ), reporting AS (
+    SELECT coalesce(CASE WHEN t.base_currency ~ '^[A-Z]{3}$' THEN t.base_currency END,
+      (SELECT CASE WHEN count(distinct currency)=1 THEN min(currency) END FROM flows)) currency FROM teams t WHERE t.id=${params.teamId}::uuid
+  ), converted AS (
+    SELECT f.*,r.currency reporting_currency,CASE WHEN f.currency=r.currency THEN f.amount ELSE f.amount*x.rate END converted
+    FROM flows f CROSS JOIN reporting r LEFT JOIN exchange_rates x ON x.base=f.currency AND x.target=r.currency AND x.rate>0
+  ), complete AS (SELECT count(*) FILTER(WHERE converted IS NULL)>0 incomplete FROM converted), ranked AS (
+    SELECT c.id "customerId",c.name "customerName",round(sum(f.converted),2)::float "totalRevenue",min(f.reporting_currency) currency,
+      count(distinct f.invoice_id)::int "invoiceCount",false incomplete
+    FROM converted f JOIN customers c ON c.id=f.customer_id AND c.team_id=${params.teamId}::uuid
+    WHERE NOT (SELECT incomplete FROM complete) GROUP BY c.id,c.name HAVING sum(f.converted)>0
+    ORDER BY sum(f.converted) DESC,c.id LIMIT 1
+  ) SELECT * FROM ranked UNION ALL SELECT NULL,NULL,NULL,(SELECT currency FROM reporting),0,true FROM complete WHERE incomplete`);
+  return result.rows[0] ?? null;
 }
 
 export type GetNewCustomersCountParams = {

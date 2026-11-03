@@ -2,15 +2,16 @@ import {
   getInvoiceById,
   isCurrentInvoiceSchedule,
   prepareInvoiceDocument,
+  reserveGeneratedStorage,
   updateInvoice,
 } from "@midday/db/queries";
+import { ensureFinancialJobDispatch } from "@midday/db/queries/financial-job-dispatches";
 import { PdfTemplate, renderToBuffer } from "@midday/invoice";
-import { createClient } from "@midday/supabase/job";
+import { createTeamClient } from "@midday/supabase/job";
 import { validateVaultKey } from "@midday/supabase/storage-path";
 import type { Job } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "../../config/job-options";
 import { documentsQueue } from "../../queues/documents";
-import { invoicesQueue } from "../../queues/invoices";
 import type { GenerateInvoicePayload } from "../../schemas/invoices";
 import { getDb } from "../../utils/db";
 import { BaseProcessor } from "../base";
@@ -104,7 +105,14 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
     });
 
     // Upload to Supabase storage (storage SDK is still needed)
-    const supabase = createClient();
+    await reserveGeneratedStorage(db, {
+      teamId: invoiceData.teamId,
+      path: fullPath,
+      bytes: buffer.length,
+      sourceKind: "invoice",
+      sourceId: invoiceId,
+    });
+    const supabase = createTeamClient(invoiceData.teamId);
     const { error: uploadError } = await supabase.storage
       .from("vault")
       .upload(fullPath, buffer, {
@@ -147,21 +155,26 @@ export class GenerateInvoiceProcessor extends BaseProcessor<GenerateInvoicePaylo
         expectedScheduledJobId,
         deliveryKey: job.data.deliveryKey,
       });
-      await invoicesQueue.add(
-        "send-invoice-email",
-        {
+      await ensureFinancialJobDispatch(db, {
+        teamId: invoiceData.teamId,
+        jobName: "send-invoice-email",
+        source: `invoice/${invoiceId}/delivery/${deliveryKey}`,
+        payload: {
+          teamId: invoiceData.teamId,
           invoiceId,
           filename,
           fullPath,
           deliveryKey,
+          ...(job.data.approvedRecipients
+            ? { approvedRecipients: job.data.approvedRecipients }
+            : {}),
           ...(expectedScheduledJobId === undefined
             ? {}
             : { expectedScheduledJobId }),
         },
-        DEFAULT_JOB_OPTIONS,
-      );
+      });
 
-      this.logger.debug("Queued send-invoice-email job", { invoiceId });
+      this.logger.debug("Persisted send-invoice-email intent", { invoiceId });
     }
 
     // Queue document processing for classification

@@ -1,3 +1,7 @@
+import {
+  invoiceReceivedAmount,
+  invoiceOutstandingAmount,
+} from "../invoice-settlement-sql";
 import { UTCDate } from "@date-fns/utc";
 import { buildSearchQuery } from "@midday/db/utils/search-query";
 import {
@@ -1120,7 +1124,7 @@ export async function getInvoiceSummary(
     db
       .select({
         currency: invoices.currency,
-        totalAmount: sql<string>`COALESCE(SUM(${invoices.amount}), 0)`,
+        totalAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} IN ('unpaid','overdue') THEN ${invoiceOutstandingAmount} WHEN ${invoices.status}='paid' THEN ${invoiceReceivedAmount} ELSE ${invoices.amount} END), 0)`,
         invoiceCount: count(),
       })
       .from(invoices)
@@ -1191,7 +1195,10 @@ export async function getInvoiceSummary(
         });
         invoiceCount += rowCount;
       }
-      // Skip currencies with missing exchange rates to avoid mixing currencies
+      if (!rate || rate <= 0)
+        throw new InvoiceAmountError(
+          "A complete invoice total requires current exchange rates for every currency",
+        );
     }
   }
 
@@ -1210,7 +1217,10 @@ export type DeleteInvoiceParams = {
   teamId: string;
 };
 
-export async function deleteInvoice(db: Database, params: DeleteInvoiceParams) {
+export async function deleteInvoice(
+  db: DatabaseOrTransaction,
+  params: DeleteInvoiceParams,
+) {
   const { id, teamId } = params;
   return db.transaction(async (tx) => {
     const [invoice] = await tx
@@ -1458,39 +1468,68 @@ export async function getMostActiveClient(
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  const result = await db
+  // Aggregate independent one-to-many relations before joining them. Otherwise
+  // each tracker entry is counted once per invoice of the same customer.
+  const invoiceTotals = db
     .select({
-      customerId: customers.id,
-      customerName: customers.name,
-      invoiceCount: sql<number>`COUNT(DISTINCT ${invoices.id})::int`,
-      totalTrackerTime: sql<number>`COALESCE(SUM(${trackerEntries.duration}), 0)::int`,
+      customerId: invoices.customerId,
+      count: sql<number>`COUNT(*)::int`.as("invoice_count"),
     })
-    .from(customers)
-    .leftJoin(
-      invoices,
+    .from(invoices)
+    .where(
       and(
-        eq(invoices.customerId, customers.id),
+        eq(invoices.teamId, teamId),
         gte(invoices.createdAt, thirtyDaysAgo.toISOString()),
       ),
     )
-    .leftJoin(trackerProjects, eq(trackerProjects.customerId, customers.id))
-    .leftJoin(
-      trackerEntries,
+    .groupBy(invoices.customerId)
+    .as("invoice_totals");
+  const trackerTotals = db
+    .select({
+      customerId: trackerProjects.customerId,
+      duration:
+        sql<number>`COALESCE(SUM(${trackerEntries.duration}), 0)::bigint`.as(
+          "tracker_duration",
+        ),
+    })
+    .from(trackerEntries)
+    .innerJoin(
+      trackerProjects,
       and(
         eq(trackerEntries.projectId, trackerProjects.id),
+        eq(trackerProjects.teamId, teamId),
+      ),
+    )
+    .where(
+      and(
+        eq(trackerEntries.teamId, teamId),
         gte(
           trackerEntries.date,
           thirtyDaysAgo.toISOString().split("T")[0] ?? "",
         ),
       ),
     )
-    .where(eq(customers.teamId, teamId))
-    .groupBy(customers.id, customers.name)
-    .having(
-      sql`COUNT(DISTINCT ${invoices.id}) > 0 OR COALESCE(SUM(${trackerEntries.duration}), 0) > 0`,
+    .groupBy(trackerProjects.customerId)
+    .as("tracker_totals");
+  const result = await db
+    .select({
+      customerId: customers.id,
+      customerName: customers.name,
+      invoiceCount: sql<number>`COALESCE(${invoiceTotals.count}, 0)::int`,
+      totalTrackerTime: sql<number>`COALESCE(${trackerTotals.duration}, 0)::int`,
+    })
+    .from(customers)
+    .leftJoin(invoiceTotals, eq(invoiceTotals.customerId, customers.id))
+    .leftJoin(trackerTotals, eq(trackerTotals.customerId, customers.id))
+    .where(
+      and(
+        eq(customers.teamId, teamId),
+        sql`COALESCE(${invoiceTotals.count},0)>0 OR COALESCE(${trackerTotals.duration},0)>0`,
+      ),
     )
     .orderBy(
-      sql`(COUNT(DISTINCT ${invoices.id}) + COALESCE(SUM(${trackerEntries.duration}) / 3600, 0)) DESC`,
+      sql`(COALESCE(${invoiceTotals.count},0) + COALESCE(${trackerTotals.duration},0) / 3600) DESC`,
+      asc(customers.id),
     )
     .limit(1);
 

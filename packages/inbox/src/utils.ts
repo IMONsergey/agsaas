@@ -1,5 +1,53 @@
-export function getInboxIdFromEmail(email: string) {
-  return email.split("@").at(0);
+export type InboxEnvironment = {
+  INBOX_DOMAIN?: string;
+  NEXT_PUBLIC_INBOX_DOMAIN?: string;
+};
+
+function configuredInboxEnvironment(): InboxEnvironment {
+  return {
+    INBOX_DOMAIN: process.env.INBOX_DOMAIN,
+    NEXT_PUBLIC_INBOX_DOMAIN: process.env.NEXT_PUBLIC_INBOX_DOMAIN,
+  };
+}
+
+/** Forwarding is disabled until this installation owns a configured domain. */
+export function getInboxDomain(
+  env: InboxEnvironment = configuredInboxEnvironment(),
+): string | null {
+  const domain = (env.INBOX_DOMAIN || env.NEXT_PUBLIC_INBOX_DOMAIN)
+    ?.trim()
+    .toLowerCase();
+  if (
+    !domain ||
+    domain.length > 253 ||
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)
+  )
+    return null;
+  if (domain === "midday.ai" || domain.endsWith(".midday.ai")) return null;
+  if (
+    env.INBOX_DOMAIN &&
+    env.NEXT_PUBLIC_INBOX_DOMAIN &&
+    env.INBOX_DOMAIN.trim().toLowerCase() !==
+      env.NEXT_PUBLIC_INBOX_DOMAIN.trim().toLowerCase()
+  )
+    return null;
+  return domain;
+}
+
+export function getInboxIdFromEmail(
+  email: string,
+  env?: InboxEnvironment,
+): string | undefined {
+  const parts = email.split("@");
+  const domain = getInboxDomain(env);
+  if (
+    parts.length !== 2 ||
+    !domain ||
+    parts[1]?.toLowerCase() !== domain ||
+    !/^[a-zA-Z0-9_-]{1,64}$/.test(parts[0] ?? "")
+  )
+    return undefined;
+  return parts[0];
 }
 
 export type InboxOAuthProvider = "gmail" | "outlook";
@@ -11,12 +59,13 @@ export function isInboxOAuthToken(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 }
 
-export function getInboxEmail(inboxId: string) {
-  if (process.env.NODE_ENV !== "production") {
-    return `${inboxId}@inbox.staging.midday.ai`;
-  }
-
-  return `${inboxId}@inbox.midday.ai`;
+export function getInboxEmail(
+  inboxId: string,
+  env?: InboxEnvironment,
+): string | null {
+  const domain = getInboxDomain(env);
+  if (!domain || !/^[a-zA-Z0-9_-]{1,64}$/.test(inboxId)) return null;
+  return `${inboxId}@${domain}`;
 }
 
 /**

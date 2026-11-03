@@ -35,6 +35,7 @@ Socket.prototype.connect = blockNetwork;
 
 let csv = "";
 let writeCount = 0;
+let storageReads = 0;
 let failAtWrite: number | undefined;
 const existingIds = new Map<string, string>();
 const insertedRows: UpsertTransactionData[] = [];
@@ -70,10 +71,13 @@ mock.module("@midday/job-client", () => ({
   },
 }));
 mock.module("@midday/supabase/job", () => ({
-  createClient: () => ({
+  createTeamClient: () => ({
     storage: {
       from: () => ({
-        download: async () => ({ data: new Blob([csv]), error: null }),
+        download: async () => {
+          storageReads++;
+          return { data: new Blob([csv]), error: null };
+        },
       }),
     },
   }),
@@ -104,11 +108,15 @@ function job(
     id: "fixture-import",
     name: "import-transactions",
     data: {
-      teamId: "team-1",
+      teamId: "00000000-0000-4000-8000-000000000001",
       bankAccountId: "bank-1",
       currency: "sek",
       inverted: false,
-      filePath: ["team-1", "imports", "fixture.csv"],
+      filePath: [
+        "00000000-0000-4000-8000-000000000001",
+        "imports",
+        "fixture.csv",
+      ],
       mappings: {
         date: "Date",
         amount: "Amount",
@@ -280,14 +288,14 @@ describe("real CSV import processor with local boundary fakes", () => {
         date: "2026-02-25",
         amount: "100.50",
         currency: "sek",
-        teamId: "team-1",
+        teamId: "00000000-0000-4000-8000-000000000001",
         bankAccountId: "bank-1",
         description: "Coffee Shop",
         counterparty: "Acme AB",
       },
       inverted: false,
     });
-    expect(legacy.internal_id).toBe("team-1_9b3c6bc88a31404768efa9f7");
+    expect(legacy.internal_id).toBe("00000000-0000-4000-8000-000000000001_9b3c6bc88a31404768efa9f7");
     existingIds.set(legacy.internal_id, randomUUID());
     csv = makeCsv([baseRow, baseRow]);
     expect(await bounded(processor.process(job()))).toEqual({
@@ -366,4 +374,29 @@ describe("real CSV import processor with local boundary fakes", () => {
     expect(writeCount).toBe(0);
     expect(followUps).toHaveLength(0);
   });
+});
+
+// These exercise the actual processor, with a deliberately unguarded Storage
+// stub: preflight must reject a poisoned queue payload before any IO/progress.
+describe("import file ownership preflight", () => {
+  for (const filePath of [
+    ["00000000-0000-4000-8000-000000000002", "imports", "private.csv"],
+    ["00000000-0000-4000-8000-000000000001", "..", "private.csv"],
+    ["00000000-0000-4000-8000-000000000001", "%2e%2e", "private.csv"],
+    ["00000000-0000-4000-8000-000000000001/imports", "private.csv"],
+  ]) {
+    test(`rejects invalid queued reference ${JSON.stringify(filePath)}`, async () => {
+      const readsBefore = storageReads;
+      const writesBefore = writeCount;
+      const progressBefore = progress.length;
+      const jobsBefore = followUps.length;
+      await expect(processor.process(job({ filePath }))).rejects.toThrow(
+        "Invalid storage key",
+      );
+      expect(storageReads).toBe(readsBefore);
+      expect(writeCount).toBe(writesBefore);
+      expect(progress).toHaveLength(progressBefore);
+      expect(followUps).toHaveLength(jobsBefore);
+    });
+  }
 });

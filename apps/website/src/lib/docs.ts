@@ -1,458 +1,165 @@
-import fs from "node:fs";
-import path from "node:path";
+import { site } from "@/lib/site";
 
-type DocMetadata = {
-  title: string;
-  description: string;
-  section?: string;
-  order?: number;
+const documents = {
+  introduction: {
+    title: "Start with your own records",
+    section: "Getting started",
+    description:
+      "Create a useful workspace without connecting external services.",
+    content:
+      "## Your first workspace\n\n1. Sign in with the account provided by your administrator.\n2. Check the workspace name and reporting currency in Settings.\n3. Add a customer, then create a draft invoice.\n4. Add a manual transaction or import a small CSV statement.\n5. Upload a supporting document and review an export.\n\n## Optional connections\n\nOpen Apps to see the capabilities configured for this installation. Banking, outbound email, online payments, AI and messaging integrations are optional. A disabled integration does not prevent manual record keeping.\n\nDo not enter real payment credentials into a sample or test environment.",
+  },
+  invoices: {
+    title: "Create and review invoices",
+    section: "Records",
+    description:
+      "Work from a draft through issue, delivery and payment status.",
+    content:
+      "## Prepare a draft\n\nOpen Invoices and choose Create new. Select a customer and check their billing details. Add line items, quantities, rates, tax, currency, issue date and due date.\n\n## Issue and deliver\n\nReview the preview before issuing the document. A PDF or customer link can be used independently of email. Outbound email and online payment require their own configured services.\n\n## Check the result\n\nUse the invoice record to confirm the current issue, delivery and payment state. A queued delivery is not evidence that a recipient received an email. If an operation fails or remains pending, keep its identifier when contacting support.\n\nDo not mark an invoice as paid unless the payment has been verified. Document requirements depend on your business and jurisdiction.",
+  },
+  transactions: {
+    title: "Manage transactions",
+    section: "Records",
+    description: "Create, classify and review financial records.",
+    content:
+      "## Add a transaction\n\nOpen Transactions and choose Add transaction. Choose the account, currency, amount and date. Use the sign convention shown by the form for money in and money out.\n\n## Review records\n\nAdd categories and tags, attach receipts and review imported values. Check filters before editing or exporting a selection.\n\n## Bank sync\n\nBank connections are available only when a provider is configured. Check the connection state and latest successful sync before treating a report as current. Manual entry and CSV import remain available.",
+  },
+  "csv-import": {
+    title: "Import a CSV statement",
+    section: "Records",
+    description:
+      "Map columns and validate a small sample before importing a statement.",
+    content:
+      "## Before import\n\nExport a CSV from your bank or existing ledger. Keep the original file. Check its delimiter, decimal format, date format and currency.\n\n## Import\n\n1. Open Transactions and choose Import CSV.\n2. Select or create the destination account.\n3. Upload the file and map the required columns.\n4. Review the preview, including dates and signed amounts.\n5. Submit the import and check the resulting records.\n\nIf the job fails, inspect its result before retrying the same statement. Do not assume a failed browser request means no records were created.",
+  },
+  customers: {
+    title: "Maintain customer records",
+    section: "Records",
+    description:
+      "Keep contact and billing details connected to invoices and projects.",
+    content:
+      "Open Customers and choose Add customer. Enter the name, contact details and billing address, then check currency and tax information before issuing a document.\n\nAutomatic enrichment is optional. Suggested business details are not verified legal or tax advice; review them before saving or using them on an invoice.\n\nUse the customer's invoice and project history to review work. Metric labels distinguish billed amounts from money received.",
+  },
+  "time-tracking": {
+    title: "Track time",
+    section: "Records",
+    description: "Use project timers and manual time entries.",
+    content:
+      "Create a project and assign the correct customer. Start a timer or enter a dated work session manually. Check the timezone, duration, rate and billable state.\n\nStop active timers before reviewing a period. Review rounding when turning tracked work into an invoice. Time totals and invoice amounts represent different quantities.\n\nOn a phone, wide tables scroll inside their table region so actions remain reachable.",
+  },
+  documents: {
+    title: "Store supporting documents",
+    section: "Records",
+    description:
+      "Upload originals, review metadata and connect files to records.",
+    content:
+      "Open Vault and upload a supported file. Review its name and metadata after upload. Attach supporting evidence to the relevant transaction or invoice.\n\nOriginal storage and automatic document extraction are separate capabilities. If an extraction provider is unavailable, a file can still be stored without promising extracted fields.\n\nUse the application's download controls. File URLs and exported archives can grant access to financial data; share them only with the intended recipients.",
+  },
+  receipts: {
+    title: "Collect receipts in Inbox",
+    section: "Records",
+    description:
+      "Upload receipts directly or use a configured email or messaging connection.",
+    content:
+      "## Direct upload\n\nOpen Inbox and upload a receipt. Review the file and suggested information before matching it to a transaction.\n\n## Email forwarding\n\nUse only the forwarding address displayed by this installation. If no address is shown, forwarding is not configured. Do not send AGSaaS documents to an address belonging to another product.\n\n## Connected inboxes\n\nGmail and Outlook Inbox integrations are separate from AI tools with the same brand names. Use the Inbox integration for receipt import. Review connection status, then disconnect it when access is no longer needed.",
+  },
+  reports: {
+    title: "Interpret reports",
+    section: "Review and export",
+    description: "Check the period, currency and reporting basis.",
+    content:
+      "Open Reports and select the intended period and currency. Read the metric definition before comparing totals: issued revenue, paid amounts, net and gross amounts can differ.\n\nCheck the underlying records and connection freshness. An empty workspace is not evidence of zero business activity.\n\nWhen sharing a report, review the selected data, link expiry and access. Revoke a link if it is no longer needed. Treat live reports and fixed snapshots according to the label shown by the application.",
+  },
+  exports: {
+    title: "Export and verify records",
+    section: "Review and export",
+    description: "Confirm archive completeness before handing off records.",
+    content:
+      "Select the intended records or workspace export and start the job. Wait for the final result. A pending, failed or partial export should not be treated as complete.\n\nDownload the archive and keep its manifest. Check the selected period, counts and any missing-file warnings. Verify important financial totals against the source records before handing them to an accountant.\n\nStore exported financial data securely. An export is a data handoff; operational backups and restore procedures are managed separately by the installation administrator.",
+  },
+  security: {
+    title: "Account and access security",
+    section: "Administration",
+    description:
+      "Manage sessions, multi-factor authentication and scoped access.",
+    content:
+      "Use a strong unique password and enable an authenticator in Account → Security. Complete verification before leaving the setup flow.\n\nKeep access tokens private. Create tokens with only the permissions required for a task, and revoke access when it is no longer needed.\n\nWorkspace membership, roles and token scopes apply to records and files. A missing permission is not resolved by using a direct file or API URL.\n\nPassword recovery depends on configured authentication email. If recovery is unavailable, contact the installation administrator through a known channel.",
+  },
+  integrations: {
+    title: "Connect optional services",
+    section: "Administration",
+    description: "Distinguish product integrations from AI tools.",
+    content:
+      "Open Apps to check which services are configured. A disabled Install button means the installation is not ready for that service.\n\nGmail and Outlook Inbox connections import receipts. Stripe Payments handles customer invoice payments. AI tools are separate connections for assistant actions and have a different scope.\n\nUse the authorization flow opened by this workspace. Check the account and permissions before granting access. After connecting, confirm the displayed status. Disconnect from the workspace when access is no longer required.",
+  },
+  billing: {
+    title: "Workspace billing",
+    section: "Administration",
+    description: "Check the billing options enabled by the operator.",
+    content:
+      "Open Settings → Billing. If subscriptions are not enabled, the workspace shows its self-hosted billing state and no purchase is offered.\n\nWorkspace subscriptions and customer invoice payments are separate systems. Paying for workspace access does not configure your business's payment account.\n\nPublic plans, taxes, refund terms and commercial signup require approved operator configuration.",
+  },
+  developer: {
+    title: "API and MCP access",
+    section: "Administration",
+    description:
+      "Use the endpoints and access controls of your own installation.",
+    content:
+      "Open Developer settings to manage scoped access. The API base URL for this installation is:\n\n`{{API_URL}}`\n\nOpenAPI description: [this installation's API]({{API_URL}}/openapi).\n\nThe remote MCP endpoint is:\n\n`{{API_URL}}/mcp`\n\nUse a client compatible with the deployed transport and authorization flow. Select the correct account and team during authorization. Do not reuse an upstream Midday account or endpoint for AGSaaS.",
+  },
+  support: {
+    title: "Get help with an operation",
+    section: "Administration",
+    description: "Keep useful details without disclosing secrets.",
+    content:
+      "Open Account → Support or use the contact provided by your administrator.\n\nInclude the screen or operation, the time, the expected result, the visible error and the operation ID if one is shown. Avoid sending access tokens, passwords, complete bank statements or unrelated customer data.\n\nIf a payment or delivery has an uncertain result, verify its state before retrying. A visible success message must refer to a confirmed result, not merely a submitted request.",
+  },
 };
-
-type DocSection = {
-  title: string;
-  slug: string;
-  docs: Array<{
-    slug: string;
-    title: string;
-    description: string;
-    order: number;
-  }>;
+const aliases: Record<string, keyof typeof documents> = {
+  "getting-started": "introduction",
+  "connect-bank": "transactions",
+  invoicing: "invoices",
+  "assistant-mcp": "developer",
+  api: "developer",
+  vault: "documents",
+  inbox: "receipts",
 };
-
-function parseFrontmatter(fileContent: string) {
-  const frontmatterRegex = /---\s*([\s\S]*?)\s*---/;
-  const match = frontmatterRegex.exec(fileContent);
-  const frontMatterBlock = match?.[1];
-  const content = fileContent.replace(frontmatterRegex, "").trim();
-  const frontMatterLines = frontMatterBlock?.trim().split("\n") || [];
-  const metadata: Partial<DocMetadata> = {};
-
-  for (const line of frontMatterLines) {
-    const [key, ...valueArr] = line.split(": ");
-    if (key) {
-      let value = valueArr.join(": ").trim();
-      value = value.replace(/^['"](.*)['"]$/, "$1");
-      const trimmedKey = key.trim();
-      if (trimmedKey === "order") {
-        metadata.order = Number.parseInt(value, 10);
-      } else if (
-        trimmedKey === "title" ||
-        trimmedKey === "description" ||
-        trimmedKey === "section"
-      ) {
-        metadata[trimmedKey] = value;
-      }
-    }
-  }
-
-  return { metadata: metadata as DocMetadata, content };
+export function getAllDocSlugs() {
+  return Object.keys(documents);
 }
-
-function getMDXFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-  return fs.readdirSync(dir).filter((file) => path.extname(file) === ".mdx");
-}
-
-function readMDXFile(filePath: string) {
-  const rawContent = fs.readFileSync(filePath, "utf-8");
-  return parseFrontmatter(rawContent);
-}
-
-export function getDocsData() {
-  const docsDir = path.join(process.cwd(), "src", "app", "docs", "content");
-
-  if (!fs.existsSync(docsDir)) {
-    return [];
-  }
-
-  const mdxFiles = getMDXFiles(docsDir);
-  return mdxFiles.map((file) => {
-    const { metadata, content } = readMDXFile(path.join(docsDir, file));
-    const slug = path.basename(file, path.extname(file));
-
-    return {
-      metadata,
-      slug,
-      content,
-    };
-  });
-}
-
 export function getDocBySlug(slug: string) {
-  const docsDir = path.join(process.cwd(), "src", "app", "docs", "content");
-  const filePath = path.join(docsDir, `${slug}.mdx`);
-
-  if (!fs.existsSync(filePath)) {
-    return null;
-  }
-
-  const { metadata, content } = readMDXFile(filePath);
+  const key = Object.hasOwn(documents, slug)
+    ? (slug as keyof typeof documents)
+    : aliases[slug];
+  if (!key) return null;
+  const doc = documents[key];
   return {
-    metadata,
-    slug,
-    content,
+    slug: key,
+    metadata: {
+      title: doc.title,
+      description: doc.description,
+      section: doc.section,
+      order: Object.keys(documents).indexOf(key),
+    },
+    content: doc.content
+      .replaceAll("{{API_URL}}", site.apiUrl)
+      .replaceAll("{{DASHBOARD_URL}}", site.dashboardUrl),
   };
 }
-
-export function getAllDocSlugs(): string[] {
-  const docsDir = path.join(process.cwd(), "src", "app", "docs", "content");
-
-  if (!fs.existsSync(docsDir)) {
-    return [];
-  }
-
-  const mdxFiles = getMDXFiles(docsDir);
-  return mdxFiles.map((file) => path.basename(file, path.extname(file)));
+export function getDocsData() {
+  return getAllDocSlugs().map((slug) => getDocBySlug(slug)!);
 }
-
-// Navigation structure for the sidebar
-export const docsNavigation: DocSection[] = [
-  {
-    title: "Getting Started",
-    slug: "getting-started",
-    docs: [
-      {
-        slug: "introduction",
-        title: "Introduction",
-        description: "What is Midday?",
-        order: 1,
-      },
-      {
-        slug: "quick-start",
-        title: "Quick Start",
-        description: "Get running in 5 minutes",
-        order: 2,
-      },
-      {
-        slug: "desktop-app",
-        title: "Desktop App",
-        description: "Native macOS & Windows app",
-        order: 3,
-      },
-      {
-        slug: "troubleshooting",
-        title: "Troubleshooting",
-        description: "Common issues & FAQ",
-        order: 4,
-      },
-    ],
-  },
-  {
-    title: "Banking",
-    slug: "banking",
-    docs: [
-      {
-        slug: "connect-bank-account",
-        title: "Connect Bank",
-        description: "Link your bank accounts",
-        order: 1,
-      },
-      {
-        slug: "import-transactions-csv",
-        title: "Import CSV",
-        description: "Import from any source",
-        order: 2,
-      },
-      {
-        slug: "auto-categorization",
-        title: "Categorization",
-        description: "Automatic categories",
-        order: 3,
-      },
-      {
-        slug: "categories-reference",
-        title: "Categories Reference",
-        description: "All categories explained",
-        order: 4,
-      },
-      {
-        slug: "use-tags",
-        title: "Tags",
-        description: "Organize transactions",
-        order: 5,
-      },
-      {
-        slug: "account-settings",
-        title: "Account Settings",
-        description: "Manage bank accounts",
-        order: 6,
-      },
-      {
-        slug: "multi-currency",
-        title: "Multi-Currency",
-        description: "Multiple currencies & exchange",
-        order: 7,
-      },
-    ],
-  },
-  {
-    title: "Receipts & Inbox",
-    slug: "inbox",
-    docs: [
-      {
-        slug: "receipt-matching",
-        title: "Receipt Matching",
-        description: "AI-powered matching",
-        order: 1,
-      },
-      {
-        slug: "forward-receipts-email",
-        title: "Email Forwarding",
-        description: "Forward receipts",
-        order: 2,
-      },
-      {
-        slug: "connect-gmail",
-        title: "Gmail",
-        description: "Auto-capture from Gmail",
-        order: 3,
-      },
-      {
-        slug: "connect-outlook",
-        title: "Outlook",
-        description: "Auto-capture from Outlook",
-        order: 4,
-      },
-      {
-        slug: "connect-slack",
-        title: "Slack",
-        description: "Share from Slack",
-        order: 5,
-      },
-    ],
-  },
-  {
-    title: "Vault",
-    slug: "vault",
-    docs: [
-      {
-        slug: "vault-file-storage",
-        title: "File Storage",
-        description: "Store documents",
-        order: 1,
-      },
-    ],
-  },
-  {
-    title: "Invoicing",
-    slug: "invoicing",
-    docs: [
-      {
-        slug: "create-invoice",
-        title: "Create Invoice",
-        description: "Send professional invoices",
-        order: 1,
-      },
-      {
-        slug: "customize-invoice-template",
-        title: "Templates",
-        description: "Brand your invoices",
-        order: 2,
-      },
-      {
-        slug: "set-up-recurring-invoice",
-        title: "Recurring",
-        description: "Automate billing",
-        order: 3,
-      },
-      {
-        slug: "accept-online-payments",
-        title: "Online Payments",
-        description: "Accept card payments",
-        order: 4,
-      },
-      {
-        slug: "track-invoice-status",
-        title: "Track Status",
-        description: "Payment tracking",
-        order: 5,
-      },
-      {
-        slug: "invoice-settings",
-        title: "Invoice Settings",
-        description: "Configure invoices",
-        order: 6,
-      },
-    ],
-  },
-  {
-    title: "Time Tracking",
-    slug: "time-tracking",
-    docs: [
-      {
-        slug: "create-project",
-        title: "Projects",
-        description: "Set up projects",
-        order: 1,
-      },
-      {
-        slug: "track-time-timer",
-        title: "Track Time",
-        description: "Timer and entries",
-        order: 2,
-      },
-      {
-        slug: "invoice-tracked-time",
-        title: "Bill Time",
-        description: "Turn time into invoices",
-        order: 3,
-      },
-    ],
-  },
-  {
-    title: "Customers",
-    slug: "customers",
-    docs: [
-      {
-        slug: "add-customer",
-        title: "Add Customer",
-        description: "Create customer profiles",
-        order: 1,
-      },
-      {
-        slug: "customer-portal",
-        title: "Customer Portal",
-        description: "Self-serve access",
-        order: 2,
-      },
-    ],
-  },
-  {
-    title: "Reports",
-    slug: "reports",
-    docs: [
-      {
-        slug: "understanding-metrics",
-        title: "Understanding Metrics",
-        description: "How metrics work",
-        order: 1,
-      },
-      {
-        slug: "view-revenue-profit",
-        title: "Revenue & Profit",
-        description: "Track your income",
-        order: 2,
-      },
-      {
-        slug: "check-runway",
-        title: "Runway",
-        description: "Cash runway analysis",
-        order: 3,
-      },
-      {
-        slug: "view-burn-rate",
-        title: "Burn Rate",
-        description: "Monthly spending",
-        order: 4,
-      },
-      {
-        slug: "share-report",
-        title: "Share Reports",
-        description: "Share with others",
-        order: 5,
-      },
-    ],
-  },
-  {
-    title: "Export & Integrations",
-    slug: "export",
-    docs: [
-      {
-        slug: "apps-overview",
-        title: "Apps Overview",
-        description: "All integrations",
-        order: 1,
-      },
-      {
-        slug: "export-transactions-csv",
-        title: "Export CSV",
-        description: "Download transactions",
-        order: 2,
-      },
-      {
-        slug: "connect-xero",
-        title: "Xero",
-        description: "Export to Xero",
-        order: 3,
-      },
-      {
-        slug: "connect-quickbooks",
-        title: "QuickBooks",
-        description: "Export to QuickBooks",
-        order: 4,
-      },
-      {
-        slug: "connect-fortnox",
-        title: "Fortnox",
-        description: "Export to Fortnox",
-        order: 5,
-      },
-    ],
-  },
-  {
-    title: "Assistant",
-    slug: "assistant",
-    docs: [
-      {
-        slug: "using-assistant",
-        title: "Using Assistant",
-        description: "Ask Midday anything",
-        order: 1,
-      },
-      {
-        slug: "assistant-mcp",
-        title: "AI Tools (MCP)",
-        description: "Cursor, Claude, ChatGPT",
-        order: 2,
-      },
-      {
-        slug: "assistant-connectors",
-        title: "Connected Apps",
-        description: "Gmail, Slack, Calendar & more",
-        order: 3,
-      },
-    ],
-  },
-  {
-    title: "Team & Settings",
-    slug: "team",
-    docs: [
-      {
-        slug: "invite-team-member",
-        title: "Team Members",
-        description: "Add your team",
-        order: 1,
-      },
-      {
-        slug: "notification-settings",
-        title: "Notifications",
-        description: "Configure alerts",
-        order: 2,
-      },
-      {
-        slug: "manage-subscription",
-        title: "Billing",
-        description: "Manage subscription",
-        order: 3,
-      },
-    ],
-  },
-  {
-    title: "Developer",
-    slug: "developer",
-    docs: [
-      {
-        slug: "api-reference",
-        title: "API Reference",
-        description: "REST API docs",
-        order: 1,
-      },
-    ],
-  },
-];
-
-export function getDocNavigation() {
-  return docsNavigation;
-}
+export const docsNavigation = [
+  ...new Set(Object.values(documents).map((doc) => doc.section)),
+].map((section, index) => ({
+  title: section,
+  slug: `section-${index}`,
+  docs: getDocsData()
+    .filter((doc) => doc.metadata.section === section)
+    .map((doc) => ({
+      slug: doc.slug,
+      title: doc.metadata.title,
+      description: doc.metadata.description,
+      order: doc.metadata.order,
+    })),
+}));

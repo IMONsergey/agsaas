@@ -1,23 +1,27 @@
 {
-  "name": "@midday/utils",
-  "version": "1.0.0",
+  "devDependencies": {
+    "typescript": "catalog:"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./data-freshness": "./src/data-freshness.ts",
+    "./envs": "./src/envs.ts",
+    "./format": "./src/format.ts",
+    "./sanitize-redirect": "./src/sanitize-redirect.ts",
+    "./storage-path": "./src/storage-path.ts",
+    "./tax": "./src/tax.ts",
+    "./receipt-path": "./src/receipt-path.ts",
+    "./operation-context": "./src/operation-context.ts"
+  },
   "main": "src/index.ts",
+  "name": "@midday/utils",
   "private": true,
-  "sideEffects": false,
   "scripts": {
     "clean": "rm -rf .turbo node_modules",
     "lint": "biome check .",
     "lint:fix": "biome format --write .",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": {
-    "typescript": "catalog:"
-  },
-  "exports": {
-    ".": "./src/index.ts",
-    "./envs": "./src/envs.ts",
-    "./format": "./src/format.ts",
-    "./sanitize-redirect": "./src/sanitize-redirect.ts",
-    "./tax": "./src/tax.ts"
-  }
+  "sideEffects": false,
+  "version": "1.0.0"
 }

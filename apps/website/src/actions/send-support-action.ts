@@ -1,62 +1,38 @@
 "use server";
-
-import { PlainClient } from "@team-plain/typescript-sdk";
+import { serverApiOrigin } from "@/lib/server-api";
 import { actionClient } from "./safe-action";
 import { sendSupportSchema } from "./schema";
 
-const client = new PlainClient({
-  apiKey: process.env.PLAIN_API_KEY!,
-});
-
-const mapToPriorityNumber = (priority: string) => {
-  switch (priority) {
-    case "low":
-      return 0;
-    case "normal":
-      return 1;
-    case "high":
-      return 2;
-    case "urgent":
-      return 3;
-    default:
-      return 1;
-  }
-};
-
 export const sendSupportAction = actionClient
   .schema(sendSupportSchema)
-  .action(async ({ parsedInput: data }) => {
-    const customer = await client.upsertCustomer({
-      identifier: {
-        emailAddress: data.email,
+  .action(async ({ parsedInput }) => {
+    const key = process.env.AGSAAS_SUPPORT_INGEST_KEY?.trim();
+    if (!key || key.length < 32)
+      throw new Error(
+        "Support messaging is not configured. Contact your workspace administrator.",
+      );
+    const response = await fetch(`${serverApiOrigin()}/support/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
       },
-      onCreate: {
-        fullName: data.fullName,
-        email: {
-          email: data.email,
-          isVerified: true,
-        },
-      },
-      onUpdate: {},
+      body: JSON.stringify(parsedInput),
+      signal: AbortSignal.timeout(10000),
+      cache: "no-store",
+      redirect: "error",
     });
-
-    const response = await client.createThread({
-      title: data.subject,
-      description: data.message,
-      priority: mapToPriorityNumber(data.priority),
-      customerIdentifier: {
-        customerId: customer.data?.customer.id,
-      },
-      // Support
-      labelTypeIds: ["lt_01HV93FQT6NSC1EN2HHA6BG9WK"],
-      components: [
-        {
-          componentText: {
-            text: data.message,
-          },
-        },
-      ],
-    });
-
-    return response;
+    if (!response.ok)
+      throw new Error(
+        response.status === 429
+          ? "Too many requests. Please try later."
+          : "Receipt could not be confirmed. Your text is preserved; retry with the same reference.",
+      );
+    const receipt = (await response.json()) as {
+      id?: unknown;
+      accepted?: unknown;
+    };
+    if (receipt.id !== parsedInput.requestId || receipt.accepted !== true)
+      throw new Error("Receipt could not be confirmed. Please retry.");
+    return { ticketId: parsedInput.requestId, accepted: true };
   });

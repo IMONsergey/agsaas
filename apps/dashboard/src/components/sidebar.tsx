@@ -35,6 +35,11 @@ export function Sidebar() {
       )}
       onMouseEnter={() => setIsExpanded(true)}
       onMouseLeave={() => setIsExpanded(false)}
+      onFocusCapture={() => setIsExpanded(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setIsExpanded(false);
+      }}
     >
       <div
         className={cn(
@@ -42,7 +47,11 @@ export function Sidebar() {
           isExpanded ? "w-full" : "w-[69px]",
         )}
       >
-        <Link href="/" className="absolute left-[22px] transition-none">
+        <Link
+          href="/"
+          aria-label="AGSaaS overview"
+          className="absolute left-[22px] transition-none"
+        >
           <Icons.LogoSmall />
         </Link>
       </div>

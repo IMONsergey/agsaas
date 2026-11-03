@@ -1,5 +1,7 @@
 import {
   createReportSchema,
+  listSharedReportsSchema,
+  revokeSharedReportSchema,
   getAccountBalancesSchema,
   getBurnRateSchema,
   getChartDataByLinkIdSchema,
@@ -15,6 +17,7 @@ import {
 import {
   createTRPCRouter,
   protectedProcedure,
+  ownerProcedure,
   publicProcedure,
 } from "@api/trpc/init";
 import {
@@ -24,6 +27,8 @@ import {
 } from "@midday/db/errors";
 import {
   createReport,
+  listSharedReports,
+  revokeSharedReport,
   getBurnRate,
   getCashBalance,
   getChartDataByLinkId,
@@ -146,7 +151,7 @@ export const reportsRouter = createTRPCRouter({
       };
     }),
 
-  create: protectedProcedure
+  create: ownerProcedure
     .input(createReportSchema)
     .mutation(async ({ ctx: { db, teamId, session }, input }) => {
       const result = await createReport(db, {
@@ -157,12 +162,35 @@ export const reportsRouter = createTRPCRouter({
         teamId: teamId!,
         createdBy: session.user.id,
         expireAt: input.expireAt,
+        revenueType: input.revenueType,
+        forecastMonths: input.forecastMonths,
       });
 
       return {
         ...result,
         shortUrl: `${process.env.MIDDAY_DASHBOARD_URL}/r/${result?.linkId}`,
       };
+    }),
+
+  listShared: protectedProcedure
+    .input(listSharedReportsSchema)
+    .query(({ ctx: { db, teamId }, input }) =>
+      listSharedReports(db, { ...input, teamId: teamId! }),
+    ),
+
+  revoke: ownerProcedure
+    .input(revokeSharedReportSchema)
+    .mutation(async ({ ctx: { db, teamId }, input }) => {
+      const result = await revokeSharedReport(db, {
+        id: input.id,
+        teamId: teamId!,
+      });
+      if (!result)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Shared report not found",
+        });
+      return result;
     }),
 
   getByLinkId: publicProcedure

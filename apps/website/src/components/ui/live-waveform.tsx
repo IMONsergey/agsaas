@@ -293,7 +293,7 @@ export const LiveWaveform = ({
             const dataIndex = Math.floor((i / halfCount) * relevantData.length);
             const value = Math.min(
               1,
-              (relevantData[dataIndex] / 255) * sensitivity,
+              ((relevantData[dataIndex] ?? 0) / 255) * sensitivity,
             );
             newBars.push(Math.max(0.05, value));
           }
@@ -302,7 +302,7 @@ export const LiveWaveform = ({
             const dataIndex = Math.floor((i / halfCount) * relevantData.length);
             const value = Math.min(
               1,
-              (relevantData[dataIndex] / 255) * sensitivity,
+              ((relevantData[dataIndex] ?? 0) / 255) * sensitivity,
             );
             newBars.push(Math.max(0.05, value));
           }

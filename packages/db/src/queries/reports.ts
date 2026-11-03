@@ -16,6 +16,7 @@ import {
 } from "date-fns";
 import {
   and,
+  desc,
   eq,
   gt,
   gte,
@@ -31,11 +32,7 @@ import {
 } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Database, DatabaseOrTransaction } from "../client";
-import {
-  InvalidReportTypeError,
-  ReportExpiredError,
-  ReportNotFoundError,
-} from "../errors";
+import { InvalidReportTypeError, ReportNotFoundError } from "../errors";
 import {
   bankAccounts,
   exchangeRates,
@@ -63,6 +60,7 @@ const teamCurrencyCache = new Map<
   { currency: string | null; timestamp: number }
 >();
 const CACHE_TTL = 5 * 60 * 1000;
+const immutableReportReads = new WeakSet<object>();
 
 const cogsSlugsCache = new Map<
   string,
@@ -73,7 +71,9 @@ async function getCogsCategorySlugs(
   db: Database,
   teamId: string,
 ): Promise<string[]> {
-  const cached = cogsSlugsCache.get(teamId);
+  const cached = immutableReportReads.has(db)
+    ? undefined
+    : cogsSlugsCache.get(teamId);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.slugs;
   }
@@ -109,7 +109,8 @@ async function getCogsCategorySlugs(
     slugs = children.map((c) => c.slug).filter((s): s is string => s !== null);
   }
 
-  cogsSlugsCache.set(teamId, { slugs, timestamp: Date.now() });
+  if (!immutableReportReads.has(db))
+    cogsSlugsCache.set(teamId, { slugs, timestamp: Date.now() });
   return slugs;
 }
 
@@ -121,7 +122,9 @@ async function getTargetCurrency(
   if (inputCurrency) return inputCurrency;
 
   // Check cache
-  const cached = teamCurrencyCache.get(teamId);
+  const cached = immutableReportReads.has(db)
+    ? undefined
+    : teamCurrencyCache.get(teamId);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.currency;
   }
@@ -134,7 +137,8 @@ async function getTargetCurrency(
     .limit(1);
 
   const currency = team[0]?.baseCurrency || null;
-  teamCurrencyCache.set(teamId, { currency, timestamp: Date.now() });
+  if (!immutableReportReads.has(db))
+    teamCurrencyCache.set(teamId, { currency, timestamp: Date.now() });
 
   return currency;
 }
@@ -4119,51 +4123,113 @@ export type CreateReportParams = {
   from: string;
   to: string;
   currency?: string;
+  revenueType?: "net" | "gross";
+  forecastMonths?: number;
   teamId: string;
   createdBy: string;
   expireAt?: string;
 };
 
+type SharedChartParams = Pick<
+  CreateReportParams,
+  | "type"
+  | "teamId"
+  | "from"
+  | "to"
+  | "currency"
+  | "revenueType"
+  | "forecastMonths"
+>;
+
+/** New public links are immutable; existing rows remain explicitly live. */
 export async function createReport(db: Database, params: CreateReportParams) {
-  const { type, from, to, currency, teamId, createdBy, expireAt } = params;
-  const linkId = nanoid(21);
-
-  const [result] = await db
-    .insert(reports)
-    .values({
-      linkId,
-      type,
-      from,
-      to,
-      currency,
-      teamId,
-      createdBy,
-      expireAt,
-    })
-    .returning({
-      id: reports.id,
-      linkId: reports.linkId,
-      type: reports.type,
-      from: reports.from,
-      to: reports.to,
-      currency: reports.currency,
-      createdAt: reports.createdAt,
-      expireAt: reports.expireAt,
-    });
-
-  return result;
+  // biome-ignore lint/correctness/useHookAtTopLevel: Database routing, not React.
+  return db.usePrimaryOnly().transaction(
+    async (tx) => {
+      immutableReportReads.add(tx);
+      const { type, from, to, teamId, createdBy, expireAt } = params;
+      const [team] = await tx
+        .select({ baseCurrency: teams.baseCurrency })
+        .from(teams)
+        .where(eq(teams.id, teamId));
+      const currency = params.currency ?? team?.baseCurrency ?? "USD";
+      const revenueType = params.revenueType ?? "net";
+      const forecastMonths = params.forecastMonths ?? 6;
+      const clock = await tx.execute<{ at: string }>(
+        sql`select transaction_timestamp()::text as at`,
+      );
+      const snapshotAt = new Date(clock.rows[0]!.at).toISOString();
+      const chart = await calculateSharedChart(tx as unknown as Database, {
+        type,
+        from,
+        to,
+        teamId,
+        currency,
+        revenueType,
+        forecastMonths,
+      });
+      const [result] = await tx
+        .insert(reports)
+        .values({
+          linkId: nanoid(21),
+          type,
+          from,
+          to,
+          currency,
+          teamId,
+          createdBy,
+          expireAt,
+          revenueType,
+          forecastMonths,
+          mode: "snapshot",
+          snapshotAt,
+          chartSnapshot: {
+            version: 1,
+            source: "reports-calculation-v1",
+            chart,
+          },
+        })
+        .returning({
+          id: reports.id,
+          linkId: reports.linkId,
+          type: reports.type,
+          from: reports.from,
+          to: reports.to,
+          currency: reports.currency,
+          revenueType: reports.revenueType,
+          mode: reports.mode,
+          snapshotAt: reports.snapshotAt,
+          createdAt: reports.createdAt,
+          expireAt: reports.expireAt,
+        });
+      return result;
+    },
+    { isolationLevel: "repeatable read" },
+  );
 }
 
+function activeReport(linkId: string) {
+  return and(
+    eq(reports.linkId, linkId),
+    isNull(reports.revokedAt),
+    or(isNull(reports.expireAt), gt(reports.expireAt, sql`clock_timestamp()`)),
+  );
+}
+
+/** Public DTO intentionally contains no tenant or creator IDs. Expiry applies to metadata too. */
 export async function getReportByLinkId(db: Database, linkId: string) {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Immediate revocation requires primary reads.
   const [result] = await db
+    .usePrimaryOnly()
     .select({
-      id: reports.id,
       linkId: reports.linkId,
       type: reports.type,
       from: reports.from,
       to: reports.to,
       currency: reports.currency,
-      teamId: reports.teamId,
+      revenueType: reports.revenueType,
+      mode: reports.mode,
+      snapshotAt: reports.snapshotAt,
       createdAt: reports.createdAt,
       expireAt: reports.expireAt,
       teamName: teams.name,
@@ -4171,31 +4237,114 @@ export async function getReportByLinkId(db: Database, linkId: string) {
     })
     .from(reports)
     .leftJoin(teams, eq(reports.teamId, teams.id))
-    .where(eq(reports.linkId, linkId))
+    .where(activeReport(linkId))
     .limit(1);
-
   return result;
 }
 
 export async function getChartDataByLinkId(db: Database, linkId: string) {
-  // First, validate the linkId and get the report
-  const report = await getReportByLinkId(db, linkId);
-
-  if (!report) {
-    throw new ReportNotFoundError();
+  // biome-ignore lint/correctness/useHookAtTopLevel: Immediate revocation requires primary reads.
+  const [report] = await db
+    .usePrimaryOnly()
+    .select()
+    .from(reports)
+    .where(activeReport(linkId))
+    .limit(1);
+  if (!report) throw new ReportNotFoundError();
+  if (report.mode === "snapshot") {
+    const snapshot = report.chartSnapshot as {
+      version?: number;
+      chart?: unknown;
+    } | null;
+    const chart = snapshot?.chart as
+      | { type?: string; data?: unknown }
+      | undefined;
+    const expectedType =
+      report.type === "monthly_revenue" ? "revenue" : report.type;
+    if (
+      snapshot?.version !== 1 ||
+      !chart ||
+      chart.type !== expectedType ||
+      chart.data == null
+    )
+      throw new ReportNotFoundError();
+    return snapshot.chart as Awaited<ReturnType<typeof calculateSharedChart>>;
   }
+  return calculateSharedChart(db, {
+    teamId: report.teamId!,
+    from: report.from!,
+    to: report.to!,
+    type: report.type!,
+    currency: report.currency ?? "USD",
+    revenueType: report.revenueType,
+    forecastMonths: report.forecastMonths,
+  });
+}
 
-  // Check if report has expired
-  if (report.expireAt && new Date(report.expireAt) < new Date()) {
-    throw new ReportExpiredError();
-  }
+export async function listSharedReports(
+  db: Database,
+  input: {
+    teamId: string;
+    type?: ReportType;
+    pageSize?: number;
+    offset?: number;
+  },
+) {
+  const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 20));
+  // biome-ignore lint/correctness/useHookAtTopLevel: Owner management reads current revocation state.
+  const rows = await db
+    .usePrimaryOnly()
+    .select({
+      id: reports.id,
+      linkId: reports.linkId,
+      type: reports.type,
+      from: reports.from,
+      to: reports.to,
+      currency: reports.currency,
+      revenueType: reports.revenueType,
+      mode: reports.mode,
+      snapshotAt: reports.snapshotAt,
+      createdAt: reports.createdAt,
+      expireAt: reports.expireAt,
+      revokedAt: reports.revokedAt,
+    })
+    .from(reports)
+    .where(
+      and(
+        eq(reports.teamId, input.teamId),
+        input.type ? eq(reports.type, input.type) : undefined,
+      ),
+    )
+    .orderBy(desc(reports.createdAt), desc(reports.id))
+    .limit(pageSize + 1)
+    .offset(Math.max(0, input.offset ?? 0));
+  return { data: rows.slice(0, pageSize), hasNextPage: rows.length > pageSize };
+}
 
-  const teamId = report.teamId!;
-  const from = report.from!;
-  const to = report.to!;
-  const currency = report.currency || "USD";
-  const type = report.type!;
+export async function revokeSharedReport(
+  db: Database,
+  input: { id: string; teamId: string },
+) {
+  // biome-ignore lint/correctness/useHookAtTopLevel: Revocation is a primary write.
+  const [result] = await db
+    .usePrimaryOnly()
+    .update(reports)
+    .set({ revokedAt: sql`coalesce(${reports.revokedAt}, clock_timestamp())` })
+    .where(and(eq(reports.id, input.id), eq(reports.teamId, input.teamId)))
+    .returning({ id: reports.id, revokedAt: reports.revokedAt });
+  return result;
+}
 
+async function calculateSharedChart(db: Database, params: SharedChartParams) {
+  const {
+    teamId,
+    from,
+    to,
+    type,
+    revenueType = "net",
+    forecastMonths = 6,
+  } = params;
+  const currency = params.currency ?? "USD";
   // Fetch chart data based on report type
   switch (type) {
     case "burn_rate":
@@ -4213,7 +4362,7 @@ export async function getChartDataByLinkId(db: Database, linkId: string) {
           to,
           currency,
           type: "revenue",
-          revenueType: "net",
+          revenueType,
         }),
       };
     case "profit":
@@ -4225,7 +4374,7 @@ export async function getChartDataByLinkId(db: Database, linkId: string) {
           to,
           currency,
           type: "profit",
-          revenueType: "net",
+          revenueType,
         }),
       };
     case "expense":
@@ -4240,9 +4389,9 @@ export async function getChartDataByLinkId(db: Database, linkId: string) {
           teamId,
           from,
           to,
-          forecastMonths: 6,
+          forecastMonths,
           currency,
-          revenueType: "net",
+          revenueType,
         }),
       };
     case "runway": {

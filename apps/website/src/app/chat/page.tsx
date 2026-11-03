@@ -1,26 +1,33 @@
-import { Chat } from "@/components/chat";
+import { InformationPage } from "@/components/information-page";
 import { createPageMetadata } from "@/lib/metadata";
-
+import { workspaceUrl } from "@/lib/site";
 export const metadata = createPageMetadata({
-  title: "Run your business from iMessage, WhatsApp, Slack & Telegram",
+  title: "Messaging connections",
   description:
-    "Get invoices paid, track time, manage expenses — right from iMessage, WhatsApp, Slack, or Telegram. Run your business from any chat app.",
+    "Receipt capture through chat is optional and must use this installation's configured bot.",
   path: "/chat",
-  og: {
-    title: "Chat",
-    description: "Run your business from any messaging app",
-  },
-  keywords: [
-    "iMessage business",
-    "WhatsApp invoicing",
-    "Slack time tracking",
-    "Telegram bookkeeping",
-    "chat assistant",
-    "conversational finance",
-    "business messaging",
-  ],
 });
-
 export default function Page() {
-  return <Chat />;
+  return (
+    <InformationPage
+      title="Messaging connections"
+      intro="Receipt capture through chat is optional and must use this installation's configured bot."
+    >
+      <p>
+        Check Apps in your workspace for the available Slack, Telegram, WhatsApp
+        and iMessage connections. Pairing and connection status are specific to
+        your user and team.
+      </p>
+      <a
+        href={workspaceUrl("/apps")}
+        className="inline-block border border-border px-5 py-3"
+      >
+        Check messaging apps
+      </a>
+      <p>
+        You can upload receipts directly to Inbox without connecting a messaging
+        provider.
+      </p>
+    </InformationPage>
+  );
 }

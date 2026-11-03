@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const financialJobQueues = {
   "generate-invoice": "invoices",
+  "send-invoice-email": "invoices",
   "enrich-transactions": "transactions",
   "match-transactions-bidirectional": "inbox",
   notification: "notifications",

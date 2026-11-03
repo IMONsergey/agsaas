@@ -108,7 +108,10 @@ export function Apps() {
 
     return {
       id: app.id,
-      name: app.name,
+      name:
+        app.id === "gmail" || app.id === "outlook"
+          ? `${app.name} · Inbox`
+          : app.name,
       category: "category" in app ? app.category : "Integration",
       active:
         app.active &&
@@ -169,7 +172,10 @@ export function Apps() {
   const transformedExternalApps: UnifiedApp[] = approvedExternalApps.map(
     (app) => ({
       id: app.id,
-      name: app.name,
+      name:
+        app.id === "gmail" || app.id === "outlook"
+          ? `${app.name} · Inbox`
+          : app.name,
       category: "Integration",
       active: app.active ?? false, // Convert null to boolean
       logo: app.logoUrl || undefined, // Convert null to undefined
@@ -209,9 +215,13 @@ export function Apps() {
       description: string | null;
     }) => ({
       id: `connector-${c.slug}`,
-      name: c.name,
-      category: "Connected app",
-      active: true,
+      name: `${c.name} · AI tools`,
+      category: "AI tools",
+      active: capabilities?.connectors.enabled === true,
+      unavailableReason: capabilities?.connectors.enabled
+        ? undefined
+        : (capabilities?.connectors.reason ??
+          "Configuration status is unavailable"),
       logo: c.logo || undefined,
       short_description:
         c.description || `Connect ${c.name} to use with the AI assistant.`,
