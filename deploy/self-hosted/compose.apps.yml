@@ -80,6 +80,8 @@ services:
     environment:
       <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
+      # Optional operator-mounted CA bundle for verified external PostgreSQL TLS.
+      DATABASE_SSL_CA_FILE: "${DATABASE_SSL_CA_FILE:-}"
       DATABASE_PRIMARY_URL: "${AGSAAS_DATABASE_URL:?Provision the dedicated backend database role first}"
       SUPABASE_JWT_SECRET: "${JWT_SECRET:?Use the matching Supabase legacy signing secret}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
@@ -143,6 +145,8 @@ services:
     environment:
       <<: [*app-environment, *native-bank-environment]
       PORT: "8080"
+      # Optional operator-mounted CA bundle for verified external PostgreSQL TLS.
+      DATABASE_SSL_CA_FILE: "${DATABASE_SSL_CA_FILE:-}"
       DATABASE_PRIMARY_POOLER_URL: "${AGSAAS_WORKER_DATABASE_URL:?Set the dedicated role and transaction pooler tenant}"
       REDIS_QUEUE_URL: "redis://:${REDIS_QUEUE_PASSWORD:?Generate the queue password}@redis-queue:6379/0"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?Generate the shared API/worker service credential}"

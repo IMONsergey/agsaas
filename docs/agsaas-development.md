@@ -75,6 +75,14 @@ fragment. There is no fallback to an application database. The validator is used
 before schema setup and before test client construction. Do not point this
 destructive test harness at a real customer database.
 
+This disposable harness uses its own loopback-only transport contract and keeps
+its no-query-parameters URL format. Application API/worker connections use the
+separate [verified PostgreSQL transport policy](database-transport-security-20261103.md).
+When running those application clients against a deliberately isolated local
+PostgreSQL service without TLS, add `?sslmode=disable` to their
+`DATABASE_PRIMARY_URL` / `DATABASE_PRIMARY_POOLER_URL`. Development mode does
+not disable application TLS automatically.
+
 The SQL test prerequisites provide synthetic Supabase auth functions and roles.
 These allow calculation/query tests to run on PostgreSQL with pgvector; they do
 not verify real Supabase authentication or production RLS. Tenant-isolation tests

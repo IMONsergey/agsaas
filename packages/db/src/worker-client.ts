@@ -2,6 +2,7 @@ import { createLoggerWithContext } from "@midday/logger";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import type { Database } from "./client";
+import { getDatabaseConnectionConfig } from "./connection-config";
 import { runtimeSchema as schema } from "./runtime-schema";
 
 const isDevelopment = process.env.NODE_ENV === "development";
@@ -21,15 +22,14 @@ if (!connectionString) {
  * Worker database client with connection pool optimized for BullMQ concurrent jobs
  */
 const workerPool = new Pool({
-  connectionString,
   max: isDevelopment ? 10 : 50,
   idleTimeoutMillis: isDevelopment ? 5000 : 60000,
   connectionTimeoutMillis: 15000,
   maxUses: isDevelopment ? 200 : 3000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
-  ssl: isDevelopment ? false : { rejectUnauthorized: false },
   allowExitOnIdle: true,
+  ...getDatabaseConnectionConfig(connectionString),
 });
 
 function getPgErrorDetails(error: unknown) {

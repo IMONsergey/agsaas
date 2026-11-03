@@ -5,6 +5,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "test": "bun test --exit src",
+    "test:transport": "bun --no-env-file test --exit --timeout 30000 src/test/connection-config.test.ts && bun --no-env-file test --exit --timeout 30000 src/test/connection-config-clients.test.ts",
     "eval:matching:db": "bun run src/scripts/matching-eval-db.ts",
     "eval:progress": "bun run src/scripts/matching-progress.ts",
     "eval:similar": "bun run src/scripts/eval-similar-transactions.ts",
