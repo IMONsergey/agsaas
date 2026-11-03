@@ -1,3 +1,4 @@
+import { getAppUrl } from "@midday/utils/envs";
 import type { Database } from "@midday/db/client";
 import { getTeamById } from "@midday/db/queries";
 import { logger } from "@midday/logger";
@@ -56,7 +57,7 @@ export async function publishAppHome({
         type: "header" as const,
         text: {
           type: "plain_text" as const,
-          text: "Midday",
+          text: "AGSaaS",
           emoji: false,
         },
       },
@@ -78,7 +79,7 @@ export async function publishAppHome({
             text: "Settings",
             emoji: false,
           },
-          url: "https://app.midday.ai/apps?app=slack&settings=true",
+          url: getAppUrl() + "/apps?app=slack&settings=true",
           action_id: "open_settings",
         },
       },
@@ -134,10 +135,10 @@ export async function publishAppHome({
             type: "button" as const,
             text: {
               type: "plain_text" as const,
-              text: "Open Midday",
+              text: "Open AGSaaS",
               emoji: false,
             },
-            url: "https://app.midday.ai",
+            url: getAppUrl(),
             action_id: "open_midday",
           },
           {
@@ -147,7 +148,7 @@ export async function publishAppHome({
               text: "Settings",
               emoji: false,
             },
-            url: "https://app.midday.ai/apps?app=slack&settings=true",
+            url: getAppUrl() + "/apps?app=slack&settings=true",
             action_id: "view_settings",
           },
         ],
@@ -162,7 +163,7 @@ export async function publishAppHome({
         type: "section" as const,
         text: {
           type: "mrkdwn" as const,
-          text: "*Getting Started*\n\n1. *Upload a receipt*: Share a file in any channel where Midday is added\n2. *Configure notifications*: Set up your notification channel in settings\n3. *Review matches*: Approve or decline suggested matches directly in Slack",
+          text: "*Getting Started*\n\n1. *Upload a receipt*: Share a file in any channel where AGSaaS is added\n2. *Configure notifications*: Set up your notification channel in settings\n3. *Review matches*: Approve or decline suggested matches directly in Slack",
         },
       },
 
@@ -176,7 +177,7 @@ export async function publishAppHome({
         elements: [
           {
             type: "mrkdwn" as const,
-            text: "Upload receipts by sharing files in channels where Midday is added. Data will be automatically extracted and matched to your transactions.",
+            text: "Upload receipts by sharing files in channels where AGSaaS is added. Data will be automatically extracted and matched to your transactions.",
           },
         ],
       },

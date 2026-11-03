@@ -21,11 +21,22 @@ interface APIResponse<T = unknown> {
 export async function request<T = unknown>(
   opts: RequestOptions,
 ): Promise<APIResponse<T>> {
-  const token = getToken();
-  if (!token) throw new AuthRequiredError();
-
-  const baseUrl = opts.apiUrl || getApiUrl();
+  const baseUrl = getApiUrl(opts.apiUrl);
   const url = new URL(opts.path, baseUrl);
+  if (
+    !opts.path.startsWith("/") ||
+    opts.path.startsWith("//") ||
+    url.origin !== baseUrl ||
+    url.username ||
+    url.password ||
+    url.hash
+  ) {
+    throw new Error(
+      "API requests must use a relative path on the configured installation",
+    );
+  }
+  const token = getToken(baseUrl);
+  if (!token) throw new AuthRequiredError();
 
   if (opts.query) {
     for (const [key, value] of Object.entries(opts.query)) {
@@ -43,7 +54,7 @@ export async function request<T = unknown>(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
-    "User-Agent": "midday-cli/0.1.0",
+    "User-Agent": "agsaas-cli/0.1.2",
   };
 
   if (opts.debug) {
@@ -55,6 +66,9 @@ export async function request<T = unknown>(
 
   const response = await fetch(url.toString(), {
     method: opts.method || "GET",
+    redirect: "error",
+    credentials: "omit",
+    signal: AbortSignal.timeout(30000),
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });

@@ -1,3 +1,4 @@
+import { getApiUrl } from "@midday/utils/envs";
 import { Logo } from "./assets/logo";
 
 export default {
@@ -7,8 +8,10 @@ export default {
   active: true,
   logo: Logo,
   short_description:
-    "Connect Midday to 7,000+ apps. Automate reports, alerts, and workflows.",
-  description: `Connect Midday to Zapier using the Model Context Protocol (MCP).
+    "Connect AGSaaS to 7,000+ apps. Automate reports, alerts, and workflows.",
+  get description() {
+    const mcpUrl = getApiUrl() + "/mcp";
+    return `Connect AGSaaS to Zapier using the Model Context Protocol (MCP).
 
 **What you can do:**
 - Automate weekly profit reports to email or Slack
@@ -16,10 +19,12 @@ export default {
 - Sync customer data to Google Sheets or your CRM
 - Build custom workflows without code
 
+**Server URL:** \`${mcpUrl}\`
+
 **How it works:**
-1. Add Midday as an MCP connection in Zapier
-2. Use your Midday API key for authentication
-3. Create Zaps using Midday's 50+ tools`,
+1. Add AGSaaS as an MCP connection in Zapier
+2. Use your AGSaaS API key for authentication
+3. Create Zaps using AGSaaS's 50+ tools`;
+  },
   images: [],
-  installUrl: "https://midday.ai/mcp/zapier",
 };

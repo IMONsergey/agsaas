@@ -1,3 +1,4 @@
+import { getApiUrl } from "@midday/utils/envs";
 import { Logo } from "./assets/logo";
 
 export default {
@@ -7,8 +8,10 @@ export default {
   active: true,
   logo: Logo,
   short_description:
-    "Connect OpenCode to your Midday data via MCP. Track time for clients from your terminal.",
-  description: `Connect OpenCode to your Midday account using the Model Context Protocol (MCP).
+    "Connect OpenCode to your AGSaaS data via MCP. Track time for clients from your terminal.",
+  get description() {
+    const mcpUrl = getApiUrl() + "/mcp";
+    return `Connect OpenCode to your AGSaaS account using the Model Context Protocol (MCP).
 
 **What you can do:**
 - Track time for client projects while you code
@@ -16,10 +19,12 @@ export default {
 - Ask about transactions, invoices, and customers
 - Query your business data using natural language
 
+**Server URL:** \`${mcpUrl}\`
+
 **How it works:**
 1. Install OpenCode via curl, npm, bun, or brew
-2. Add your Midday API key to OpenCode's MCP configuration
-3. Restart OpenCode and ask about your Midday data`,
+2. Add your AGSaaS API key to OpenCode's MCP configuration
+3. Restart OpenCode and ask about your AGSaaS data`;
+  },
   images: [],
-  installUrl: "https://midday.ai/mcp/opencode",
 };

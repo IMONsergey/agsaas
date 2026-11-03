@@ -19,7 +19,7 @@ export function createAuthCommand(): Command {
 
   auth
     .command("login")
-    .description("Authenticate with Midday")
+    .description("Authenticate with AGSaaS")
     .option("--token-stdin", "Read API key from stdin instead of browser OAuth")
     .option("--no-browser", "Print auth URL instead of opening browser")
     .addHelpText(
@@ -49,14 +49,17 @@ Examples:
 
           await withSpinner(
             "Verifying token...",
-            () => loginWithToken(token),
+            () => loginWithToken(token, { apiUrl: globals.apiUrl }),
             globals.quiet,
           );
         } else {
-          await loginWithBrowser({ noBrowser: !opts.browser });
+          await loginWithBrowser({
+            noBrowser: !opts.browser,
+            apiUrl: globals.apiUrl,
+          });
         }
 
-        const status = getAuthStatus();
+        const status = getAuthStatus(globals.apiUrl);
 
         if (format === "json") {
           printJson({
@@ -131,7 +134,7 @@ Examples:
       const globals = auth.parent?.opts() as GlobalFlags;
       const format = resolveFormat(globals);
 
-      const status = getAuthStatus();
+      const status = getAuthStatus(globals.apiUrl);
 
       if (format === "json") {
         printJson(status);

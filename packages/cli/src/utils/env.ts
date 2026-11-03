@@ -1,3 +1,5 @@
+import { installationOrigin } from "@midday/utils/envs";
+
 export function isTTY(): boolean {
   return Boolean(process.stdout.isTTY);
 }
@@ -17,9 +19,7 @@ export function isAgentMode(flags: {
   agent?: boolean;
   quiet?: boolean;
 }): boolean {
-  if (flags.agent || flags.json) return true;
-  if (!isTTY()) return true;
-  return false;
+  return Boolean(flags.agent || flags.json || !isTTY());
 }
 
 export function shouldShowUI(flags: {
@@ -27,23 +27,27 @@ export function shouldShowUI(flags: {
   agent?: boolean;
   quiet?: boolean;
 }): boolean {
-  if (flags.quiet || flags.agent || flags.json) return false;
-  if (!isTTY()) return false;
-  if (isCI()) return false;
-  return true;
+  return !flags.quiet && !flags.agent && !flags.json && isTTY() && !isCI();
 }
 
-export function getApiUrl(): string {
-  return process.env.MIDDAY_API_URL || "https://api.midday.ai";
+/** CLI credentials always require an explicit installation, including local development. */
+export function validateOrigin(
+  name: string,
+  value: string | undefined,
+): string {
+  return installationOrigin(name, value, "", { NODE_ENV: "production" });
+}
+
+export function getApiUrl(override?: string): string {
+  return validateOrigin(
+    "AGSAAS_API_URL",
+    override ?? process.env.AGSAAS_API_URL ?? process.env.MIDDAY_API_URL,
+  );
 }
 
 export function getDashboardUrl(): string {
-  if (process.env.MIDDAY_DASHBOARD_URL) {
-    return process.env.MIDDAY_DASHBOARD_URL;
-  }
-  const apiUrl = getApiUrl();
-  if (apiUrl.includes("localhost") || apiUrl.includes("127.0.0.1")) {
-    return "http://localhost:3000";
-  }
-  return apiUrl.replace("api.", "app.");
+  return validateOrigin(
+    "AGSAAS_DASHBOARD_URL",
+    process.env.AGSAAS_DASHBOARD_URL ?? process.env.MIDDAY_DASHBOARD_URL,
+  );
 }

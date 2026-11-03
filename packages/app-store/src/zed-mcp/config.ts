@@ -1,3 +1,4 @@
+import { getApiUrl } from "@midday/utils/envs";
 import { Logo } from "./assets/logo";
 
 export default {
@@ -7,8 +8,10 @@ export default {
   active: true,
   logo: Logo,
   short_description:
-    "Connect Zed to your Midday financial data via MCP with OAuth.",
-  description: `Connect Zed to your Midday account using the Model Context Protocol (MCP). No API key needed — authentication is handled automatically via OAuth.
+    "Connect Zed to your AGSaaS financial data via MCP with OAuth.",
+  get description() {
+    const mcpUrl = getApiUrl() + "/mcp";
+    return `Connect Zed to your AGSaaS account using the Model Context Protocol (MCP). No API key needed — authentication is handled automatically via OAuth.
 
 **What you can do:**
 - Query transactions, invoices, and reports from Zed
@@ -19,8 +22,8 @@ export default {
 
 **Via Agent Panel:**
 1. Open the Agent Panel settings and click **Add Custom Server**
-2. Enter the URL: \`https://api.midday.ai/mcp\`
-3. When prompted, sign in to Midday in your browser
+2. Enter the URL: \`${mcpUrl}\`
+3. When prompted, sign in to AGSaaS in your browser
 
 **Via settings.json:**
 Add to your Zed settings:
@@ -28,13 +31,13 @@ Add to your Zed settings:
 {
   "context_servers": {
     "midday": {
-      "url": "https://api.midday.ai/mcp"
+      "url": "${mcpUrl}"
     }
   }
 }
 \`\`\`
 
-**Requirements:** Zed editor installed.`,
+**Requirements:** Zed editor installed.`;
+  },
   images: [],
-  installUrl: "https://midday.ai/mcp/zed",
 };

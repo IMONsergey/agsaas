@@ -1,3 +1,4 @@
+import { getApiUrl } from "@midday/utils/envs";
 import { Logo } from "./assets/logo";
 
 export default {
@@ -6,8 +7,10 @@ export default {
   category: "ai-automation",
   active: true,
   logo: Logo,
-  short_description: "Connect Manus to your Midday financial data via MCP.",
-  description: `Connect Manus to your Midday account using the Model Context Protocol (MCP).
+  short_description: "Connect Manus to your AGSaaS financial data via MCP.",
+  get description() {
+    const mcpUrl = getApiUrl() + "/mcp";
+    return `Connect Manus to your AGSaaS account using the Model Context Protocol (MCP).
 
 **What you can do:**
 - Query transactions, invoices, and reports in Manus
@@ -17,10 +20,10 @@ export default {
 
 **Setup steps:**
 1. In Manus, go to **Settings** and add a new MCP connector
-2. Enter the server URL: \`https://api.midday.ai/mcp\`
-3. Authenticate with your Midday account when prompted
+2. Enter the server URL: \`${mcpUrl}\`
+3. Authenticate with your AGSaaS account when prompted
 
-**Requirements:** Manus account with MCP connector support.`,
+**Requirements:** Manus account with MCP connector support.`;
+  },
   images: [],
-  installUrl: "https://midday.ai/mcp/manus",
 };

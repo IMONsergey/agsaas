@@ -41,6 +41,7 @@ export function installationOrigin(
     url.hash ||
     url.pathname !== "/" ||
     (url.protocol === "http:" && !loopback) ||
+    url.hostname.endsWith(".") ||
     url.hostname === "midday.ai" ||
     url.hostname.endsWith(".midday.ai")
   ) {

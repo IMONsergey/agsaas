@@ -1,3 +1,4 @@
+import { getApiUrl } from "@midday/utils/envs";
 import { Logo } from "./assets/logo";
 
 export default {
@@ -7,8 +8,10 @@ export default {
   active: true,
   logo: Logo,
   short_description:
-    "Connect Windsurf to your Midday financial data via MCP with OAuth.",
-  description: `Connect Windsurf to your Midday account using the Model Context Protocol (MCP). No API key needed — authentication is handled automatically via OAuth.
+    "Connect Windsurf to your AGSaaS financial data via MCP with OAuth.",
+  get description() {
+    const mcpUrl = getApiUrl() + "/mcp";
+    return `Connect Windsurf to your AGSaaS account using the Model Context Protocol (MCP). No API key needed — authentication is handled automatically via OAuth.
 
 **What you can do:**
 - Query transactions, invoices, and reports from your AI IDE
@@ -17,10 +20,10 @@ export default {
 
 **Setup steps:**
 1. Open Windsurf and go to **MCP Marketplace** in Settings (or edit \`mcp_config.json\`)
-2. Add a new server with URL: \`https://api.midday.ai/mcp\`
-3. When prompted, sign in to Midday in your browser and select a team
+2. Add a new server with URL: \`${mcpUrl}\`
+3. When prompted, sign in to AGSaaS in your browser and select a team
 
-**Requirements:** Windsurf IDE installed.`,
+**Requirements:** Windsurf IDE installed.`;
+  },
   images: [],
-  installUrl: "https://midday.ai/mcp/windsurf",
 };
