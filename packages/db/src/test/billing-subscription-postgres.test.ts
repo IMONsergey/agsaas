@@ -18,7 +18,7 @@ import {
   listRecoverableNotificationDispatches,
   notificationDispatchOperationKey,
 } from "../queries/notification-dispatches";
-import { notificationDispatches, teams, usersOnTeam } from "../schema";
+import { notificationDispatches, teams, users, usersOnTeam } from "../schema";
 import {
   removeTestProfiles,
   seedTestProfiles,
