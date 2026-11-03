@@ -5,6 +5,7 @@ import type { Context } from "../../rest/types";
 export interface TestAppOptions {
   teamId?: string;
   userId?: string;
+  db?: Context["Variables"]["db"];
 }
 
 /**
@@ -13,6 +14,9 @@ export interface TestAppOptions {
  */
 export function createTestApp(options: TestAppOptions = {}) {
   const { teamId = "test-team-id", userId = "test-user-id" } = options;
+  // Preserve the primary-routing contract while individual queries are mocked.
+  const db: Context["Variables"]["db"] =
+    options.db ?? ({ usePrimaryOnly: () => db } as Context["Variables"]["db"]);
 
   const app = new OpenAPIHono<Context>();
 
@@ -27,7 +31,7 @@ export function createTestApp(options: TestAppOptions = {}) {
           email: "test@example.com",
         },
       });
-      c.set("db", {} as Context["Variables"]["db"]); // Mock DB instance - actual queries are mocked at module level
+      c.set("db", db); // Actual queries are mocked at module level.
       // Set all scopes for testing (grants full access)
       c.set("scopes", [
         "transactions.read",
