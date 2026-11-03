@@ -345,3 +345,107 @@ export async function updateInvoiceWithIntent(
       .for("update");
     if (!current) return undefined;
     const { status, scheduledAt, ...rest } = input;
+    const settlementEntries = await getInvoiceSettlementEntries(
+      tx,
+      input.teamId,
+      input.id,
+    );
+    if (status === "refunded")
+      throw new InvoiceFinancialStateError(
+        "Record a confirmed refund against its original payment",
+      );
+    if (
+      settlementEntries.length &&
+      status &&
+      ["draft", "canceled", "scheduled"].includes(status)
+    )
+      throw new InvoiceFinancialStateError(
+        "An invoice with confirmed settlement entries cannot discard its money history",
+      );
+    if (status === "paid") {
+      try {
+        await confirmInvoicePaid(tx, {
+          invoiceId: input.id,
+          teamId: input.teamId,
+          actorId: input.userId,
+          occurredAt: input.paidAt ?? undefined,
+        });
+      } catch (error) {
+        if (error instanceof InvoicePaymentError)
+          throw new InvoiceFinancialStateError(error.message);
+        throw error;
+      }
+      const updated = await updateInvoice(tx, {
+        id: input.id,
+        teamId: input.teamId,
+        internalNote: input.internalNote,
+      });
+      const source = `invoice/${input.id}/issue/create`;
+      const operation = await ensureFinancialJobDispatch(tx, {
+        teamId: input.teamId,
+        jobName: "generate-invoice",
+        source,
+        payload: {
+          teamId: input.teamId,
+          invoiceId: input.id,
+          deliveryType: "create",
+          deliveryKey: financialJobOperationKey("generate-invoice", source),
+        },
+      });
+      return {
+        ...updated!,
+        operation: { id: operation.id, status: operation.status },
+      };
+    }
+    const changingSchedule =
+      status === "scheduled" ||
+      (status === undefined &&
+        current.status === "scheduled" &&
+        scheduledAt != null);
+    if (changingSchedule) {
+      const date = scheduledAt ?? current.scheduledAt;
+      if (!date || scheduledAt === null)
+        throw new InvoiceFinancialStateError(
+          "A scheduled invoice requires a future scheduledAt",
+        );
+      await updateInvoice(tx, rest);
+      return scheduleInvoice(tx, {
+        id: input.id,
+        teamId: input.teamId,
+        userId: input.userId,
+        scheduledAt: date,
+      });
+    }
+    if (scheduledAt != null)
+      throw new InvoiceFinancialStateError(
+        "scheduledAt requires a scheduled invoice",
+      );
+    if (status === "unpaid") {
+      await updateInvoice(tx, rest);
+      return issueInvoice(tx, {
+        id: input.id,
+        teamId: input.teamId,
+        userId: input.userId,
+        deliveryType: "create",
+      });
+    }
+    if (
+      current.status === "scheduled" &&
+      (status === "draft" || (status === undefined && scheduledAt === null))
+    ) {
+      await cancelInvoiceSchedule(tx, {
+        id: input.id,
+        teamId: input.teamId,
+        userId: input.userId,
+      });
+      return updateInvoice(tx, rest);
+    }
+    const updated = await updateInvoice(tx, {
+      ...rest,
+      status,
+      ...(status ? { scheduledAt: null, scheduledJobId: null } : {}),
+    });
+    if (!updated) throw new Error("Locked invoice disappeared");
+    return updated;
+  });
+}
