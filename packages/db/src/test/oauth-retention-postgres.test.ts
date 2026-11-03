@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database, TransactionClient } from "../client";
 import {
   claimDCRApplication,
@@ -164,20 +164,33 @@ describe.skipIf(!isTestDatabaseAvailable())(
           userIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         );
-        await db.execute(
-          sql`DELETE FROM public.resource_cleanups WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
-        );
-        await db.execute(
-          sql`DELETE FROM public.security_audit_events WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
-        );
-        await db.execute(
-          sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id IN (${fixtureTeams})`,
-        );
-        await db
-          .delete(teams)
-          .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
-        await db.delete(users).where(inArray(users.id, userIds));
-        await removeTestProfiles(db, userIds);
+        try {
+          await db.transaction(async (tx) => {
+            await tx.execute(
+              sql`DELETE FROM public.resource_cleanups WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.security_audit_events WHERE team_id IN (${fixtureTeams}) OR actor_user_id IN (${fixtureUsers})`,
+            );
+            await tx.execute(
+              sql`DELETE FROM public.storage_deletion_tombstones WHERE team_id IN (${fixtureTeams})`,
+            );
+            await tx
+              .delete(teams)
+              .where(inArray(teams.id, [f.teamId, f.consumerTeamId]));
+            await tx.delete(users).where(inArray(users.id, userIds));
+            await removeTestProfiles(tx, userIds);
+          });
+        } catch (error) {
+          // Preserve nonsecret generated identities for exact recovery if an
+          // unexpected cleanup failure interrupts a disposable DB test run.
+          console.error("OAuth retention fixture cleanup failed", {
+            teamIds: [f.teamId, f.consumerTeamId],
+            userIds,
+            applicationIds: [f.applicationId, f.controlApplicationId],
+          });
+          throw error;
+        }
       }
     }
 

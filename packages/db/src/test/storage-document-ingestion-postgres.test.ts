@@ -98,17 +98,21 @@ describe.skipIf(!isTestDatabaseAvailable())(
         ),
       );
       await client.query(migration);
+      // The full upgrade chain retains a deferred quota-metadata constraint.
+      // Check it eagerly in this fixture before fault injection alters only the
+      // projection trigger; all quota and namespace guards remain enabled.
+      await client.query("SET CONSTRAINTS ALL IMMEDIATE");
       return { team, otherTeam, user };
     }
     async function put(
       client: PoolClient,
-      team: string,
+      namespace: string,
       user: string,
       file = "fixture.txt",
       bucket = "vault",
     ) {
       const id = randomUUID(),
-        path = `${team}/${file}`;
+        path = `${namespace}/${file}`;
       await client.query(
         "INSERT INTO storage.objects(id,bucket_id,name,owner_id,metadata,version) VALUES($1,$2,$3,$4,$5,'v1')",
         [
@@ -116,7 +120,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
           bucket,
           path,
           user,
-          { mimetype: "text/plain", size: 12, eTag: "fixture-v1" },
+          {
+            mimetype: bucket === "avatars" ? "image/png" : "text/plain",
+            size: 12,
+            eTag: "fixture-v1",
+          },
         ],
       );
       return { id, path };
@@ -399,25 +407,50 @@ describe.skipIf(!isTestDatabaseAvailable())(
       run(async (client, f) => {
         const avatar = await put(
           client,
-          f.team,
+          `users/${f.user}`,
           f.user,
-          "avatar.png",
+          `${randomUUID()}.png`,
           "avatars",
         );
         expect(await doc(client, avatar.id)).toBeUndefined();
-        for (const name of [
-          `${f.team}/../foreign.txt`,
-          `${f.team}/%2e%2e/foreign.txt`,
-          `${randomUUID()}/unknown.txt`,
+        for (const invalid of [
+          {
+            name: `${f.team}/../foreign.txt`,
+            code: "P0001",
+            message:
+              "Vault objects require a canonical existing team namespace",
+          },
+          {
+            name: `${f.team}/%2e%2e/foreign.txt`,
+            code: "P0001",
+            message:
+              "Vault objects require a canonical existing team namespace",
+          },
+          {
+            name: `${randomUUID()}/unknown.txt`,
+            code: "23514",
+            message: "Storage team is no longer active",
+          },
         ]) {
+          const invalidId = randomUUID();
           await client.query("SAVEPOINT invalid_key");
           await expect(
             client.query(
               "INSERT INTO storage.objects(id,bucket_id,name) VALUES($1,'vault',$2)",
-              [randomUUID(), name],
+              [invalidId, invalid.name],
             ),
-          ).rejects.toThrow("canonical existing team namespace");
+          ).rejects.toMatchObject({
+            code: invalid.code,
+            message: invalid.message,
+          });
           await client.query("ROLLBACK TO SAVEPOINT invalid_key");
+          expect(
+            (
+              await client.query("SELECT id FROM storage.objects WHERE id=$1", [
+                invalidId,
+              ])
+            ).rowCount,
+          ).toBe(0);
         }
         expect(
           (

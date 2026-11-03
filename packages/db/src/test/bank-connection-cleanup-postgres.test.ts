@@ -301,7 +301,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
             }),
           ).rejects.toThrow("retained securely");
           await expect(deleteUser(db, f.user, auth)).rejects.toThrow(
-            "retained securely",
+            "MIDDAY_ENCRYPTION_KEY environment variable is not set",
           );
           expect(auth).not.toHaveBeenCalled();
           expect(
@@ -313,6 +313,19 @@ describe.skipIf(!isTestDatabaseAvailable())(
           expect(await listBankConnectionCleanupStatus(db, f.own)).toHaveLength(
             0,
           );
+          expect(
+            (
+              await db.execute(
+                sql`SELECT id FROM public.resource_cleanups WHERE actor_user_id = ${f.user}::uuid`,
+              )
+            ).rows,
+          ).toHaveLength(0);
+          expect(
+            await db
+              .select()
+              .from(usersOnTeam)
+              .where(eq(usersOnTeam.userId, f.user)),
+          ).toHaveLength(2);
           const [profile] = await db
             .select()
             .from(users)
@@ -359,11 +372,22 @@ describe.skipIf(!isTestDatabaseAvailable())(
           0,
         );
         const result = await deleteTeam(db, { teamId: f.own, userId: f.user });
-        expect(result?.cleanupPending).toBe(1);
+        expect(result?.cleanupPending).toBe(3);
         expect(
           await db.select().from(teams).where(eq(teams.id, f.own)),
         ).toHaveLength(0);
         const status = await listBankConnectionCleanupStatus(db, f.own);
+        expect(status).toHaveLength(1);
+        const retained = await db.execute<{ kind: string; status: string }>(
+          sql`SELECT kind, status FROM public.resource_cleanups WHERE team_id = ${f.own}::uuid ORDER BY kind`,
+        );
+        expect(retained.rows).toEqual([
+          { kind: "retention", status: "manual_required" },
+          { kind: "storage-team", status: "pending" },
+        ]);
+        expect(result?.cleanupPending).toBe(
+          status.length + retained.rows.length,
+        );
         const row = await getBankConnectionCleanup(db, status[0]!.id);
         expect(openBankConnectionCleanup(row!).accessToken).toBe(secret);
         expect(

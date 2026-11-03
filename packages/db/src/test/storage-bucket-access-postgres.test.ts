@@ -122,7 +122,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
       );
       return id;
     }
-    async function denied(client: PoolClient, action: () => Promise<unknown>) {
+    async function denied(
+      client: PoolClient,
+      action: () => Promise<unknown>,
+      expected: { code: string; message?: string } = { code: "42501" },
+    ) {
       await client.query("SAVEPOINT denied_upload");
       let error: unknown;
       try {
@@ -132,7 +136,7 @@ describe.skipIf(!isTestDatabaseAvailable())(
       }
       await client.query("ROLLBACK TO SAVEPOINT denied_upload");
       expect(error).toBeDefined();
-      expect((error as { code: string }).code).toBe("42501");
+      expect(error).toMatchObject(expected);
     }
     async function run(
       body: (
@@ -256,7 +260,10 @@ describe.skipIf(!isTestDatabaseAvailable())(
             )
           ).rowCount,
         ).toBe(0);
-        await denied(c, () => put(c, "apps", `logos/${randomUUID()}.png`));
+        await denied(c, () => put(c, "apps", `logos/${randomUUID()}.png`), {
+          code: "23514",
+          message: "Invalid team storage namespace",
+        });
         await denied(c, () =>
           put(c, "apps", `${f.team}/logos/${randomUUID()}.svg`),
         );
