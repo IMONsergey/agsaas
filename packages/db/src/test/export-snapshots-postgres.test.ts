@@ -58,24 +58,52 @@ describe.skipIf(!isTestDatabaseAvailable())(
       transactionIds: [fixture.own.transactionId],
     });
     test("exports complete invoice blocks, historical snapshots, products and unbounded tracker dates, excluding old archives and bearer secrets", async () => {
-      const documentSnapshot = {
-        version: 1 as const,
-        source: "issued" as const,
-        capturedAt: "2026-01-01",
-        document: { amount: 123, customerName: "Original issued name" },
-      };
-      await db
+      // Issue the actual fixture row so the production trigger captures every
+      // printable field and checks its financial identity at the SQL boundary.
+      const [issued] = await db
         .update(invoices)
         .set({
+          status: "unpaid",
+          amount: 123,
+          customerName: "Original issued name",
           paymentDetails: { fixture: "bank instructions" },
           fromDetails: { fixture: "seller" },
           customerDetails: { fixture: "buyer" },
           noteDetails: { fixture: "note" },
           topBlock: { fixture: "top" },
           bottomBlock: { fixture: "bottom" },
-          documentSnapshot,
         })
-        .where(eq(invoices.id, fixture.own.invoiceId));
+        .where(eq(invoices.id, fixture.own.invoiceId))
+        .returning({ documentSnapshot: invoices.documentSnapshot });
+      const documentSnapshot = issued?.documentSnapshot;
+      expect(documentSnapshot).toMatchObject({
+        version: 1,
+        source: "issued",
+        document: {
+          invoiceNumber: "FIXTURE-001",
+          amount: 123,
+          currency: "USD",
+          customerId: fixture.own.customerId,
+          customerName: "Original issued name",
+          paymentDetails: { fixture: "bank instructions" },
+          customerDetails: { fixture: "buyer" },
+          fromDetails: { fixture: "seller" },
+          noteDetails: { fixture: "note" },
+          topBlock: { fixture: "top" },
+          bottomBlock: { fixture: "bottom" },
+        },
+      });
+      if (!documentSnapshot)
+        throw new Error("Issued fixture document is missing");
+      expect(Number.isFinite(Date.parse(documentSnapshot.capturedAt))).toBe(
+        true,
+      );
+      // The export must retain the issued document even after live customer
+      // details change; it must not reconstruct history from the current profile.
+      await db
+        .update(customers)
+        .set({ name: "Current customer after issue" })
+        .where(eq(customers.id, fixture.own.customerId));
       const productId = randomUUID();
       await db.insert(invoiceProducts).values({
         id: productId,
@@ -106,6 +134,11 @@ describe.skipIf(!isTestDatabaseAvailable())(
         (row) => row.id === fixture.own.invoiceId,
       )!;
       expect(invoice.document_snapshot).toEqual(documentSnapshot);
+      expect(
+        snapshot.tables.customers!.find(
+          (row) => row.id === fixture.own.customerId,
+        )?.name,
+      ).toBe("Current customer after issue");
       expect(invoice.payment_details).toEqual({ fixture: "bank instructions" });
       expect(invoice.from_details).toEqual({ fixture: "seller" });
       expect(invoice.customer_details).toEqual({ fixture: "buyer" });
@@ -114,6 +147,8 @@ describe.skipIf(!isTestDatabaseAvailable())(
       expect(invoice.bottom_block).toEqual({ fixture: "bottom" });
       expect(invoice).not.toHaveProperty("token");
       expect(snapshot.tables.customers![0]).not.toHaveProperty("token");
+      expect(JSON.stringify(snapshot)).not.toContain("original-invoice-token");
+      expect(JSON.stringify(snapshot)).not.toContain("original-customer-token");
       expect(
         snapshot.tables.invoice_products!.some((row) => row.id === productId),
       ).toBe(true);
