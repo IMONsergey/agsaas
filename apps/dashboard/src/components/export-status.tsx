@@ -87,10 +87,11 @@ export function ExportStatus() {
   const { play: playSuccessSound } = useSuccessSound();
   const [toastId, setToastId] = useState<string | null>(null);
   const { exportData, setExportData } = useExportStore();
-  const { status, progress, result, queryError } = useJobStatus({
-    jobId: exportData?.runId,
-    enabled: !!exportData?.runId,
-  });
+  const { status, progress, result, queryError, refetch, isFetching } =
+    useJobStatus({
+      jobId: exportData?.runId,
+      enabled: !!exportData?.runId,
+    });
 
   const [, copy] = useCopyToClipboard();
 
@@ -147,7 +148,7 @@ export function ExportStatus() {
       return;
     }
 
-    if (status === "failed" || queryError) {
+    if (exportData?.runId && status === "failed" && !queryError) {
       // Dismiss the progress toast if it exists
       if (toastId) {
         dismiss(toastId);
@@ -170,11 +171,16 @@ export function ExportStatus() {
     toastId,
     dismiss,
     exportData?.exportType,
+    exportData?.runId,
   ]);
 
   // Create toast when export starts (only for file exports - accounting uses the export bar)
   useEffect(() => {
-    if (exportData?.runId && !toastId) {
+    if (
+      exportData?.runId &&
+      !toastId &&
+      !(status === "failed" && !queryError)
+    ) {
       // Skip toast for accounting exports - the export bar handles those
       if (exportData.exportType === "accounting") {
         return;
@@ -195,11 +201,108 @@ export function ExportStatus() {
       lastProgressRef.current = 0;
       completionHandledRef.current = false; // Reset completion flag for new export
     }
-  }, [exportData?.runId, exportData?.exportType, toastId, toast]);
+  }, [
+    exportData?.runId,
+    exportData?.exportType,
+    toastId,
+    toast,
+    status,
+    queryError,
+  ]);
+
+  // A failed status read is not a failed job. Keep its handle (and the export
+  // button's busy state), and retry only the read, never the queue mutation.
+  const observationRef = useRef<{
+    toastId: string;
+    mode: "unavailable" | "unknown" | "progress";
+    fetching: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (
+      !toastId ||
+      !exportData?.runId ||
+      exportData.exportType === "accounting"
+    )
+      return;
+    const mode = queryError
+      ? "unavailable"
+      : status === "unknown"
+        ? "unknown"
+        : "progress";
+    const previous = observationRef.current;
+    if (
+      previous?.toastId === toastId &&
+      previous.mode === mode &&
+      previous.fetching === isFetching
+    )
+      return;
+    observationRef.current = { toastId, mode, fetching: isFetching };
+
+    if (mode === "progress") {
+      if (
+        !previous ||
+        previous.mode === "progress" ||
+        status === "completed" ||
+        status === "failed"
+      )
+        return;
+      update(toastId, {
+        id: toastId,
+        title:
+          exportData.exportType === "team-data"
+            ? "Exporting team data."
+            : "Exporting transactions.",
+        description: "Please do not close browser until completed",
+        variant: "progress",
+        footer: undefined,
+        progress: progress ?? lastProgressRef.current ?? 0,
+      });
+      return;
+    }
+
+    update(toastId, {
+      id: toastId,
+      title:
+        mode === "unknown"
+          ? "Export status is unknown"
+          : "Export status is unavailable",
+      description:
+        "The export may still be running. Check its status again before starting another export.",
+      variant: "error",
+      progress: undefined,
+      duration: Number.POSITIVE_INFINITY,
+      footer: (
+        <div className="mt-4 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Export job: {exportData.runId}
+          </p>
+          <Button
+            size="sm"
+            disabled={isFetching}
+            onClick={() => void refetch()}
+          >
+            {isFetching ? "Checking status..." : "Check status"}
+          </Button>
+        </div>
+      ),
+    });
+  }, [
+    toastId,
+    exportData?.runId,
+    exportData?.exportType,
+    queryError,
+    status,
+    isFetching,
+    progress,
+    refetch,
+    update,
+  ]);
 
   // Update progress only when it changes (skip for accounting exports)
   useEffect(() => {
-    if (!toastId || exportData?.exportType === "accounting") return;
+    if (!toastId || exportData?.exportType === "accounting" || queryError)
+      return;
 
     const currentProgress =
       status === "completed"
@@ -219,7 +322,7 @@ export function ExportStatus() {
         progress: currentProgress,
       });
     }
-  }, [toastId, status, progress, update, exportData?.exportType]);
+  }, [toastId, status, progress, update, exportData?.exportType, queryError]);
 
   // Handle completion separately - use a ref to prevent multiple triggers
   const completionHandledRef = useRef(false);
@@ -231,7 +334,12 @@ export function ExportStatus() {
       return;
     }
 
-    if (status === "completed" && toastId && !completionHandledRef.current) {
+    if (
+      status === "completed" &&
+      !queryError &&
+      toastId &&
+      !completionHandledRef.current
+    ) {
       completionHandledRef.current = true;
 
       // Play success sound
@@ -326,6 +434,7 @@ export function ExportStatus() {
     }
   }, [
     status,
+    queryError,
     exportResult,
     exportData?.exportType,
     toastId,
