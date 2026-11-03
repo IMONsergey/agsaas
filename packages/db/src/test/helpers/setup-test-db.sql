@@ -8,6 +8,11 @@ BEGIN
   IF current_database() <> 'midday_test' THEN
     RAISE EXCEPTION 'Test prerequisites are restricted to midday_test';
   END IF;
+  IF to_regclass('private.agsaas_synthetic_fixture_provenance') IS NOT NULL
+     OR to_regclass('private.agsaas_baseline_installation') IS NOT NULL
+     OR to_regclass('supabase_migrations.schema_migrations') IS NOT NULL THEN
+    RAISE EXCEPTION 'Legacy Drizzle setup refuses an installed AGSaaS foundation; use its reviewed fixture gates';
+  END IF;
 END;
 $$;
 

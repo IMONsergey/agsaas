@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Pool } from "pg";
 import {
   freshInstallSql,
@@ -24,6 +26,41 @@ describe.skipIf(!isTestDatabaseAvailable())(
     const baseline =
       "CREATE TABLE private.agsaas_chain_fixture (value integer NOT NULL);";
     const commit = "a".repeat(40);
+    test("legacy bare-Drizzle prerequisites refuse an installed foundation before replacing Auth helpers", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // Existing foundation is retained; on a bare test harness this marker
+        // exists only inside the rollback transaction for the refusal test.
+        await client.query(
+          "CREATE TABLE IF NOT EXISTS private.agsaas_synthetic_fixture_provenance(fixture_only boolean)",
+        );
+        const before = (
+          await client.query(
+            "SELECT pg_get_functiondef('auth.uid()'::regprocedure) AS definition",
+          )
+        ).rows[0].definition;
+        await client.query("SAVEPOINT legacy_setup");
+        await expect(
+          client.query(
+            readFileSync(join(__dirname, "helpers/setup-test-db.sql"), "utf8"),
+          ),
+        ).rejects.toThrow(
+          "Legacy Drizzle setup refuses an installed AGSaaS foundation",
+        );
+        await client.query("ROLLBACK TO SAVEPOINT legacy_setup");
+        expect(
+          (
+            await client.query(
+              "SELECT pg_get_functiondef('auth.uid()'::regprocedure) AS definition",
+            )
+          ).rows[0].definition,
+        ).toBe(before);
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
+    });
     test("complete chain and migration history commit together; rollback verification leaves neither", async () => {
       const client = await pool.connect();
       try {
