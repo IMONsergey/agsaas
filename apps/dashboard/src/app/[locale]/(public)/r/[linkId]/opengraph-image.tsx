@@ -1,9 +1,9 @@
-import { loadPublicLogo } from "@midday/invoice";
 import { format, parseISO } from "date-fns";
 import { notFound } from "next/navigation";
 import { getChartDisplayName } from "@/components/metrics/utils/chart-types";
 import { getQueryClient, trpc } from "@/trpc/server";
 import { ownOgImageResponse } from "@/utils/own-og-image";
+import { loadPublicOgLogo } from "@/utils/public-og-logo.server";
 
 export const contentType = "image/png";
 
@@ -40,7 +40,7 @@ export default async function Image({ params }: Props) {
   )}`;
 
   const teamName = report.teamName || "Company";
-  const logoUrl = await loadPublicLogo(report.teamLogoUrl);
+  const logoUrl = await loadPublicOgLogo(report.teamLogoUrl);
   const isValidLogo = Boolean(logoUrl);
 
   return ownOgImageResponse(

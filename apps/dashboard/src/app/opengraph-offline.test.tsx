@@ -1,6 +1,15 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 import { Socket } from "node:net";
 import { join } from "node:path";
+import sharp from "sharp";
 import { syntheticInvoice } from "../../../../packages/invoice/src/test/fixtures/invoice";
 
 const ownOrigin = "https://storage.agsaas.example.test:8549";
@@ -9,6 +18,22 @@ const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
   "base64",
 );
+const idatOffset = png.indexOf("IDAT");
+if (idatOffset < 4) throw new Error("The valid PNG fixture must contain IDAT");
+const idatCrcOffset = idatOffset + 4 + png.readUInt32BE(idatOffset - 4);
+const badCrcPng = Buffer.from(png);
+badCrcPng[idatCrcOffset] = badCrcPng[idatCrcOffset]! ^ 0xff;
+const brokenIdatPng = Buffer.from(png);
+brokenIdatPng[idatOffset + 4] = 0; // Invalid zlib header, with a plausible IHDR.
+const malformedPngs = [
+  ["bad-crc", badCrcPng],
+  ["broken-idat", brokenIdatPng],
+  ["truncated-ihdr", png.subarray(0, 24)],
+] as const;
+const routeKinds = ["invoice", "portal", "report"] as const;
+type OgRoute = (typeof routeKinds)[number];
+let logoBytes = Uint8Array.from(png);
+let logoMime = "image/png";
 const priorFetch = globalThis.fetch;
 const priorConnect = Socket.prototype.connect;
 const priorStorage = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -16,6 +41,8 @@ let requests: string[] = [];
 let invoice: unknown = null;
 let portal: unknown = null;
 let report: unknown = null;
+// Generic Bun has no react-server condition; keep this boundary mock in tests.
+mock.module("server-only", () => ({}));
 mock.module("@/trpc/server", () => ({
   getQueryClient: () => ({
     fetchQuery: async (options: { kind: string }) =>
@@ -36,6 +63,12 @@ mock.module("@/trpc/server", () => ({
 let invoiceImage: typeof import("./[locale]/(public)/i/[token]/opengraph-image").default;
 let portalImage: typeof import("./[locale]/(public)/p/[portalId]/opengraph-image").default;
 let reportImage: typeof import("./[locale]/(public)/r/[linkId]/opengraph-image").default;
+let loadPublicOgLogo: typeof import("@/utils/public-og-logo.server").loadPublicOgLogo;
+beforeEach(() => {
+  logoBytes = Uint8Array.from(png);
+  logoMime = "image/png";
+  requests = [];
+});
 beforeAll(async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = ownOrigin;
   globalThis.fetch = Object.assign(
@@ -43,13 +76,14 @@ beforeAll(async () => {
       const url = input instanceof Request ? input.url : String(input);
       requests.push(url);
       if (url !== ownLogo) throw new Error("External OG network forbidden");
-      return new Response(png, { headers: { "content-type": "image/png" } });
+      return new Response(logoBytes, { headers: { "content-type": logoMime } });
     },
     { preconnect: () => {} },
   ) as typeof fetch;
   Socket.prototype.connect = (() => {
     throw new Error("External OG socket forbidden");
   }) as typeof Socket.prototype.connect;
+  ({ loadPublicOgLogo } = await import("@/utils/public-og-logo.server"));
   invoiceImage = (await import("./[locale]/(public)/i/[token]/opengraph-image"))
     .default;
   portalImage = (
@@ -94,6 +128,13 @@ function setFixtures(logo: string | null, name = "Компания AGSaaS") {
     expireAt: null,
   };
 }
+async function renderRoute(kind: OgRoute) {
+  return kind === "invoice"
+    ? invoiceImage({ params: Promise.resolve({ token: "fixture" }) })
+    : kind === "portal"
+      ? portalImage({ params: Promise.resolve({ portalId: "fixture" }) })
+      : reportImage({ params: Promise.resolve({ linkId: "fixture" }) });
+}
 async function expectPng(response: Response, name: string) {
   expect(response.status).toBe(200);
   expect(response.headers.get("content-type")).toBe("image/png");
@@ -110,24 +151,56 @@ async function expectPng(response: Response, name: string) {
     );
 }
 describe("actual public OG routes with own fonts and no external network", () => {
-  test.each([
-    "invoice",
-    "portal",
-    "report",
-  ])("renders the %s route with an own logo fetched exactly once", async (kind) => {
+  test.each(
+    routeKinds,
+  )("renders the %s route with an own logo fetched exactly once", async (kind) => {
     setFixtures(ownLogo);
-    requests = [];
-    const response =
-      kind === "invoice"
-        ? await invoiceImage({ params: Promise.resolve({ token: "fixture" }) })
-        : kind === "portal"
-          ? await portalImage({
-              params: Promise.resolve({ portalId: "fixture" }),
-            })
-          : await reportImage({
-              params: Promise.resolve({ linkId: "fixture" }),
-            });
-    await expectPng(response, `own-${kind}-og`);
+    await expectPng(await renderRoute(kind), `own-${kind}-og`);
+    expect(requests).toEqual([ownLogo]);
+  });
+  test.each(
+    malformedPngs,
+  )("fully decodes and rejects a header-valid optional logo: %s", async (_name, bytes) => {
+    logoBytes = Uint8Array.from(bytes);
+    expect(await loadPublicOgLogo(ownLogo)).toBeNull();
+    expect(requests).toEqual([ownLogo]);
+  });
+  test.each(
+    malformedPngs.flatMap(([name, bytes]) =>
+      routeKinds.map((kind) => [kind, name, bytes] as const),
+    ),
+  )("renders the actual %s route when its own logo is %s", async (kind, name, bytes) => {
+    setFixtures(ownLogo);
+    logoBytes = Uint8Array.from(bytes);
+    await expectPng(await renderRoute(kind), `fallback-${kind}-${name}-og`);
+    expect(requests).toEqual([ownLogo]);
+  });
+  test("decodes a valid wide JPEG into a bounded inline PNG without refetching", async () => {
+    logoBytes = new Uint8Array(
+      await sharp({
+        create: {
+          width: 2048,
+          height: 4,
+          channels: 3,
+          background: "#ed3344",
+        },
+      })
+        .jpeg()
+        .toBuffer(),
+    );
+    logoMime = "image/jpeg";
+    const inline = await loadPublicOgLogo(ownLogo);
+    expect(inline?.startsWith("data:image/png;base64,")).toBe(true);
+    if (!inline) throw new Error("The valid own JPEG must be retained");
+    const normalized = Buffer.from(
+      inline.slice(inline.indexOf(",") + 1),
+      "base64",
+    );
+    expect([...normalized.subarray(0, 8)]).toEqual([
+      137, 80, 78, 71, 13, 10, 26, 10,
+    ]);
+    expect(normalized.readUInt32BE(16)).toBe(1024);
+    expect(normalized.readUInt32BE(20)).toBe(2);
     expect(requests).toEqual([ownLogo]);
   });
   test.each([

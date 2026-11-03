@@ -1,6 +1,7 @@
-import { loadPublicLogo, OgTemplate } from "@midday/invoice";
+import { OgTemplate } from "@midday/invoice";
 import { getQueryClient, trpc } from "@/trpc/server";
 import { ownOgImageResponse } from "@/utils/own-og-image";
+import { loadPublicOgLogo } from "@/utils/public-og-logo.server";
 
 export const contentType = "image/png";
 
@@ -24,7 +25,7 @@ export default async function Image({ params }: Props) {
     return new Response("Not found", { status: 404 });
   }
 
-  const logo = await loadPublicLogo(invoice.template.logoUrl);
+  const logo = await loadPublicOgLogo(invoice.template.logoUrl);
 
   return ownOgImageResponse(<OgTemplate data={invoice} logoDataUrl={logo} />, {
     width: 1200,

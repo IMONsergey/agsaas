@@ -1,7 +1,7 @@
-import { loadPublicLogo } from "@midday/invoice";
 import { formatAmount } from "@midday/utils/format";
 import { getQueryClient, trpc } from "@/trpc/server";
 import { ownOgImageResponse } from "@/utils/own-og-image";
+import { loadPublicOgLogo } from "@/utils/public-og-logo.server";
 
 export const contentType = "image/png";
 
@@ -24,7 +24,7 @@ export default async function Image({ params }: Props) {
   }
 
   const { customer, summary } = data;
-  const logo = await loadPublicLogo(customer.team.logoUrl);
+  const logo = await loadPublicOgLogo(customer.team.logoUrl);
 
   return ownOgImageResponse(
     <div
