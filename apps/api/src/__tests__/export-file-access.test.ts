@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { McpContext } from "@api/mcp/types";
 import type { Context as ApiContext } from "@api/rest/types";
+import { documentsResponseSchema } from "@api/schemas/documents";
 import type { Scope } from "@api/utils/scopes";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import type { ExportFileAccessReceipt } from "@midday/db/queries/export-file-access";
@@ -221,12 +222,10 @@ describe("REST reserved export file authority", () => {
           scopes: ["documents.read"],
         }).request("/documents");
         expect(response.status).toBe(200);
-        const body = await response.json();
-        expect(
-          body.data.map((row: { pathTokens: string[] }) =>
-            row.pathTokens.join("/"),
-          ),
-        ).toEqual([ordinaryPath]);
+        const body = documentsResponseSchema.parse(await response.json());
+        expect(body.data.map((row) => row.pathTokens.join("/"))).toEqual([
+          ordinaryPath,
+        ]);
         expect(body.meta).toMatchObject({
           cursor: "next-page",
           hasNextPage: true,
@@ -270,12 +269,11 @@ describe("REST reserved export file authority", () => {
     mocks.getDocumentById.mockImplementation(() => document(transactionPath));
     const app = restApp();
     const response = await app.request("/documents");
-    const body = await response.json();
-    expect(
-      body.data.map((row: { pathTokens: string[] }) =>
-        row.pathTokens.join("/"),
-      ),
-    ).toEqual([ordinaryPath, transactionPath]);
+    const body = documentsResponseSchema.parse(await response.json());
+    expect(body.data.map((row) => row.pathTokens.join("/"))).toEqual([
+      ordinaryPath,
+      transactionPath,
+    ]);
     expect(
       (
         await app.request("/documents/" + documentId + "/presigned-url", {
