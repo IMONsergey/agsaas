@@ -3,13 +3,27 @@ import type {
   getTeamExportHistoryById,
   listTeamExportHistory,
 } from "@midday/db/queries/export-snapshots";
-import { createCallerFactory } from "../../trpc/init";
+import type { consumeRequestBudget } from "@midday/db/queries/resource-admission";
 import { createTestContext } from "../helpers/test-context";
 import { mockDb, mocks } from "../setup";
 
+const USER = "44444444-4444-4444-8444-444444444444";
 const TEAM = "11111111-1111-4111-8111-111111111111";
 const FOREIGN = "33333333-3333-4333-8333-333333333333";
 const ENTRY = "22222222-2222-4222-8222-222222222222";
+class TestBudgetExceededError extends Error {
+  readonly retryAfterSeconds = 60;
+}
+const consumeBudget = mock(
+  async (..._args: Parameters<typeof consumeRequestBudget>): Promise<void> =>
+    undefined,
+);
+mock.module("@midday/db/queries/resource-admission", () => ({
+  consumeRequestBudget: consumeBudget,
+  ResourceBudgetExceededError: TestBudgetExceededError,
+}));
+const createContext = (teamId = TEAM) =>
+  createTestContext({ teamId, userId: USER });
 const listHistory = mock(
   async (
     _db: unknown,
@@ -33,10 +47,11 @@ mock.module("@midday/db/queries/export-snapshots", () => ({
   listTeamExportHistory: listHistory,
   getTeamExportHistoryById: getHistory,
 }));
+const { createCallerFactory } = await import("../../trpc/init");
 const { teamRouter } = await import("../../trpc/routers/team");
 const createCaller = createCallerFactory(teamRouter);
 const user = () => ({
-  id: "test-user-id",
+  id: USER,
   teamId: TEAM,
   email: "test@example.com",
   usersOnTeams: [{ id: "membership-1", teamId: TEAM, role: "member" }],
@@ -45,6 +60,7 @@ const user = () => ({
 beforeEach(() => {
   mockDb.query.users.findFirst.mockReset();
   mockDb.query.users.findFirst.mockImplementation(async () => user());
+  consumeBudget.mockClear();
   listHistory.mockClear();
   getHistory.mockClear();
   mocks.triggerJob.mockClear();
@@ -52,10 +68,16 @@ beforeEach(() => {
 
 describe("tRPC team export history uses the full export session boundary", () => {
   test("ordinary current members can read; primary membership overrides a forged context team", async () => {
-    const result = await createCaller(
-      createTestContext({ teamId: FOREIGN }),
-    ).exportHistory({ limit: 5 });
+    const result = await createCaller(createContext(FOREIGN)).exportHistory({
+      limit: 5,
+    });
     expect(result).toEqual({ teamId: TEAM, items: [], nextCursor: null });
+    expect(consumeBudget).toHaveBeenCalledTimes(1);
+    expect(consumeBudget).toHaveBeenCalledWith(expect.anything(), {
+      userId: USER,
+      teamId: TEAM,
+      cost: 20,
+    });
     expect(listHistory).toHaveBeenCalledWith(expect.anything(), {
       teamId: TEAM,
       limit: 5,
@@ -65,7 +87,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
   });
 
   test("lookup passes only the current team and exact entry ID, with absence remaining absence", async () => {
-    const result = await createCaller(createTestContext()).exportHistoryEntry({
+    const result = await createCaller(createContext()).exportHistoryEntry({
       id: ENTRY,
     });
     expect(getHistory).toHaveBeenCalledWith(expect.anything(), {
@@ -77,7 +99,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
   });
 
   test("an anonymous caller cannot reach either history query", async () => {
-    const context = createTestContext();
+    const context = createContext();
     context.session = null;
     const caller = createCaller(context);
     await expect(caller.exportHistory({ limit: 5 })).rejects.toMatchObject({
@@ -86,6 +108,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
     await expect(
       caller.exportHistoryEntry({ id: ENTRY }),
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(consumeBudget).not.toHaveBeenCalled();
     expect(listHistory).not.toHaveBeenCalled();
     expect(getHistory).not.toHaveBeenCalled();
     expect(mocks.triggerJob).not.toHaveBeenCalled();
@@ -96,13 +119,14 @@ describe("tRPC team export history uses the full export session boundary", () =>
       ...user(),
       usersOnTeams: [],
     }));
-    const caller = createCaller(createTestContext({ teamId: TEAM }));
+    const caller = createCaller(createContext());
     await expect(caller.exportHistory({ limit: 5 })).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
     await expect(
       caller.exportHistoryEntry({ id: ENTRY }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(consumeBudget).not.toHaveBeenCalled();
     expect(listHistory).not.toHaveBeenCalled();
     expect(getHistory).not.toHaveBeenCalled();
     expect(mocks.triggerJob).not.toHaveBeenCalled();
@@ -114,7 +138,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
       teamId: null,
       usersOnTeams: [],
     }));
-    const caller = createCaller(createTestContext({ teamId: FOREIGN }));
+    const caller = createCaller(createContext(FOREIGN));
     await expect(caller.exportHistory({ limit: 5 })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
@@ -122,7 +146,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
   });
 
   test("strict inputs reject a supplied team or archive path", async () => {
-    const caller = createCaller(createTestContext());
+    const caller = createCaller(createContext());
     const forgedList = { limit: 5, teamId: FOREIGN };
     const forgedEntry = { id: ENTRY, path: `${FOREIGN}/exports/private.zip` };
     await expect(caller.exportHistory(forgedList)).rejects.toMatchObject({
@@ -137,7 +161,7 @@ describe("tRPC team export history uses the full export session boundary", () =>
   });
 
   test("page bounds and timestamp precision are enforced before the history read", async () => {
-    const caller = createCaller(createTestContext());
+    const caller = createCaller(createContext());
     for (const limit of [0, 26, 1.5]) {
       await expect(caller.exportHistory({ limit })).rejects.toMatchObject({
         code: "BAD_REQUEST",
